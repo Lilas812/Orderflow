@@ -1,0 +1,28 @@
+{
+  "name": "@workspace/local-gateway",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./pipeline": "./src/eventPipeline.ts",
+    "./metrics": "./src/metrics.ts",
+    "./reconnect": "./src/reconnectController.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "build": "tsc --noEmit",
+    "test": "vitest run",
+    "load:r16": "tsx src/r16Load.ts"
+  },
+  "dependencies": {
+    "@workspace/core": "workspace:*",
+    "@workspace/storage": "workspace:*"
+  },
+  "devDependencies": {
+    "@workspace/fixtures": "workspace:*",
+    "@types/node": "25.9.6",
+    "tsx": "4.23.13",
+    "typescript": "5.9.3",
+    "vitest": "5.0.5"
+  }
+}

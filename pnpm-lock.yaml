@@ -166,6 +166,31 @@ importers:
         specifier: ~5.9.3
         version: 5.9.3
 
+  apps/local-gateway:
+    dependencies:
+      '@workspace/core':
+        specifier: workspace:*
+        version: link:../../packages/core
+      '@workspace/storage':
+        specifier: workspace:*
+        version: link:../../packages/storage
+    devDependencies:
+      '@types/node':
+        specifier: 25.9.6
+        version: 25.9.6
+      '@workspace/fixtures':
+        specifier: workspace:*
+        version: link:../../packages/fixtures
+      tsx:
+        specifier: 4.23.13
+        version: 4.23.13
+      typescript:
+        specifier: 5.9.3
+        version: 5.9.3
+      vitest:
+        specifier: 5.0.5
+        version: 5.0.5(@types/node@25.9.6)(vite@7.3.6(@types/node@25.9.6)(jiti@2.7.0)(lightningcss@1.32.0)(tsx@4.23.13)(yaml@2.9.0))
+
   apps/web:
     dependencies:
       '@workspace/core':

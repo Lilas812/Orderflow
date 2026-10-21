@@ -1,4 +1,5 @@
 import type { SettingsController } from "../hooks/useSettings";
+import { DataStatus } from "./DataStatus";
 
 export interface DataStatusInfo { source: string; state: string; footer: string }
 
@@ -16,6 +17,7 @@ export function DataStatusSettings({ c, info }: { c: SettingsController; info: D
         {rows.map(([k, v]) => <div key={k}><dt>{k}</dt><dd data-testid={`settings-status-${k.toLowerCase().replace(/\s+/g, "-")}`}>{v}</dd></div>)}
       </dl>
       <p className="note">Read only. No live vendor or account connection exists; all market data is MOCK / SIMULATED.</p>
+      <DataStatus />
     </div>
   );
 }
