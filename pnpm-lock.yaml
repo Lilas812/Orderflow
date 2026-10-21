@@ -190,6 +190,12 @@ importers:
       '@vitejs/plugin-react':
         specifier: 'catalog:'
         version: 5.2.0(vite@7.3.6(@types/node@25.9.6)(jiti@2.7.0)(lightningcss@1.32.0)(tsx@4.23.13)(yaml@2.9.0))
+      '@workspace/fixtures':
+        specifier: workspace:*
+        version: link:../../packages/fixtures
+      '@workspace/render':
+        specifier: workspace:*
+        version: link:../../packages/render
       typescript:
         specifier: ~5.9.3
         version: 5.9.3
@@ -495,6 +501,22 @@ importers:
       typescript:
         specifier: ~5.9.3
         version: 5.9.3
+
+  packages/render:
+    dependencies:
+      '@workspace/core':
+        specifier: workspace:*
+        version: link:../core
+    devDependencies:
+      '@workspace/fixtures':
+        specifier: workspace:*
+        version: link:../fixtures
+      typescript:
+        specifier: ~5.9.3
+        version: 5.9.3
+      vitest:
+        specifier: 5.0.5
+        version: 5.0.5(@types/node@25.9.6)(vite@7.3.6(@types/node@25.9.6)(jiti@2.7.0)(lightningcss@1.32.0)(tsx@4.23.13)(yaml@2.9.0))
 
   scripts:
     devDependencies:

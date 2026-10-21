@@ -1,0 +1,18 @@
+{
+  "name": "@workspace/render",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": { ".": "./src/heatmapRenderer.ts" },
+  "scripts": {
+    "typecheck": "tsc --noEmit --strict --skipLibCheck --target ES2022 --module ESNext --moduleResolution Bundler --lib ES2022,DOM src/heatmapRenderer.ts src/heatmapRenderer.test.ts",
+    "build": "tsc --noEmit --strict --skipLibCheck --target ES2022 --module ESNext --moduleResolution Bundler --lib ES2022,DOM src/heatmapRenderer.ts",
+    "test": "vitest run"
+  },
+  "dependencies": { "@workspace/core": "workspace:*" },
+  "devDependencies": {
+    "@workspace/fixtures": "workspace:*",
+    "typescript": "~5.9.3",
+    "vitest": "5.0.5"
+  }
+}

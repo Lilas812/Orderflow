@@ -1,0 +1,30 @@
+uploads = []
+generated = []
+
+[[outputs]]
+id = "qYO0BbdeDjBH2-JbFs1gs"
+uri = "file://attached_assets/r06-f01.png"
+type = "image"
+title = "R06 F-01 — WebGL2ヒートマップ"
+description = "実WebGL2描画。TWA 60・40・30・60・0、検証用基準80枚。5番目の既知0セルは背景色です。"
+logical_id = "3f7552b2-f455-4ba2-980f-26b0dcea0e0a"
+content_hash = "sha256:5048e188794d7bd58daf316c47aea3763240359936b0aa2202e31f1a883372c3"
+size = 109796
+mtime_ms = 1792587413470
+storage_uri = "gcs://replit-rams-assets-pike/rams/assets/repl:396298eb-318f-4ad8-9c4e-13a5b19e25a9/3f7552b2-f455-4ba2-980f-26b0dcea0e0a/8a9e079a-9f57-42cb-b66e-de02b3a31402"
+storage_version_token = "1792587511675789"
+content_type = "image/png"
+
+[[outputs]]
+id = "pCfEbEUZUupSg01QhebCM"
+uri = "file://attached_assets/r06-f03.png"
+type = "image"
+title = "R06 F-03 — GAPのNO DATA表示"
+description = "coverage 0.5・確定TWAなしのセルを斜線表示。partialTWA 35を数量色には使用していません。"
+logical_id = "48dfab6b-1fcc-4674-b9ea-9f33ca37e598"
+content_hash = "sha256:161d81fd43b97d886da90f8657ff5ef2bc6edce0f4e8df52a5b00fe6c17a6553"
+size = 95408
+mtime_ms = 1792587416386
+storage_uri = "gcs://replit-rams-assets-pike/rams/assets/repl:396298eb-318f-4ad8-9c4e-13a5b19e25a9/48dfab6b-1fcc-4674-b9ea-9f33ca37e598/7b5b498f-539a-4edb-a5fc-111cca688d9b"
+storage_version_token = "1792587513007134"
+content_type = "image/png"

@@ -1,10 +1,13 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { executedVolume, type Trade } from "@workspace/core/events";
 import type { QualityInterval } from "@workspace/core/quality-timeline";
 import {
-  buildPriceSegments, tickToY, timeToX, MAX_SPAN_NS,
+  buildPriceSegments, tickToY, timeToX, MAX_SPAN_NS, MIN_SPAN_NS,
+  createViewport, resizeViewport, zoomTime, panTime, panPrice,
+  type ChartBounds, type Viewport,
 } from "@workspace/core/viewport";
 import { useViewport } from "../hooks/useViewport";
+import { HeatmapCanvas, HeatmapLegend, HEATMAP_SCENES, type HeatmapId, type HeatmapScene } from "./HeatmapCanvas";
 import { PriceAxis } from "./PriceAxis";
 import { TimeAxis, fmtJst } from "./TimeAxis";
 
@@ -44,10 +47,44 @@ interface Props {
   mockOn: boolean;
   onToggleMock: () => void;
   onAddThird: () => void;
+  heatmap: HeatmapScene | null;
+  onSelectHeatmap: (id: HeatmapId | null) => void;
 }
 
-export function ChartShell({ trades, mockOn, onToggleMock, onAddThird }: Props) {
-  const { vp, resize, zoom, panX, panY, latest, priceAuto } = useViewport(trades, MOCK_QUALITY);
+/** Verification-mode viewport built only from existing core functions: last 60 s (R05 minimum span), price MANUAL. */
+function verificationViewport(s: HeatmapScene, bounds: ChartBounds, dpr: number): Viewport {
+  const base = createViewport({
+    bounds, latestNs: s.endNs, dpr, price: { minTick: s.priceMinTick, maxTick: s.priceMaxTick },
+  });
+  return {
+    ...base, time: { minNs: (BigInt(s.endNs) - MIN_SPAN_NS).toString(), maxNs: s.endNs },
+    timeMode: "HISTORY", priceMode: "MANUAL",
+  };
+}
+
+export function ChartShell({ trades, mockOn, onToggleMock, onAddThird, heatmap, onSelectHeatmap }: Props) {
+  const tv = useViewport(trades, MOCK_QUALITY);
+  const [hmVp, setHmVp] = useState<Viewport>(() => createViewport({ bounds: { left: 0, top: 0, width: 0, height: 0 } }));
+  useEffect(() => {
+    if (heatmap) setHmVp((v) => verificationViewport(heatmap, v.bounds, v.dpr));
+  }, [heatmap]);
+  const vp = heatmap ? hmVp : tv.vp;
+  const { latest, priceAuto } = tv;
+  const resize = (w: number, h: number, d: number) => {
+    tv.resize(w, h, d);
+    setHmVp((v) => v.bounds.width === w && v.bounds.height === h && v.dpr === d
+      ? v : resizeViewport(v, { left: 0, top: 0, width: w, height: h }, d));
+  };
+  const zoom = (x: number, f: number) => { if (heatmap) setHmVp((v) => zoomTime(v, x, f)); else tv.zoom(x, f); };
+  const panX = (dx: number) => { if (heatmap) setHmVp((v) => panTime(v, dx)); else tv.panX(dx); };
+  const panY = (dy: number, start: Viewport) => {
+    if (!heatmap) { tv.panY(dy, start); return; }
+    setHmVp((v) => {
+      if (!start.price) return v;
+      return { ...v, price: panPrice(start, dy).price, priceMode: "MANUAL" };
+    });
+  };
+  const fitFixture = () => { if (heatmap) setHmVp((v) => verificationViewport(heatmap, v.bounds, v.dpr)); };
   const chartRef = useRef<HTMLDivElement>(null);
   const drag = useRef<number | null>(null);
   const zoomRef = useRef(zoom); zoomRef.current = zoom;
@@ -74,12 +111,12 @@ export function ChartShell({ trades, mockOn, onToggleMock, onAddThird }: Props) 
   }, []);
 
   const { width: w, height: h } = vp.bounds;
-  const segments = buildPriceSegments(trades, MOCK_QUALITY);
+  const segments = heatmap ? [] : buildPriceSegments(trades, MOCK_QUALITY);
   const pt = (t: Trade) => {
     const x = timeToX(vp, t.header.exchangeTimeNs!), y = tickToY(vp, t.priceTicks);
     return x === null || y === null ? null : { x, y };
   };
-  const gaps = vp.latestNs === null ? [] : MOCK_QUALITY.filter((i) => i.status !== "VALID").flatMap((i, n) => {
+  const gaps = heatmap || vp.latestNs === null ? [] : MOCK_QUALITY.filter((i) => i.status !== "VALID").flatMap((i, n) => {
     const lat = BigInt(vp.latestNs!);
     if (BigInt(i.startNs) > lat) return [];
     const end = i.endNs !== null && BigInt(i.endNs) < lat ? i.endNs : lat.toString();
@@ -96,13 +133,30 @@ export function ChartShell({ trades, mockOn, onToggleMock, onAddThird }: Props) 
           VIEWPORT {vp.timeMode}
         </span>
         <span className="note">viewport tracking only; not a live connection</span>
-        <button type="button" className="btn" data-testid="button-latest" onClick={latest}>最新</button>
+        {heatmap ? (
+          <button type="button" className="btn" data-testid="button-fit-fixture" onClick={fitFixture}>検証範囲へ</button>
+        ) : (
+          <button type="button" className="btn" data-testid="button-latest" onClick={latest}>最新</button>
+        )}
         <span className="pill" data-testid="mode-price" data-mode={vp.priceMode}>PRICE {vp.priceMode}</span>
-        <span className="pill" data-testid="status-price-data" data-state={vp.priceData}>
-          {vp.priceData === "VALID" ? "PRICE VALID" : "NO TRADE PRICE"}
-        </span>
-        <button type="button" className="btn" data-testid="button-price-auto" onClick={priceAuto}>価格自動</button>
+        {heatmap ? (
+          <span className="pill" data-testid="status-price-data" data-state="HEATMAP VERIFICATION">
+            VERIFICATION RANGE {heatmap.priceMinTick}..{heatmap.priceMaxTick}
+          </span>
+        ) : (
+          <span className="pill" data-testid="status-price-data" data-state={vp.priceData}>
+            {vp.priceData === "VALID" ? "PRICE VALID" : "NO TRADE PRICE"}
+          </span>
+        )}
+        <button type="button" className="btn" data-testid="button-price-auto" onClick={priceAuto} disabled={!!heatmap}>価格自動</button>
+        {heatmap && <span className="note" data-testid="text-price-auto-note">AUTO disabled: fixed verification range, not a Trade price</span>}
         <span className="spacer" />
+        <button type="button" className="btn" data-testid="button-heatmap-f01" aria-pressed={heatmap?.id === "F01"}
+          onClick={() => onSelectHeatmap("F01")}>Heatmap F01</button>
+        <button type="button" className="btn" data-testid="button-heatmap-f03" aria-pressed={heatmap?.id === "F03"}
+          onClick={() => onSelectHeatmap("F03")}>Heatmap F03</button>
+        <button type="button" className="btn" data-testid="button-heatmap-off" disabled={!heatmap}
+          onClick={() => onSelectHeatmap(null)}>Heatmap off</button>
         <button type="button" className="btn" data-testid="button-mock-toggle" onClick={onToggleMock}>
           {mockOn ? "MOCK 無効化" : "MOCK 有効化"}
         </button>
@@ -121,6 +175,7 @@ export function ChartShell({ trades, mockOn, onToggleMock, onAddThird }: Props) 
           }}
           onPointerUp={() => { drag.current = null; }} onPointerCancel={() => { drag.current = null; }}
           onLostPointerCapture={() => { drag.current = null; }}>
+          {heatmap && <HeatmapCanvas cells={heatmap.cells} vp={vp} />}
           <svg width={w} height={h} viewBox={`0 0 ${w} ${h}`} data-testid="chart-svg"
             data-width={w} data-height={h} data-dpr={vp.dpr}>
             <defs><clipPath id="chart-clip"><rect x={0} y={0} width={w} height={h} /></clipPath></defs>
@@ -143,7 +198,7 @@ export function ChartShell({ trades, mockOn, onToggleMock, onAddThird }: Props) 
                 );
               })}
             </g>
-            {(!hasData || vp.priceData !== "VALID") && (
+            {!heatmap && (!hasData || vp.priceData !== "VALID") && (
               <text x={w / 2} y={h / 2} textAnchor="middle" className="empty-text">
                 {hasData ? "NO DATA • NO TRADE PRICE" : "NO DATA"}
               </text>
@@ -160,10 +215,13 @@ export function ChartShell({ trades, mockOn, onToggleMock, onAddThird }: Props) 
           {" → "}<b data-testid="text-price-max">{vp.price?.maxTick ?? "—"}</b></span>
         <span data-testid="text-span">Span {hasData ? spanMin.toFixed(1) : "—"} min (recommended max {String(MAX_SPAN_NS / 60_000_000_000n / 60n)} h)</span>
       </div>
-      <p className="note howto" data-testid="text-mock-howto">
-        MOCK fixture: {MOCK_INSTRUMENT}, 2026-01-01 00:00:00 UTC (09:00:00 JST), three Trades at +0s 80000, +300s 80100, +600s 80040 ticks;
-        TRADES GAP [+360s, +540s). Verify: enable MOCK (2 events, one segment), add 3rd point (isolated marker; no line across the GAP).
-      </p>
+      {heatmap ? <HeatmapLegend scene={heatmap} /> : (
+        <p className="note howto" data-testid="text-mock-howto">
+          MOCK fixture: {MOCK_INSTRUMENT}, 2026-01-01 00:00:00 UTC (09:00:00 JST), three Trades at +0s 80000, +300s 80100, +600s 80040 ticks;
+          TRADES GAP [+360s, +540s). Verify: enable MOCK (2 events, one segment), add 3rd point (isolated marker; no line across the GAP).
+        </p>
+      )}
+      <span hidden data-testid="heatmap-scene-list" data-ids={HEATMAP_SCENES.map((s) => s.id).join(",")} />
     </section>
   );
 }
