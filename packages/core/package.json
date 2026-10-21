@@ -6,7 +6,9 @@
   "exports": {
     ".": "./src/instrument.ts",
     "./events": "./src/events.ts",
-    "./mbp-book": "./src/mbpBook.ts"
+    "./mbp-book": "./src/mbpBook.ts",
+    "./sequence-guard": "./src/sequenceGuard.ts",
+    "./quality-timeline": "./src/qualityTimeline.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
