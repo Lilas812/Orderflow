@@ -92,4 +92,15 @@ body {
 .dbg-side .dim { color: #6b7390; }
 .cs-heatmap .cs-grid { flex: 0 0 clamp(360px, calc(100dvh - 680px), 700px); height: clamp(360px, calc(100dvh - 680px), 700px); }
 .cs-heatmap .dbg { flex-shrink: 0; }
+.cs-grid.cs-delta { grid-template-rows: minmax(0, 1fr) 126px 34px; }
+.cs-heatmap .cs-grid.cs-delta { flex-basis: calc(clamp(360px, calc(100dvh - 680px), 700px) + 126px); height: calc(clamp(360px, calc(100dvh - 680px), 700px) + 126px); }
+.dl-panel { position: relative; z-index: 4; min-width: 0; min-height: 90px; overflow: visible; cursor: grab; touch-action: none; user-select: none; border-top: 1px solid #303443; background: #08090d; }
+.dl-canvas { position: absolute; left: 0; top: 0; display: block; }
+.dl-label { position: absolute; left: 8px; top: 3px; font-size: 10px; letter-spacing: 0.06em; color: #9cA3b4; pointer-events: none; font-family: Consolas, ui-monospace, monospace; }
+.dl-err { position: absolute; left: 8px; top: 20px; font-size: 11px; }
+.dl-tip { position: absolute; z-index: 6; width: 340px; padding: 6px 8px; font-size: 11px; line-height: 1.4; color: #e8eaf0; background: #10131b; border: 1px solid #303443; border-radius: 3px; pointer-events: none; font-family: Consolas, ui-monospace, monospace; word-break: break-all; }
+.dl-tip .dim, .dl-yscale .dim { color: #6b7390; }
+.dl-yscale { display: flex; flex-direction: column; justify-content: space-between; padding: 4px 6px; border-top: 1px solid #303443; background: #10131b; font-size: 10px; color: #9cA3b4; font-family: Consolas, ui-monospace, monospace; overflow: hidden; }
+.bb-scope-line { stroke: #b9a4f0; stroke-width: 1; stroke-dasharray: 2 4; }
+.bb-scope-text { fill: #b9a4f0; font-size: 10px; }
 .cs-heatmap .hm-legend { min-width: 0; overflow-x: auto; }

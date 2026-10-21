@@ -5,3 +5,4 @@
 - [テスト診断のログ表示](test-diagnostic-output.md) — 成功テストの表が出ない場合は表示経路を分離し、明示フラグ付きの診断実行で確認する。
 - [約定の訂正・取消方針](trade-revision-policy.md) — 適用処理はベンダー仕様確認後に別工程で設計する。遅延新規Tradeの再集計とは区別する。
 - [視覚統合の承認方針](visual-clustering-policy.md) — 品質区間のイベント時刻対応を推測しない。連鎖の最大統合範囲は別途承認なしに追加しない。
+- [独立MOCKの比較方針](independent-mock-comparison.md) — F-04/F-05は別Store・別セッションのまま共通UTC軸で比較する。単一セッションとみなさない。

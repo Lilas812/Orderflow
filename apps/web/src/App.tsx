@@ -10,26 +10,32 @@ function App() {
   const scene = hmId ? HeatmapDemo[hmId] : null;
   const [bubbleId, setBubbleId] = useState<string | null>(null);
   const [bubbleRaw, setBubbleRaw] = useState(0);
-  const selectHeatmap = (id: HeatmapId | null) => { setHmId(id); if (id) { setCount(0); setBubbleId(null); } };
-  const selectBubble = (id: string | null) => { setBubbleId(id); if (id) { setHmId(null); setCount(0); } else setBubbleRaw(0); };
-  const setTradeCount = (fn: (c: number) => number) => { setHmId(null); setBubbleId(null); setCount(fn); };
+  const [deltaId, setDeltaId] = useState<string | null>(null);
+  const [deltaRaw, setDeltaRaw] = useState(0);
+  const selectHeatmap = (id: HeatmapId | null) => { setHmId(id); if (id) { setCount(0); setBubbleId(null); setDeltaId(null); setDeltaRaw(0); } };
+  const selectBubble = (id: string | null) => { setBubbleId(id); if (id) { setHmId(null); setCount(0); setDeltaId(null); setDeltaRaw(0); } else setBubbleRaw(0); };
+  const selectDelta = (id: string | null) => { setDeltaId(id); if (id) { setHmId(null); setBubbleId(null); setCount(0); } else setDeltaRaw(0); };
+  const setTradeCount = (fn: (c: number) => number) => { setHmId(null); setBubbleId(null); setDeltaId(null); setDeltaRaw(0); setCount(fn); };
   return (
     <div className="shell">
       <header className="bar">
         <h1 className="brand">Orderflow Lab</h1>
         <span className="instrument">{NQ.root} (contract not selected)</span>
         <span className="tag tag-source">MOCK • SIMULATED</span>
-        <span className="tag tag-state" data-testid="status-data">{bubbleId ? `FIXED BUBBLE MOCK ${bubbleId}` : scene ? `FIXED HEATMAP MOCK ${scene.id}` : count === 0 ? "NO DATA" : `MOCK DATA ${count}/3`}</span>
+        <span className="tag tag-state" data-testid="status-data">{deltaId ? `FIXED DELTA MOCK ${deltaId}` : bubbleId ? `FIXED BUBBLE MOCK ${bubbleId}` : scene ? `FIXED HEATMAP MOCK ${scene.id}` : count === 0 ? "NO DATA" : `MOCK DATA ${count}/3`}</span>
       </header>
       <main className="stage-chart">
         <ChartShell trades={trades} mockOn={count > 0}
           heatmap={scene} onSelectHeatmap={selectHeatmap}
           bubbleId={bubbleId} onSelectBubble={selectBubble} onBubbleRaw={setBubbleRaw}
+          deltaId={deltaId} onSelectDelta={selectDelta} onDeltaRaw={setDeltaRaw}
           onToggleMock={() => setTradeCount((c) => (c === 0 ? 2 : 0))}
           onAddThird={() => setTradeCount((c) => (c === 2 ? 3 : c))} />
       </main>
       <footer className="foot" data-testid="text-footer">
-        {bubbleId
+        {deltaId
+          ? `Data source: FIXED DELTA MOCK / Events loaded: ${deltaRaw} (raw Trade inputs across independent MOCK sources; no L2 snapshot; Delta MOCK ${deltaId})`
+          : bubbleId
           ? `Data source: MOCK / Events loaded: ${bubbleRaw + 1} (${bubbleRaw} raw Trade inputs + 1 independent ${bubbleId.startsWith("DENSITY") ? "R10" : "R09"} L2 snapshot; bubble MOCK ${bubbleId})`
           : scene
           ? `Data source: MOCK / Events loaded: ${scene.eventCount} (raw depth events; heatmap MOCK ${scene.id})`

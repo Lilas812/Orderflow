@@ -3,7 +3,7 @@ import { executedVolume, type BookSide, type Trade } from "@workspace/core/event
 import type { QualityInterval } from "@workspace/core/quality-timeline";
 import {
   buildPriceSegments, tickToY, timeToX, MAX_SPAN_NS, MIN_SPAN_NS,
-  createViewport, resizeViewport, zoomTime, panTime, panPrice,
+  createViewport, resizeViewport, zoomTime, panTime, panPrice, goLatest,
   type ChartBounds, type Viewport,
 } from "@workspace/core/viewport";
 import {
@@ -14,7 +14,12 @@ import { DEFAULT_PALETTES, projectHeatmap, type HeatmapStyle, type Palette } fro
 import { useViewport } from "../hooks/useViewport";
 import { HeatmapCanvas, HeatmapLegend, HEATMAP_SCENES, sceneForWidth, type HeatmapId, type HeatmapScene } from "./HeatmapCanvas";
 import { HeatmapDebugControls, type Rgb, type SideStatus } from "./HeatmapDebugControls";
-import { R09_SCENARIOS, R10_SCENARIOS, R10_CONTINUITY } from "@workspace/fixtures";
+import { R09_SCENARIOS, R10_SCENARIOS, R10_CONTINUITY, R11_DELTA_CASES } from "@workspace/fixtures";
+import {
+  advanceDeltaWatermark, createDeltaTimeline, ingestDeltaTrade, projectDeltaTimeline, queryDeltaTimeline,
+  setDeltaCondition, type DeltaBin, type DeltaFrame, type DeltaTimeline,
+} from "@workspace/core/delta-timeline";
+import { DeltaPanel, DeltaTable } from "./DeltaPanel";
 import type { BubbleDensity, ClusteringOptions } from "@workspace/render/bubble-clustering";
 
 const ALL_SCN = [...R09_SCENARIOS, ...R10_SCENARIOS];
@@ -73,6 +78,10 @@ interface Props {
   onSelectBubble: (id: string | null) => void;
   /** Raw Trade inputs ingested at the selected stage (not derived bubbles). */
   onBubbleRaw: (n: number) => void;
+  deltaId: string | null;
+  onSelectDelta: (id: string | null) => void;
+  /** Raw Trade inputs ingested across all independent Delta sources. */
+  onDeltaRaw: (n: number) => void;
 }
 
 /** Verification-mode viewport built only from existing core functions: last 60 s (R05 minimum span), price MANUAL. */
@@ -89,7 +98,7 @@ function verificationViewport(s: { endNs: string; priceMinTick: number; priceMax
 const SIDES: readonly BookSide[] = ["BID", "ASK"];
 const recKey = (mode: string, side: BookSide, width: number) => `${mode}|${side}|${width}`;
 
-export function ChartShell({ trades, mockOn, onToggleMock, onAddThird, heatmap: baseScene, onSelectHeatmap, bubbleId, onSelectBubble, onBubbleRaw }: Props) {
+export function ChartShell({ trades, mockOn, onToggleMock, onAddThird, heatmap: baseScene, onSelectHeatmap, bubbleId, onSelectBubble, onBubbleRaw, deltaId, onSelectDelta, onDeltaRaw }: Props) {
   const tv = useViewport(trades, MOCK_QUALITY);
   const [settings, setSettings] = useState<ScaleSettings>({ ...DEFAULT_SCALE });
   const [palettes, setPalettes] = useState<Readonly<Record<BookSide, Palette>>>(DEFAULT_PALETTES);
@@ -167,10 +176,11 @@ export function ChartShell({ trades, mockOn, onToggleMock, onAddThird, heatmap: 
     }
     return { endNs: (start + 6n * S).toString(), priceMinTick: 79980, priceMaxTick: 80020 };
   }, [scn, isR10, spanS]);
+  const dcase = useMemo(() => (deltaId ? R11_DELTA_CASES.find((c) => c.id === deltaId) ?? null : null), [deltaId]);
   const clustering = useMemo<ClusteringOptions>(() => {
-    const c = isR10 && scn ? R10_CONTINUITY[scn.id] : undefined;
+    const c = isR10 && scn ? R10_CONTINUITY[scn.id] : dcase?.id === "DENSITY" ? R10_CONTINUITY["DENSITY"] : undefined;
     return { mode: density, continuity: c ? [c] : [] };
-  }, [density, isR10, scn]);
+  }, [density, isR10, scn, dcase]);
   const backdrop = useMemo(() => (bubbleId ? bubbleBackdropCells(bubbleId) : null), [bubbleId]);
   useEffect(() => {
     if (bubbleSeed) setHmVp((v) => verificationViewport(bubbleSeed, v.bounds, v.dpr));
@@ -200,8 +210,62 @@ export function ChartShell({ trades, mockOn, onToggleMock, onAddThird, heatmap: 
   const onBubbleRawRef = useRef(onBubbleRaw); onBubbleRawRef.current = onBubbleRaw;
   const rawNow = scn ? replayed?.raw ?? 0 : 0;
   useEffect(() => { onBubbleRawRef.current(rawNow); }, [rawNow, bubbleId]);
-  const fixed = !!heatmap || !!scn;
+  /* ---- R11 Delta: independent sources replayed separately; overlay/sizing/density never touch this memo ---- */
+  const [dStage, setDStage] = useState(0);
+  const [showDeltaBubbles, setShowDeltaBubbles] = useState(true);
+  useEffect(() => { setDStage(0); }, [deltaId]);
+  const dIdx = dcase ? Math.min(dStage, dcase.steps.length - 1) : 0;
+  const dSeed = useMemo(() => dcase ? {
+    endNs: dcase.endNs, priceMinTick: dcase.priceMinTick, priceMaxTick: dcase.priceMaxTick, spanNs: BigInt(dcase.spanNs),
+  } : null, [dcase]);
+  useEffect(() => {
+    if (dSeed) setHmVp((v) => verificationViewport(dSeed, v.bounds, v.dpr));
+  }, [dSeed]);
+  const dReplay = useMemo(() => {
+    if (!dcase) return null;
+    try {
+      const tls: DeltaTimeline[] = dcase.sources.map((s) => createDeltaTimeline(s.header, s.quality, s.alignment));
+      const ing = dcase.sources.map(() => 0);
+      for (let i = 0; i <= dIdx; i++) {
+        const step = dcase.steps[i];
+        dcase.sources.forEach((s, k) => {
+          let st = tls[k];
+          for (; ing[k] < (step.counts[k] ?? 0); ing[k]++) st = ingestDeltaTrade(st, s.events[ing[k]]);
+          const c = step.conditions?.[k];
+          if (c) st = setDeltaCondition(st, c);
+          const p = step.progressNs?.[k];
+          if (p) {
+            st = advanceDeltaWatermark(st, {
+              exchangeTimeNs: p, trusted: true,
+              evidence: "Explicit R11 MOCK event-time progress, not wallclock", scope: st.tradeState.store.scope,
+            });
+          }
+          tls[k] = st;
+        });
+      }
+      const sourceOf = new Map<DeltaBin, string>();
+      const bins: DeltaBin[] = dcase.sources.flatMap((s, k) => {
+        const q = queryDeltaTimeline(tls[k], s.range.startNs, s.range.endNs);
+        q.forEach((b) => sourceOf.set(b, s.label));
+        return [...q];
+      });
+      return { tls, bins, sourceOf, raw: ing.reduce((a, b) => a + b, 0), error: null as string | null };
+    } catch (e) {
+      return { tls: [] as DeltaTimeline[], bins: [] as DeltaBin[], sourceOf: new Map<DeltaBin, string>(), raw: 0, error: e instanceof Error ? e.message : String(e) };
+    }
+  }, [dcase, dIdx]);
+  const onDeltaRawRef = useRef(onDeltaRaw); onDeltaRawRef.current = onDeltaRaw;
+  const dRaw = dReplay?.raw ?? 0;
+  useEffect(() => { onDeltaRawRef.current(dRaw); }, [dRaw, deltaId]);
+  const dBubbles = useMemo(() => dReplay?.tls.flatMap((t) => t.tradeState.bubbles) ?? [], [dReplay]);
+
+  const fixed = !!heatmap || !!scn || !!dcase;
   const vp = fixed ? hmVp : tv.vp;
+  const dFrame = useMemo<{ frame: DeltaFrame | null; error: string | null }>(() => {
+    if (!dcase || !dReplay || vp.bounds.width <= 0) return { frame: null, error: dReplay?.error ?? null };
+    try { return { frame: projectDeltaTimeline(dReplay.bins, vp, 126), error: dReplay.error }; }
+    catch (e) { return { frame: null, error: e instanceof Error ? e.message : String(e) }; }
+  }, [dcase, dReplay, vp]);
   const projected = useMemo(() => {
     if (!scn || vp.bounds.width <= 0) return null;
     try {
@@ -235,7 +299,7 @@ export function ChartShell({ trades, mockOn, onToggleMock, onAddThird, heatmap: 
     });
   };
   const fitFixture = () => {
-    const seed = heatmap ?? bubbleSeed;
+    const seed = heatmap ?? bubbleSeed ?? dSeed;
     if (seed) setHmVp((v) => verificationViewport(seed, v.bounds, v.dpr));
   };
   const chartRef = useRef<HTMLDivElement>(null);
@@ -279,6 +343,17 @@ export function ChartShell({ trades, mockOn, onToggleMock, onAddThird, heatmap: 
   const { width: w, height: h } = vp.bounds;
   const segments = useMemo(() => {
     if (heatmap) return [];
+    if (dcase) {
+      // Each source is built separately; sessions are never concatenated or bridged.
+      if (!dReplay) return [];
+      return dcase.sources.flatMap((s, k) => {
+        const st = dReplay.tls[k]?.tradeState.store;
+        if (!st || st.issues.length > 0) return [];
+        return buildPriceSegments(st.trades, s.quality.map((q) => ({
+          ...q, sequenceVerification: q.status === "VALID" ? "CONTIGUOUS" as const : "NOT_CHECKED" as const,
+        })));
+      });
+    }
     if (scn) {
       const fin = replayed?.fin;
       // No price line when the store reports unresolved issues; corrections are not part of the line.
@@ -288,12 +363,16 @@ export function ChartShell({ trades, mockOn, onToggleMock, onAddThird, heatmap: 
       })));
     }
     return buildPriceSegments(trades, MOCK_QUALITY);
-  }, [heatmap, scn, replayed, trades]);
+  }, [heatmap, scn, dcase, dReplay, replayed, trades]);
+  const scopeLines = dcase ? dcase.sources.slice(1).flatMap((s) => {
+    const x = timeToX(vp, s.range.startNs);
+    return x === null ? [] : [{ x, label: s.label }];
+  }) : [];
   const pt = (t: Trade) => {
     const x = timeToX(vp, t.header.exchangeTimeNs!), y = tickToY(vp, t.priceTicks);
     return x === null || y === null ? null : { x, y };
   };
-  const gaps = heatmap || vp.latestNs === null ? [] : (scn?.quality ?? MOCK_QUALITY).filter((i) => i.status !== "VALID").flatMap((i, n) => {
+  const gaps = heatmap || vp.latestNs === null ? [] : (dcase ? dcase.sources.flatMap((s) => [...s.quality]) as unknown as readonly QualityInterval[] : (scn?.quality ?? MOCK_QUALITY)).filter((i) => i.status !== "VALID").flatMap((i, n) => {
     const lat = BigInt(vp.latestNs!);
     if (BigInt(i.startNs) > lat) return [];
     const end = i.endNs !== null && BigInt(i.endNs) < lat ? i.endNs : lat.toString();
@@ -310,6 +389,8 @@ export function ChartShell({ trades, mockOn, onToggleMock, onAddThird, heatmap: 
           VIEWPORT {vp.timeMode}
         </span>
         <span className="note">viewport tracking only; not a live connection</span>
+        {dcase && <button type="button" className="btn" data-testid="button-delta-latest"
+          onClick={() => setHmVp((v) => goLatest(v))}>最新（MOCK検証軸）</button>}
         {fixed ? (
           <button type="button" className="btn" data-testid="button-fit-fixture" onClick={fitFixture}>検証範囲へ</button>
         ) : (
@@ -332,6 +413,11 @@ export function ChartShell({ trades, mockOn, onToggleMock, onAddThird, heatmap: 
         <button type="button" className="btn" data-testid="button-price-auto" onClick={priceAuto} disabled={fixed}>価格自動</button>
         {fixed && <span className="note" data-testid="text-price-auto-note">AUTO disabled: fixed verification range, not a Trade price</span>}
         <span className="spacer" />
+        <select className="btn" data-testid="select-delta" aria-label="Delta MOCK case" value={deltaId ?? ""}
+          onChange={(e) => onSelectDelta(e.target.value === "" ? null : e.target.value)}>
+          <option value="">Delta off</option>
+          {R11_DELTA_CASES.map((c) => <option key={c.id} value={c.id}>Delta {c.id}</option>)}
+        </select>
         <select className="btn" data-testid="select-bubble" aria-label="Bubble verification scenario" value={bubbleId ?? ""}
           onChange={(e) => onSelectBubble(e.target.value === "" ? null : e.target.value)}>
           <option value="">Bubble off</option>
@@ -353,7 +439,7 @@ export function ChartShell({ trades, mockOn, onToggleMock, onAddThird, heatmap: 
         <button type="button" className="btn" data-testid="button-mock-third"
           disabled={!mockOn || trades.length !== 2} onClick={onAddThird}>MOCK 3点目を追加</button>
       </div>
-      <div className="cs-grid">
+      <div className={dcase ? "cs-grid cs-delta" : "cs-grid"}>
         <div className="cs-chart" ref={chartRef} data-testid="chart-area"
           onPointerDown={(e) => {
             if (e.button !== 0) return;
@@ -366,7 +452,7 @@ export function ChartShell({ trades, mockOn, onToggleMock, onAddThird, heatmap: 
           onPointerUp={() => { drag.current = null; }} onPointerCancel={() => { drag.current = null; }}
           onLostPointerCapture={() => { drag.current = null; }}>
           {heatmap && <HeatmapCanvas cells={heatmap.cells} vp={vp} style={style} />}
-          {scn && <svg className="bb-gaps" width={w} height={h} data-testid="bubble-gap-layer">
+          {(scn || dcase) && <svg className="bb-gaps" width={w} height={h} data-testid="bubble-gap-layer">
             {gaps.map(g => <g key={g.n}>
               <rect x={g.x0} y={0} width={Math.max(0, g.x1 - g.x0)} height={h} className="gap-band" />
               <text x={g.x0 + 6} y={38} className="gap-text">GAP: TRADES</text>
@@ -377,12 +463,19 @@ export function ChartShell({ trades, mockOn, onToggleMock, onAddThird, heatmap: 
             <HeatmapCanvas cells={backdrop.cells} vp={vp} />
           </div>}
           {scn && <BubbleCanvas bubbles={bubbles} vp={vp} sizing={sizing} clustering={clustering} />}
+          {dcase && showDeltaBubbles && <BubbleCanvas bubbles={dBubbles} vp={vp} sizing={sizing} clustering={clustering} />}
           <svg width={w} height={h} viewBox={`0 0 ${w} ${h}`} data-testid="chart-svg"
             data-width={w} data-height={h} data-dpr={vp.dpr}>
             <defs><clipPath id="chart-clip"><rect x={0} y={0} width={w} height={h} /></clipPath></defs>
             <text x={12} y={20} className="wm">MOCK / SIMULATED</text>
             <g clipPath="url(#chart-clip)">
-              {!scn && gaps.map((g) => (
+              {scopeLines.map((l) => (
+                <g key={l.label} data-testid="delta-scope-boundary">
+                  <line x1={l.x} x2={l.x} y1={0} y2={h} className="bb-scope-line" />
+                  <text x={l.x + 4} y={h - 8} className="bb-scope-text">scope boundary: {l.label} (independent MOCK, not combined)</text>
+                </g>
+              ))}
+              {!scn && !dcase && gaps.map((g) => (
                 <g key={g.n} data-testid={`gap-${g.n}`} data-x0={g.x0} data-x1={g.x1}>
                   <rect x={g.x0} y={0} width={Math.max(0, g.x1 - g.x0)} height={h} className="gap-band" />
                   <text x={g.x0 + 6} y={38} className="gap-text">GAP: TRADES</text>
@@ -407,6 +500,10 @@ export function ChartShell({ trades, mockOn, onToggleMock, onAddThird, heatmap: 
           </svg>
         </div>
         <PriceAxis vp={vp} onPan={panY} />
+        {dcase && dReplay && (
+          <DeltaPanel frame={dFrame.frame} vp={vp} sourceOf={dReplay.sourceOf} error={dFrame.error}
+            onZoom={zoom} onPan={panX} />
+        )}
         <TimeAxis vp={vp} />
       </div>
       <div className="cs-info" data-testid="viewport-info">
@@ -420,7 +517,39 @@ export function ChartShell({ trades, mockOn, onToggleMock, onAddThird, heatmap: 
         <HeatmapDebugControls settings={settings} onChange={update} palettes={palettes} onPalette={setPalette}
           onRecalibrate={recalibrate} status={sideStatus} captureError={captureError} />
         <HeatmapLegend scene={heatmap} style={style} />
-      </>) : scn ? (
+      </>) : dcase && dReplay ? (
+        <div className="dbg bb-dbg" data-testid="delta-controls">
+          <div className="dbg-row dbg-wrap">
+            <span data-testid="text-delta-case">FIXED DELTA MOCK {dcase.id}: {dcase.label}. Multiple independent MOCK sources/sessions on one shared UTC axis; never combined or interpolated.</span>
+            <button type="button" className="btn" data-testid="button-delta-prev" disabled={dIdx === 0}
+              onClick={() => setDStage(dIdx - 1)}>Step -</button>
+            <span data-testid="text-delta-step" data-step={dIdx}>step {dIdx + 1}/{dcase.steps.length}: {dcase.steps[dIdx].label}</span>
+            <button type="button" className="btn" data-testid="button-delta-next" disabled={dIdx >= dcase.steps.length - 1}
+              onClick={() => setDStage(dIdx + 1)}>Step +</button>
+            <label className="dbg-check">
+              <input type="checkbox" data-testid="toggle-delta-bubbles" checked={showDeltaBubbles}
+                onChange={(e) => setShowDeltaBubbles(e.target.checked)} />
+              show bubble overlay (Delta unaffected)
+            </label>
+            <label className="dbg-field">sizing
+              <select data-testid="select-bubble-sizing" value={bsMode} onChange={(e) => setBsMode(e.target.value as BubbleSizingMode)}>
+                {(["FIXED", "LINEAR", "SQRT", "LOG"] as const).map((m) => <option key={m} value={m}>{m}</option>)}
+              </select>
+            </label>
+            <label className="dbg-field">density
+              <select data-testid="select-bubble-density" value={density} onChange={(e) => setDensity(e.target.value as BubbleDensity)}>
+                {DENSITIES.map((m) => <option key={m} value={m}>{m}</option>)}
+              </select>
+            </label>
+          </div>
+          <div data-testid="text-delta-sources">
+            {dcase.sources.map((s) => `${s.label} [${s.range.startNs}..${s.range.endNs}) ${s.alignment.timeAxis}`).join(" | ")} / raw Trade inputs ingested {dRaw}
+          </div>
+          {dReplay.error && <div className="dbg-warn" role="alert" data-testid="delta-replay-error">REPLAY ERROR: {dReplay.error}</div>}
+          <DeltaTable frame={dFrame.frame} sourceOf={dReplay.sourceOf} />
+          <p className="note">MOCK / SIMULATED. Delta quantities come from core bins (exact bigint), not from pixels or bubbles. Canvas2D rendering; no GPU claim. Gaps and unobserved ranges are NO DATA, never zero.</p>
+        </div>
+      ) : scn ? (
         <div className="dbg bb-dbg" data-testid="bubble-controls">
           <div className="dbg-row dbg-wrap">
             <span data-testid="text-bubble-scenario">MOCK / SIMULATED bubble scenario {scn.id}: {scn.label}</span>

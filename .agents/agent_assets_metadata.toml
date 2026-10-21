@@ -154,3 +154,45 @@ mtime_ms = 1792594996907
 storage_uri = "gcs://replit-rams-assets-pike/rams/assets/repl:396298eb-318f-4ad8-9c4e-13a5b19e25a9/6d982af5-bbe3-4522-bdea-4201ef224e3a/23bd41e3-f557-4dfa-8c35-98d969d4dc45"
 storage_version_token = "1792595151544963"
 content_type = "image/png"
+
+[[outputs]]
+id = "06sfKIM1flsK19jAJWaC7"
+uri = "file://attached_assets/r11-pair-final-hover.png"
+type = "image"
+title = "R11：F-04 +19 / F-05 −2 とホバー"
+description = "独立したStore・セッションのまま共通UTC時間軸で比較。緑の+19、紫の−2、F-05の数量・FINAL・revision 0を確認。"
+logical_id = "59bdb4f2-c1da-43cb-83b3-eec321bd68b9"
+content_hash = "sha256:77fa88056d4e5fc858cd24921623d6e7688d6d76bc08c3735df426ec6059dd06"
+size = 194064
+mtime_ms = 1792597658458
+storage_uri = "gcs://replit-rams-assets-pike/rams/assets/repl:396298eb-318f-4ad8-9c4e-13a5b19e25a9/59bdb4f2-c1da-43cb-83b3-eec321bd68b9/ea5a68fb-17b0-4a79-9ed7-4f8adbe35865"
+storage_version_token = "1792597901597699"
+content_type = "image/png"
+
+[[outputs]]
+id = "p78MycxomMMdEt-SLi-nX"
+uri = "file://attached_assets/r11-known-zero-gap.png"
+type = "image"
+title = "R11：既知の0とNO DATAの区別"
+description = "観測が保証された空区間は0。Trade GAPと未観測区間は数値を表示せずNO DATA。"
+logical_id = "52ed3504-2681-4544-afc4-ee59785d86fa"
+content_hash = "sha256:de0da5b9e8393806e9099242a3f291986e84e343b8c612c3aa147bb8f030c43c"
+size = 166784
+mtime_ms = 1792597669134
+storage_uri = "gcs://replit-rams-assets-pike/rams/assets/repl:396298eb-318f-4ad8-9c4e-13a5b19e25a9/52ed3504-2681-4544-afc4-ee59785d86fa/6427dc83-e9d9-4924-bd9e-6604e79a4013"
+storage_version_token = "1792597902977940"
+content_type = "image/png"
+
+[[outputs]]
+id = "Ui2qrhYs1UtLIrslF8vHV"
+uri = "file://attached_assets/r11-late-revised.png"
+type = "image"
+title = "R11：遅延Tradeによる過去区間の改訂"
+description = "元のexchangeTimeNsのバケットがDelta −41、REVISED、revision 1へ更新。重複配信では増加しない。"
+logical_id = "46010029-0560-4bff-bcf5-218a4e5067f3"
+content_hash = "sha256:552d674c071dbd12d74d1622ed9a4cf8e7c07a50f2d76a50e106dc202a0f3143"
+size = 144672
+mtime_ms = 1792597670886
+storage_uri = "gcs://replit-rams-assets-pike/rams/assets/repl:396298eb-318f-4ad8-9c4e-13a5b19e25a9/46010029-0560-4bff-bcf5-218a4e5067f3/b465eecf-462b-4131-b50e-5d501665f8bc"
+storage_version_token = "1792597904339174"
+content_type = "image/png"

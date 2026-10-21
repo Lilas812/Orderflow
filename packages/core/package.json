@@ -16,7 +16,8 @@
     "./trade-store": "./src/tradeStore.ts",
     "./bubble-aggregate": "./src/bubbleAggregate.ts",
     "./bubble-sizing": "./src/bubbleSizing.ts",
-    "./bubble-finality": "./src/bubbleFinality.ts"
+    "./bubble-finality": "./src/bubbleFinality.ts",
+    "./delta-timeline": "./src/deltaTimeline.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
