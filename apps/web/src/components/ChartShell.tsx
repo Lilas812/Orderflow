@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { executedVolume, type BookSide, type Trade } from "@workspace/core/events";
 import type { QualityInterval } from "@workspace/core/quality-timeline";
 import {
@@ -10,10 +10,19 @@ import {
   DEFAULT_SCALE, captureBaseline, collectQuantityStages, relativeP95, resolveReference,
   type RelativeReference, type ScaleBaseline, type ScaleSettings,
 } from "@workspace/core/heatmap-scale";
-import { DEFAULT_PALETTES, type HeatmapStyle, type Palette } from "@workspace/render";
+import { DEFAULT_PALETTES, projectHeatmap, type HeatmapStyle, type Palette } from "@workspace/render";
 import { useViewport } from "../hooks/useViewport";
 import { HeatmapCanvas, HeatmapLegend, HEATMAP_SCENES, sceneForWidth, type HeatmapId, type HeatmapScene } from "./HeatmapCanvas";
 import { HeatmapDebugControls, type Rgb, type SideStatus } from "./HeatmapDebugControls";
+import { R09_SCENARIOS } from "@workspace/fixtures";
+import {
+  DEFAULT_BUBBLE_SIZING, type BubbleSizing, type BubbleSizingMode,
+} from "@workspace/core/bubble-sizing";
+import {
+  advanceBubbleWatermark, createBubbleFinality, ingestBubbleTrade, setBubbleCondition,
+} from "@workspace/core/bubble-finality";
+import { projectBubbles } from "@workspace/render/bubbles";
+import { BubbleCanvas, bubbleBackdropCells } from "./BubbleCanvas";
 import { PriceAxis } from "./PriceAxis";
 import { TimeAxis, fmtJst } from "./TimeAxis";
 
@@ -21,6 +30,7 @@ export const MOCK_INSTRUMENT = "CME:NQ:2026-03";
 export const MOCK_SESSION = "MOCK-SESSION-2026-01-01";
 const T0 = 1767225600000000000n; // 2026-01-01T00:00:00Z = 09:00:00 JST
 const S = 1_000_000_000n;
+const BUBBLE_NS = 2_000_000_000n;
 function mockTrade(i: number, offsetS: bigint, priceTicks: number): Trade {
   const t = (T0 + offsetS * S).toString();
   return {
@@ -55,10 +65,14 @@ interface Props {
   onAddThird: () => void;
   heatmap: HeatmapScene | null;
   onSelectHeatmap: (id: HeatmapId | null) => void;
+  bubbleId: string | null;
+  onSelectBubble: (id: string | null) => void;
+  /** Raw Trade inputs ingested at the selected stage (not derived bubbles). */
+  onBubbleRaw: (n: number) => void;
 }
 
 /** Verification-mode viewport built only from existing core functions: last 60 s (R05 minimum span), price MANUAL. */
-function verificationViewport(s: HeatmapScene, bounds: ChartBounds, dpr: number): Viewport {
+function verificationViewport(s: { endNs: string; priceMinTick: number; priceMaxTick: number }, bounds: ChartBounds, dpr: number): Viewport {
   const base = createViewport({
     bounds, latestNs: s.endNs, dpr, price: { minTick: s.priceMinTick, maxTick: s.priceMaxTick },
   });
@@ -71,7 +85,7 @@ function verificationViewport(s: HeatmapScene, bounds: ChartBounds, dpr: number)
 const SIDES: readonly BookSide[] = ["BID", "ASK"];
 const recKey = (mode: string, side: BookSide, width: number) => `${mode}|${side}|${width}`;
 
-export function ChartShell({ trades, mockOn, onToggleMock, onAddThird, heatmap: baseScene, onSelectHeatmap }: Props) {
+export function ChartShell({ trades, mockOn, onToggleMock, onAddThird, heatmap: baseScene, onSelectHeatmap, bubbleId, onSelectBubble, onBubbleRaw }: Props) {
   const tv = useViewport(trades, MOCK_QUALITY);
   const [settings, setSettings] = useState<ScaleSettings>({ ...DEFAULT_SCALE });
   const [palettes, setPalettes] = useState<Readonly<Record<BookSide, Palette>>>(DEFAULT_PALETTES);
@@ -131,23 +145,82 @@ export function ChartShell({ trades, mockOn, onToggleMock, onAddThird, heatmap: 
   useEffect(() => {
     if (heatmap) setHmVp((v) => verificationViewport(heatmap, v.bounds, v.dpr));
   }, [heatmap]);
-  const vp = heatmap ? hmVp : tv.vp;
+  /* ---- R09 bubble verification (independent of heatmap F01; viewport reset on scenario id only) ---- */
+  const scn = useMemo(() => (bubbleId ? R09_SCENARIOS.find((s) => s.id === bubbleId) ?? null : null), [bubbleId]);
+  const [stage, setStage] = useState(0);
+  const [bsMode, setBsMode] = useState<BubbleSizingMode>(DEFAULT_BUBBLE_SIZING.mode);
+  useEffect(() => { setStage(0); }, [bubbleId]);
+  const bubbleSeed = useMemo(() => {
+    if (!scn) return null;
+    const t0 = scn.events.reduce((m, e) => { const t = BigInt(e.header.exchangeTimeNs!); return m === null || t < m ? t : m; }, null as bigint | null);
+    const start = ((t0 ?? 0n) / BUBBLE_NS) * BUBBLE_NS;
+    return { endNs: (start + 6n * S).toString(), priceMinTick: 79980, priceMaxTick: 80020 };
+  }, [scn]);
+  const backdrop = useMemo(() => (bubbleId ? bubbleBackdropCells(bubbleId) : null), [bubbleId]);
+  useEffect(() => {
+    if (bubbleSeed) setHmVp((v) => verificationViewport(bubbleSeed, v.bounds, v.dpr));
+  }, [bubbleSeed]);
+  const stageIdx = scn ? Math.min(stage, scn.steps.length - 1) : 0;
+  const replayed = useMemo(() => {
+    if (!scn) return null;
+    try {
+      let st = createBubbleFinality(scn.events[0].header, scn.quality);
+      let ingested = 0;
+      for (let i = 0; i <= stageIdx; i++) {
+        const step = scn.steps[i];
+        for (; ingested < step.tradeCount; ingested++) st = ingestBubbleTrade(st, scn.events[ingested]);
+        if (step.condition) st = setBubbleCondition(st, step.condition);
+        if (step.progressNs) {
+          st = advanceBubbleWatermark(st, {
+            exchangeTimeNs: step.progressNs, trusted: true,
+            evidence: "Explicit R09 MOCK event-time progress, not wallclock", scope: st.store.scope,
+          });
+        }
+      }
+      return { fin: st, raw: ingested, error: null as string | null };
+    } catch (e) { return { fin: null, raw: 0, error: e instanceof Error ? e.message : String(e) }; }
+  }, [scn, stageIdx]);
+  const bubbles = useMemo(() => replayed?.fin?.bubbles ?? [], [replayed]);
+  const sizing = useMemo<BubbleSizing>(() => ({ ...DEFAULT_BUBBLE_SIZING, mode: bsMode }), [bsMode]);
+  const onBubbleRawRef = useRef(onBubbleRaw); onBubbleRawRef.current = onBubbleRaw;
+  const rawNow = scn ? replayed?.raw ?? 0 : 0;
+  useEffect(() => { onBubbleRawRef.current(rawNow); }, [rawNow, bubbleId]);
+  const fixed = !!heatmap || !!scn;
+  const vp = fixed ? hmVp : tv.vp;
+  const projected = useMemo(() => {
+    if (!scn || vp.bounds.width <= 0) return null;
+    try {
+      return { list: projectBubbles(bubbles, vp, sizing).bubbles, error: null as string | null };
+    } catch (e) { return { list: null, error: e instanceof Error ? e.message : String(e) }; }
+  }, [scn, bubbles, vp, sizing]);
+  // The unchanged opaque R06 canvas is clipped to its actual R09 tile footprint.
+  // This exposes the lower TRADES-gap layer without inventing depth outside cells.
+  const backdropClip = useMemo(() => {
+    const rects = backdrop ? projectHeatmap(backdrop.cells, vp).rects : [];
+    if (!rects.length) return "inset(100%)";
+    const l = Math.min(...rects.map(r => r.left)), r = Math.max(...rects.map(r => r.right));
+    const t = Math.min(...rects.map(r => r.top)), b = Math.max(...rects.map(r => r.bottom));
+    return `polygon(${l}px ${t}px,${r}px ${t}px,${r}px ${b}px,${l}px ${b}px)`;
+  }, [backdrop, vp]);
   const { latest, priceAuto } = tv;
   const resize = (w: number, h: number, d: number) => {
     tv.resize(w, h, d);
     setHmVp((v) => v.bounds.width === w && v.bounds.height === h && v.dpr === d
       ? v : resizeViewport(v, { left: 0, top: 0, width: w, height: h }, d));
   };
-  const zoom = (x: number, f: number) => { if (heatmap) setHmVp((v) => zoomTime(v, x, f)); else tv.zoom(x, f); };
-  const panX = (dx: number) => { if (heatmap) setHmVp((v) => panTime(v, dx)); else tv.panX(dx); };
+  const zoom = (x: number, f: number) => { if (fixed) setHmVp((v) => zoomTime(v, x, f)); else tv.zoom(x, f); };
+  const panX = (dx: number) => { if (fixed) setHmVp((v) => panTime(v, dx)); else tv.panX(dx); };
   const panY = (dy: number, start: Viewport) => {
-    if (!heatmap) { tv.panY(dy, start); return; }
+    if (!fixed) { tv.panY(dy, start); return; }
     setHmVp((v) => {
       if (!start.price) return v;
       return { ...v, price: panPrice(start, dy).price, priceMode: "MANUAL" };
     });
   };
-  const fitFixture = () => { if (heatmap) setHmVp((v) => verificationViewport(heatmap, v.bounds, v.dpr)); };
+  const fitFixture = () => {
+    const seed = heatmap ?? bubbleSeed;
+    if (seed) setHmVp((v) => verificationViewport(seed, v.bounds, v.dpr));
+  };
   const chartRef = useRef<HTMLDivElement>(null);
   const drag = useRef<number | null>(null);
   const zoomRef = useRef(zoom); zoomRef.current = zoom;
@@ -167,19 +240,41 @@ export function ChartShell({ trades, mockOn, onToggleMock, onAddThird, heatmap: 
     };
     el.addEventListener("wheel", wheel, { passive: false });
     window.addEventListener("resize", measure);
+    // Moving between monitors / browser scaling may change DPR without a CSS resize.
+    // Re-arm the query after each change; keep R05 transforms and viewport units intact.
+    let resolution: MediaQueryList | null = null;
+    const watchResolution = () => {
+      resolution?.removeEventListener("change", watchResolution);
+      resolution = window.matchMedia(`(resolution: ${window.devicePixelRatio}dppx)`);
+      resolution.addEventListener("change", watchResolution);
+      measure();
+    };
+    watchResolution();
     return () => {
       ro.disconnect(); el.removeEventListener("wheel", wheel);
       window.removeEventListener("resize", measure);
+      resolution?.removeEventListener("change", watchResolution);
     };
   }, []);
 
   const { width: w, height: h } = vp.bounds;
-  const segments = heatmap ? [] : buildPriceSegments(trades, MOCK_QUALITY);
+  const segments = useMemo(() => {
+    if (heatmap) return [];
+    if (scn) {
+      const fin = replayed?.fin;
+      // No price line when the store reports unresolved issues; corrections are not part of the line.
+      if (!fin || fin.store.issues.length > 0) return [];
+      return buildPriceSegments(fin.store.trades, scn.quality.map(q => ({
+        ...q, sequenceVerification: q.status === "VALID" ? "CONTIGUOUS" as const : "NOT_CHECKED" as const,
+      })));
+    }
+    return buildPriceSegments(trades, MOCK_QUALITY);
+  }, [heatmap, scn, replayed, trades]);
   const pt = (t: Trade) => {
     const x = timeToX(vp, t.header.exchangeTimeNs!), y = tickToY(vp, t.priceTicks);
     return x === null || y === null ? null : { x, y };
   };
-  const gaps = heatmap || vp.latestNs === null ? [] : MOCK_QUALITY.filter((i) => i.status !== "VALID").flatMap((i, n) => {
+  const gaps = heatmap || vp.latestNs === null ? [] : (scn?.quality ?? MOCK_QUALITY).filter((i) => i.status !== "VALID").flatMap((i, n) => {
     const lat = BigInt(vp.latestNs!);
     if (BigInt(i.startNs) > lat) return [];
     const end = i.endNs !== null && BigInt(i.endNs) < lat ? i.endNs : lat.toString();
@@ -190,13 +285,13 @@ export function ChartShell({ trades, mockOn, onToggleMock, onAddThird, heatmap: 
   const spanMin = Number((BigInt(vp.time.maxNs) - BigInt(vp.time.minNs)) / 1_000_000_000n) / 60;
 
   return (
-    <section className={heatmap ? "cs cs-heatmap" : "cs"} data-testid="chart-shell">
+    <section className={fixed ? "cs cs-heatmap" : "cs"} data-testid="chart-shell">
       <div className="cs-bar">
         <span className={`pill ${vp.timeMode === "LIVE" ? "pill-on" : ""}`} data-testid="mode-time" data-mode={vp.timeMode}>
           VIEWPORT {vp.timeMode}
         </span>
         <span className="note">viewport tracking only; not a live connection</span>
-        {heatmap ? (
+        {fixed ? (
           <button type="button" className="btn" data-testid="button-fit-fixture" onClick={fitFixture}>検証範囲へ</button>
         ) : (
           <button type="button" className="btn" data-testid="button-latest" onClick={latest}>最新</button>
@@ -206,14 +301,25 @@ export function ChartShell({ trades, mockOn, onToggleMock, onAddThird, heatmap: 
           <span className="pill" data-testid="status-price-data" data-state="HEATMAP VERIFICATION">
             VERIFICATION RANGE {heatmap.priceMinTick}..{heatmap.priceMaxTick}
           </span>
+        ) : scn ? (
+          <span className="pill" data-testid="status-price-data" data-state="BUBBLE VERIFICATION">
+            VERIFICATION RANGE {bubbleSeed?.priceMinTick}..{bubbleSeed?.priceMaxTick}
+          </span>
         ) : (
           <span className="pill" data-testid="status-price-data" data-state={vp.priceData}>
             {vp.priceData === "VALID" ? "PRICE VALID" : "NO TRADE PRICE"}
           </span>
         )}
-        <button type="button" className="btn" data-testid="button-price-auto" onClick={priceAuto} disabled={!!heatmap}>価格自動</button>
-        {heatmap && <span className="note" data-testid="text-price-auto-note">AUTO disabled: fixed verification range, not a Trade price</span>}
+        <button type="button" className="btn" data-testid="button-price-auto" onClick={priceAuto} disabled={fixed}>価格自動</button>
+        {fixed && <span className="note" data-testid="text-price-auto-note">AUTO disabled: fixed verification range, not a Trade price</span>}
         <span className="spacer" />
+        <select className="btn" data-testid="select-bubble" aria-label="Bubble verification scenario" value={bubbleId ?? ""}
+          onChange={(e) => onSelectBubble(e.target.value === "" ? null : e.target.value)}>
+          <option value="">Bubble off</option>
+          {R09_SCENARIOS.map((s) => <option key={s.id} value={s.id}>Bubble {s.id}</option>)}
+        </select>
+        <button type="button" className="btn" data-testid="button-bubble-off" disabled={!scn}
+          onClick={() => onSelectBubble(null)}>Bubble off</button>
         <button type="button" className="btn" data-testid="button-heatmap-f01" aria-pressed={heatmap?.id === "F01"}
           onClick={() => onSelectHeatmap("F01")}>Heatmap F01</button>
         <button type="button" className="btn" data-testid="button-heatmap-f02" aria-pressed={heatmap?.id === "F02"}
@@ -241,12 +347,23 @@ export function ChartShell({ trades, mockOn, onToggleMock, onAddThird, heatmap: 
           onPointerUp={() => { drag.current = null; }} onPointerCancel={() => { drag.current = null; }}
           onLostPointerCapture={() => { drag.current = null; }}>
           {heatmap && <HeatmapCanvas cells={heatmap.cells} vp={vp} style={style} />}
+          {scn && <svg className="bb-gaps" width={w} height={h} data-testid="bubble-gap-layer">
+            {gaps.map(g => <g key={g.n}>
+              <rect x={g.x0} y={0} width={Math.max(0, g.x1 - g.x0)} height={h} className="gap-band" />
+              <text x={g.x0 + 6} y={38} className="gap-text">GAP: TRADES</text>
+            </g>)}
+          </svg>}
+          {scn && backdrop && backdrop.cells.length > 0 && <div className="bb-depth"
+            style={{ "--bb-depth-clip": backdropClip } as CSSProperties}>
+            <HeatmapCanvas cells={backdrop.cells} vp={vp} />
+          </div>}
+          {scn && <BubbleCanvas bubbles={bubbles} vp={vp} sizing={sizing} />}
           <svg width={w} height={h} viewBox={`0 0 ${w} ${h}`} data-testid="chart-svg"
             data-width={w} data-height={h} data-dpr={vp.dpr}>
             <defs><clipPath id="chart-clip"><rect x={0} y={0} width={w} height={h} /></clipPath></defs>
             <text x={12} y={20} className="wm">MOCK / SIMULATED</text>
             <g clipPath="url(#chart-clip)">
-              {gaps.map((g) => (
+              {!scn && gaps.map((g) => (
                 <g key={g.n} data-testid={`gap-${g.n}`} data-x0={g.x0} data-x1={g.x1}>
                   <rect x={g.x0} y={0} width={Math.max(0, g.x1 - g.x0)} height={h} className="gap-band" />
                   <text x={g.x0 + 6} y={38} className="gap-text">GAP: TRADES</text>
@@ -263,7 +380,7 @@ export function ChartShell({ trades, mockOn, onToggleMock, onAddThird, heatmap: 
                 );
               })}
             </g>
-            {!heatmap && (!hasData || vp.priceData !== "VALID") && (
+            {!fixed && (!hasData || vp.priceData !== "VALID") && (
               <text x={w / 2} y={h / 2} textAnchor="middle" className="empty-text">
                 {hasData ? "NO DATA • NO TRADE PRICE" : "NO DATA"}
               </text>
@@ -284,7 +401,59 @@ export function ChartShell({ trades, mockOn, onToggleMock, onAddThird, heatmap: 
         <HeatmapDebugControls settings={settings} onChange={update} palettes={palettes} onPalette={setPalette}
           onRecalibrate={recalibrate} status={sideStatus} captureError={captureError} />
         <HeatmapLegend scene={heatmap} style={style} />
-      </>) : (
+      </>) : scn ? (
+        <div className="dbg bb-dbg" data-testid="bubble-controls">
+          <div className="dbg-row dbg-wrap">
+            <span data-testid="text-bubble-scenario">MOCK / SIMULATED bubble scenario {scn.id}: {scn.label}</span>
+            <button type="button" className="btn" data-testid="button-bubble-prev" disabled={stageIdx === 0}
+              onClick={() => setStage(stageIdx - 1)}>Step -</button>
+            <span data-testid="text-bubble-step" data-step={stageIdx}>
+              step {stageIdx + 1}/{scn.steps.length}: {scn.steps[stageIdx].label}
+            </span>
+            <button type="button" className="btn" data-testid="button-bubble-next" disabled={stageIdx >= scn.steps.length - 1}
+              onClick={() => setStage(stageIdx + 1)}>Step +</button>
+            <label className="dbg-field">sizing
+              <select data-testid="select-bubble-sizing" value={bsMode} onChange={(e) => setBsMode(e.target.value as BubbleSizingMode)}>
+                {(["FIXED", "LINEAR", "SQRT", "LOG"] as const).map((m) => <option key={m} value={m}>{m}</option>)}
+              </select>
+            </label>
+          </div>
+          <div data-testid="text-bubble-condition">
+            condition {replayed?.fin?.condition ?? "—"} / watermark {replayed?.fin?.watermarkNs ?? "none"} / max valid exchange ns {replayed?.fin?.maxSeenValidExchangeNs ?? "none"} / raw events ingested {rawNow}
+          </div>
+          <div className="note" data-testid="text-bubble-backdrop">
+            Backdrop: {backdrop?.label}. {backdrop?.error ? `UNAVAILABLE: ${backdrop.error}` : "Default ABS R06 display; explicit synthetic MOCK, not a TWA of F01."}
+          </div>
+          {replayed?.error && <div className="dbg-warn" role="alert" data-testid="bubble-replay-error">REPLAY ERROR: {replayed.error}</div>}
+          {projected?.error && <div className="dbg-warn" role="alert" data-testid="bubble-project-error">PROJECTION ERROR: {projected.error}</div>}
+          <table className="hm-table" data-testid="bubble-table">
+            <thead><tr><th>bubble</th><th>start (JST)</th><th>end (JST)</th><th>ticks</th><th>B</th><th>S</th><th>U</th><th>V_raw</th><th>V</th><th>delta</th>
+              <th>bucket</th><th>state</th><th>rev</th><th>final</th><th>quality</th><th>diameter</th><th>alpha</th><th>x</th><th>y</th></tr></thead>
+            <tbody>
+              {bubbles.map((b) => {
+                const k = b.bucket, pr = projected?.list?.find((p) => p.source === b) ?? null;
+                return (
+                  <tr key={b.id} data-testid={`bubble-row-${b.id}`} data-status={b.status} data-revision={b.revision}
+                    data-projected={String(!!pr)}>
+                    <td title={b.id}>{b.id}</td><td>{fmtJst(k.startNs)}</td><td>{fmtJst(k.endNs)}</td><td>{k.minTick}..{k.maxTick}</td>
+                    <td>{k.B.toString()}</td><td>{k.S.toString()}</td><td>{k.U.toString()}</td><td>{k.V_raw.toString()}</td>
+                    <td>{k.V === null ? "withheld (incomplete)" : k.V.toString()}</td>
+                    <td>{k.delta === null ? "withheld (incomplete)" : k.delta.toString()}</td>
+                    <td>{k.status}</td><td>{b.status}</td><td>{b.revision}</td><td>{String(b.finalized)}</td>
+                    <td>{k.quality.length ? k.quality.join(",") : "—"}</td>
+                    <td>{pr ? pr.diameter.toFixed(6) : "not drawn"}</td><td>{pr ? pr.rgba[3].toFixed(3) : "—"}</td>
+                    <td>{pr ? pr.x.toFixed(2) : "—"}</td><td>{pr ? pr.y.toFixed(2) : "—"}</td>
+                  </tr>
+                );
+              })}
+              {bubbles.length === 0 && (
+                <tr data-testid="bubble-row-empty"><td colSpan={19}>No bubble state yet at this step (no accepted Trade bucket; not a statement of zero market activity).</td></tr>
+              )}
+            </tbody>
+          </table>
+          <p className="note">MOCK / SIMULATED. CPU projection values are not proof of GPU success; check BUBBLE GL status. Hidden or INCOMPLETE buckets are listed here, never treated as no activity.</p>
+        </div>
+      ) : (
         <p className="note howto" data-testid="text-mock-howto">
           MOCK fixture: {MOCK_INSTRUMENT}, 2026-01-01 00:00:00 UTC (09:00:00 JST), three Trades at +0s 80000, +300s 80100, +600s 80040 ticks;
           TRADES GAP [+360s, +540s). Verify: enable MOCK (2 events, one segment), add 3rd point (isolated marker; no line across the GAP).

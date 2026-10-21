@@ -70,3 +70,31 @@ mtime_ms = 1792588930374
 storage_uri = "gcs://replit-rams-assets-pike/rams/assets/repl:396298eb-318f-4ad8-9c4e-13a5b19e25a9/4fb7f8a5-3c39-48cc-8f2d-70db29f954c5/3cd2248d-918e-48f3-88bc-3322d53df011"
 storage_version_token = "1792589029097762"
 content_type = "image/png"
+
+[[outputs]]
+id = "NUUTzhgxioOHJZdGq9NQ9"
+uri = "file://attached_assets/r09-f04-final-hover.png"
+type = "image"
+title = "R09：F-04 FINALとホバー情報"
+description = "実WebGL2描画。B23／S4／V27／Delta +19、直径16.313844px、FINAL・revision 0。"
+logical_id = "2878862e-21cb-463f-a309-f630c2f3aee2"
+content_hash = "sha256:1e87606b7d353244e33c34f179881d93cd5d0d5ef8dae19a49f9870a00022409"
+size = 156208
+mtime_ms = 1792592947504
+storage_uri = "gcs://replit-rams-assets-pike/rams/assets/repl:396298eb-318f-4ad8-9c4e-13a5b19e25a9/2878862e-21cb-463f-a309-f630c2f3aee2/e944df9f-f61c-4bbe-ac8c-cc5f6ca686f5"
+storage_version_token = "1792593052274218"
+content_type = "image/png"
+
+[[outputs]]
+id = "6hquXzVcJ9wiHCrZWTRFO"
+uri = "file://attached_assets/r09-revised-hover.png"
+type = "image"
+title = "R09：遅延新規TradeによるREVISED"
+description = "実WebGL2描画。B23／S64／V87／Delta −41、REVISED・revision 1。訂正・取消の適用ではありません。"
+logical_id = "7433231a-af8c-456e-bdcf-6df1c16bcff4"
+content_hash = "sha256:abe2fac110661b4aeda5c155c99bbbd2ae2e9dff84032ab65e1d4fc0788a4661"
+size = 157020
+mtime_ms = 1792592949480
+storage_uri = "gcs://replit-rams-assets-pike/rams/assets/repl:396298eb-318f-4ad8-9c4e-13a5b19e25a9/7433231a-af8c-456e-bdcf-6df1c16bcff4/80852f67-be02-44e5-8f61-47867694e4ba"
+storage_version_token = "1792593053637041"
+content_type = "image/png"

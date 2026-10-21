@@ -3,3 +3,4 @@
 - [WebGLの検証環境](webgl-verification.md) — 標準テスターはGL無効の場合がある。実WebGLのバッファ・画素検証と物理GPU性能を区別する。
 - [相対基準の品質方針](relative-baseline-policy.md) — R07は承認された保守的な300秒全域観測を条件とする。暫定固定を正式な基準と表示しない。
 - [テスト診断のログ表示](test-diagnostic-output.md) — 成功テストの表が出ない場合は表示経路を分離し、明示フラグ付きの診断実行で確認する。
+- [約定の訂正・取消方針](trade-revision-policy.md) — 適用処理はベンダー仕様確認後に別工程で設計する。遅延新規Tradeの再集計とは区別する。

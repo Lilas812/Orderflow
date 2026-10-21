@@ -50,6 +50,18 @@ body {
 .hm-error { position: absolute; left: 12px; right: 12px; top: 44px; z-index: 3; padding: 8px 10px; font-size: 12px; color: #e8dff6; background: rgba(8, 9, 13, 0.92); border: 1px solid #d5a74b; pointer-events: none; }
 .hm-tip { position: absolute; z-index: 4; width: 210px; padding: 6px 8px; font-size: 11px; line-height: 1.5; color: #e8eaf0; background: #10131b; border: 1px solid #303443; border-radius: 3px; pointer-events: none; font-family: Consolas, ui-monospace, monospace; }
 .hm-tip .dim { color: #6b7390; }
+.bb-canvas { position: absolute; left: 0; top: 0; display: block; pointer-events: none; z-index: 3; }
+.bb-depth { position: absolute; inset: 0; z-index: 1; pointer-events: none; }
+.bb-depth .hm-canvas { clip-path: var(--bb-depth-clip); }
+.bb-status { position: absolute; right: 8px; top: 22px; font-size: 11px; letter-spacing: 0.08em; color: #8fd9a8; pointer-events: none; z-index: 4; }
+.bb-status[data-status="RENDER ERROR"], .bb-status[data-status="CONTEXT LOST"] { color: #d5a74b; }
+.bb-error { position: absolute; left: 12px; right: 12px; top: 60px; z-index: 3; padding: 8px 10px; font-size: 12px; color: #e8dff6; background: rgba(8, 9, 13, 0.92); border: 1px solid #d5a74b; pointer-events: none; }
+.bb-tip { position: absolute; z-index: 6; padding: 6px 8px; font-size: 11px; line-height: 1.5; color: #e8eaf0; background: #10131b; border: 1px solid #303443; border-radius: 3px; pointer-events: none; font-family: Consolas, ui-monospace, monospace; }
+.bb-tip .dim { color: #6b7390; }
+.cs-chart:has(.bb-canvas) > svg { z-index: 2; }
+.cs-chart > svg.bb-gaps { z-index: 0; pointer-events: none; }
+.bb-dbg { max-height: none; flex-shrink: 0; overflow-x: auto; }
+.bb-dbg .hm-table td:first-child { max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .hm-legend { display: flex; flex-direction: column; gap: 6px; }
 .hm-table { border-collapse: collapse; font-size: 11px; font-family: Consolas, ui-monospace, monospace; color: #9cA3b4; }
 .hm-table th, .hm-table td { text-align: left; padding: 2px 10px 2px 0; border-bottom: 1px solid #303443; font-weight: 400; }

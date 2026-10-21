@@ -1,3 +1,4 @@
+export { R09_SCENARIOS, R09_BUBBLE_EXPECTED, R09_OVERLAY_DEPTH, type BubbleDemoScenario, type BubbleDemoStep } from "./r09-bubbles";
 export { F01_BOOK } from "./f01-book";
 export { F04_TRADES } from "./f04-trades";
 export { F07_SEQUENCE_GAP } from "./f07-sequence-gap";

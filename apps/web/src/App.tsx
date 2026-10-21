@@ -8,24 +8,30 @@ function App() {
   const [hmId, setHmId] = useState<HeatmapId | null>(null);
   const trades = useMemo(() => MOCK_TRADES.slice(0, count), [count]);
   const scene = hmId ? HeatmapDemo[hmId] : null;
-  const selectHeatmap = (id: HeatmapId | null) => { setHmId(id); if (id) setCount(0); };
-  const setTradeCount = (fn: (c: number) => number) => { setHmId(null); setCount(fn); };
+  const [bubbleId, setBubbleId] = useState<string | null>(null);
+  const [bubbleRaw, setBubbleRaw] = useState(0);
+  const selectHeatmap = (id: HeatmapId | null) => { setHmId(id); if (id) { setCount(0); setBubbleId(null); } };
+  const selectBubble = (id: string | null) => { setBubbleId(id); if (id) { setHmId(null); setCount(0); } else setBubbleRaw(0); };
+  const setTradeCount = (fn: (c: number) => number) => { setHmId(null); setBubbleId(null); setCount(fn); };
   return (
     <div className="shell">
       <header className="bar">
         <h1 className="brand">Orderflow Lab</h1>
         <span className="instrument">{NQ.root} (contract not selected)</span>
         <span className="tag tag-source">MOCK • SIMULATED</span>
-        <span className="tag tag-state" data-testid="status-data">{scene ? `FIXED HEATMAP MOCK ${scene.id}` : count === 0 ? "NO DATA" : `MOCK DATA ${count}/3`}</span>
+        <span className="tag tag-state" data-testid="status-data">{bubbleId ? `FIXED BUBBLE MOCK ${bubbleId}` : scene ? `FIXED HEATMAP MOCK ${scene.id}` : count === 0 ? "NO DATA" : `MOCK DATA ${count}/3`}</span>
       </header>
       <main className="stage-chart">
         <ChartShell trades={trades} mockOn={count > 0}
           heatmap={scene} onSelectHeatmap={selectHeatmap}
+          bubbleId={bubbleId} onSelectBubble={selectBubble} onBubbleRaw={setBubbleRaw}
           onToggleMock={() => setTradeCount((c) => (c === 0 ? 2 : 0))}
           onAddThird={() => setTradeCount((c) => (c === 2 ? 3 : c))} />
       </main>
       <footer className="foot" data-testid="text-footer">
-        {scene
+        {bubbleId
+          ? `Data source: MOCK / Events loaded: ${bubbleRaw + 1} (${bubbleRaw} raw Trade inputs + 1 independent R09 L2 snapshot; bubble MOCK ${bubbleId})`
+          : scene
           ? `Data source: MOCK / Events loaded: ${scene.eventCount} (raw depth events; heatmap MOCK ${scene.id})`
           : <>Data source: MOCK / Events loaded: {count}{count > 0 ? ` of 3 (fixed MOCK ${MOCK_INSTRUMENT}, 2026-01-01 UTC)` : ""}</>}
       </footer>

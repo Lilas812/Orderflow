@@ -14,7 +14,9 @@
     "./viewport": "./src/viewport.ts",
     "./heatmap-scale": "./src/heatmapScale.ts",
     "./trade-store": "./src/tradeStore.ts",
-    "./bubble-aggregate": "./src/bubbleAggregate.ts"
+    "./bubble-aggregate": "./src/bubbleAggregate.ts",
+    "./bubble-sizing": "./src/bubbleSizing.ts",
+    "./bubble-finality": "./src/bubbleFinality.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
