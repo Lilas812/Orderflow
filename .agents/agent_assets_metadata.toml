@@ -252,3 +252,31 @@ mtime_ms = 1792603285375
 storage_uri = "gcs://replit-rams-assets-pike/rams/assets/repl:396298eb-318f-4ad8-9c4e-13a5b19e25a9/3f95d48e-7b56-4015-9c0e-9384d8815aaa/bf1b186c-294d-421a-a61e-21d412143319"
 storage_version_token = "1792603348279618"
 content_type = "image/png"
+
+[[outputs]]
+id = "usF6KX5kk72XcCAP5KWca"
+uri = "file://.local/r162-investigation.md"
+type = "text"
+title = "R16.2 調査報告・承認対象確定版"
+description = "全13試行とtransaction別実測、A〜D比較、増分状態の整合性設計、メモリ・試験計画、最初の承認対象5ファイルを明記。保存最適化は未実装です。"
+logical_id = "59c31960-7f06-4633-97bb-11194592bb5c"
+content_hash = "sha256:e8c4287514705f1277d338001fd7ac53d56585284ea35a0feb37a9282380e9b4"
+size = 32165
+mtime_ms = 1792615919457
+storage_uri = "gcs://replit-rams-assets-pike/rams/assets/repl:396298eb-318f-4ad8-9c4e-13a5b19e25a9/59c31960-7f06-4633-97bb-11194592bb5c/cca781ce-7754-4cff-98e0-70c293563689"
+storage_version_token = "1792616085009553"
+content_type = "text/markdown"
+
+[[outputs]]
+id = "YflgBrKy5hIvFZqKRFiUa"
+uri = "file://.local/r162-e-results.md"
+type = "text"
+title = "R16.2 変更案E 完了報告"
+description = "全14試行の前後比較、CPU・RSS・heapUsed、保存ハッシュ一致、1,348件のテスト結果、残る制限。索引照合は短縮、全体速度の安定改善は未確認。"
+logical_id = "14140988-47d0-4946-94ce-b4fc12db09ea"
+content_hash = "sha256:d4b618f9ce8b5986971e76356afc05f41ee78f09cbb9dfba5bf6ed33bb40159f"
+size = 10435
+mtime_ms = 1792617046454
+storage_uri = "gcs://replit-rams-assets-pike/rams/assets/repl:396298eb-318f-4ad8-9c4e-13a5b19e25a9/14140988-47d0-4946-94ce-b4fc12db09ea/57761615-52eb-4a67-ac51-69c771c33170"
+storage_version_token = "1792617093517707"
+content_type = "text/markdown"

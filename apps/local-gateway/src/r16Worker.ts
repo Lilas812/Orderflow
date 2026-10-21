@@ -21,9 +21,14 @@ const storage=new StorageAdapter(dir), scope=storage.register(config(),ns(0));
 const pipeline=new EventPipeline(storage);
 const transportLatency=new Latencies();
 const initialCpu=process.cpuUsage();
-const diagnostics=["load:timing","load:cpu"].includes(mode)?await import("./r161Diagnostics"):null;
-const trace=mode==="load:timing"?new diagnostics!.DiagnosticTrace():null;
-const cpu=mode==="load:cpu"?new diagnostics!.CpuCapture():null;
+const diagnostics=["load:timing","load:cpu","load:r162-cpu"].includes(mode)?await import("./r161Diagnostics"):null;
+const research=["load:r162-timing","load:r162-snapshot"].includes(mode)?
+  new (await import("./r162Diagnostics")).ResearchProbe():null;
+const indexComparison=["load:r162-e-find","load:r162-e-map"].includes(mode)?
+  new (await import("./r162Diagnostics")).IndexComparisonCapture():null;
+if(indexComparison)indexComparison.attach(storage,mode==="load:r162-e-find"?"find-reference":"map");
+const trace=mode==="load:timing"?new diagnostics!.DiagnosticTrace():research;
+const cpu=["load:cpu","load:r162-cpu"].includes(mode)?new diagnostics!.CpuCapture():null;
 if(trace){trace.attach(storage);pipeline.trace=trace;}
 if(cpu)await cpu.start();
 const timed=<T,>(name:string,operation:()=>T):T=>trace?trace.measure(name,operation):operation();
@@ -86,10 +91,10 @@ if(mode==="restore") {
   } else {
     send({kind:"result",...summary(true)}); storage.close(); process.disconnect?.();
   }
-} else if(["load","load:timing","load:cpu","load:coalesced","scheduler-test"].includes(mode)) {
+} else if(["load","load:timing","load:cpu","load:coalesced","scheduler-test","load:r162-timing","load:r162-cpu","load:r162-snapshot","load:r162-e-find","load:r162-e-map"].includes(mode)) {
   let nextId=1, finishing=false;
   const scheduler=new CommitScheduler(pipeline,scope,{
-    policy:mode==="load:coalesced" || mode==="scheduler-test"?"coalesced":"immediate",
+    policy:mode==="load:coalesced" || mode==="scheduler-test" || mode.startsWith("load:r162-")?"coalesced":"immediate",
     onReceived:receipt=>send({kind:"received",id:receipt.id,count:receipt.count,bytes:receipt.bytes,
       transitMs:Number(process.hrtime.bigint()-BigInt(receipt.submittedMonoNs))/1e6}),
     onFailure:reason=>send({kind:"storage-error",reason,metrics:pipeline.metrics.snapshot(),scheduler:scheduler.snapshot()}),
@@ -136,18 +141,35 @@ if(mode==="restore") {
       trace?.sampleMemory("after_ingestion_before_gc");
       const gc=(globalThis as {gc?:()=>void}).gc;
       if(trace && gc){gc();trace.sampleMemory("after_ingestion_after_diagnostic_gc");}
+      if(indexComparison){indexComparison.sample("after_ingestion");indexComparison.phase="summary";}
+      let snapshotAux: {captured:boolean;status:string;recoveredStatus:string} | null=null;
+      if(research)research.phase="snapshot_aux";
+      if(mode==="load:r162-snapshot") {
+        const {SnapshotStore}=await import("@workspace/storage/snapshots");
+        const snapshots=new SnapshotStore(storage.journal);
+        const captured=snapshots.capture(scope,storage.latestPersistedTime!);
+        const recovered=snapshots.recover(scope,storage.latestPersistedTime!);
+        snapshotAux={captured:captured.captured,status:captured.status,recoveredStatus:recovered.status};
+      }
+      if(research)research.phase="summary";
       const result=summary(true);
+      indexComparison?.sample("after_summary");
       trace?.sampleMemory("after_summary");
       const retained={guardSeenEntries:[...storage.states.values()].reduce((n,s)=>n+s.guard.seen.size,0),
         tradeRawReferences:[...storage.trades.values()].reduce((n,s)=>n+s.rawEvents.length,0),
         queueDepth:pipeline.metrics.queueDepth,queueBytes:pipeline.metrics.queueBytes};
-      send({kind:"result",...result,scheduler:scheduler.snapshot(),...(diagnostics?{diagnostics:{trace:trace?.report(),profile,retained,
-        snapshotWrites:0,tradeDedupCalls:trace?.report().timings["candidate.trade_dedup"]?.count??0,
+      const owners=research?.owners(storage);
+      if(research)await research.settle();
+      send({kind:"result",...result,scheduler:scheduler.snapshot(),...(diagnostics||research||indexComparison?{diagnostics:{trace:trace?.report(),profile,retained,owners,snapshotAux,
+        indexComparison:indexComparison?.report(storage),
+        snapshotWrites:snapshotAux?.captured?1:0,
+        tradeDedupCalls:mode==="load:timing"?(trace as import("./r161Diagnostics").DiagnosticTrace).report().timings["candidate.trade_dedup"]?.count??0:null,
         renderNotifications:"NOT EXERCISED; browser disconnected"}}:{})});
-      scheduler.dispose();trace?.detach();storage.close(); process.disconnect?.();
+      scheduler.dispose();trace?.detach();indexComparison?.detach();storage.close(); process.disconnect?.();
     } else throw new Error("Invalid IPC command");
     } catch(error) {
       scheduler.dispose();
+      indexComparison?.detach();
       send({kind:"fatal",reason:String(error),uncommittedOwnedEvents:scheduler.pendingEvents,
         metrics:pipeline.metrics.snapshot(),scheduler:scheduler.snapshot()});
     }
