@@ -486,6 +486,16 @@ importers:
         specifier: 5.0.5
         version: 5.0.5(@types/node@25.9.6)(vite@7.3.6(@types/node@25.9.6)(jiti@2.7.0)(lightningcss@1.32.0)(tsx@4.23.13)(yaml@2.9.0))
 
+  packages/fixtures:
+    dependencies:
+      '@workspace/core':
+        specifier: workspace:*
+        version: link:../core
+    devDependencies:
+      typescript:
+        specifier: ~5.9.3
+        version: 5.9.3
+
   scripts:
     devDependencies:
       '@types/node':

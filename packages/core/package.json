@@ -4,7 +4,8 @@
   "private": true,
   "type": "module",
   "exports": {
-    ".": "./src/instrument.ts"
+    ".": "./src/instrument.ts",
+    "./events": "./src/events.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
