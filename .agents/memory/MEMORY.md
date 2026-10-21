@@ -9,3 +9,4 @@
 - [共通Viewportの変更条件](shared-viewport-approval.md) — 既存座標変換式の変更が必要な場合は、実装前に理由と影響範囲を報告する。
 - [設定保存の境界](settings-storage-boundary.md) — 開発用JSONは既存Vite内だけ。workspace内の隠しフォルダーを非公開領域とみなさない。
 - [SQLiteのWAL安全性](sqlite-wal-safety.md) — ドライバー名ではなく実際のSQLite版を確認し、WAL-reset問題の修正版を選ぶ。
+- [保持期限と復元状態](retention-state-boundary.md) — 原本削除だけでは不十分。復元状態・重複判定情報に古いイベント全文が残らないか確認する。

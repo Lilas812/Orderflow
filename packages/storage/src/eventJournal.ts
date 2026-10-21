@@ -7,6 +7,8 @@ import {
   type MarketQualityConfig, type MarketQualityState, type MarketResult, type QualityChannel,
 } from "@workspace/core/quality-timeline";
 import { canonical, checksum, EMPTY_HASH, insist, sqliteNs, type SqliteCatalog } from "./sqliteCatalog";
+import { anchorFor, liveIndices, insertIndex, isV2, saveStorageState, storageState, verifyMetadata } from "./storageMigration";
+import { SegmentReader } from "./segmentReader";
 
 export type JournalInput =
   | { type: "EVENT"; event: MarketEvent }
@@ -167,18 +169,32 @@ export class EventJournal {
     const start = sqliteNs(startNs), end = sqliteNs(endNs);
     insist(end > start && ["L1", "L2_MBP", "TRADES"].includes(channel),
       "INVALID_QUERY", "Explicit channel and increasing UTC range required");
+    if (isV2(this.catalog)) {
+      verifyMetadata(this.catalog);
+      const cutoff = storageState(this.catalog).cutoffNs;
+      insist(cutoff === null || start >= BigInt(cutoff), "OUTSIDE_RETENTION", "Protected seed data is not display history");
+      return new SegmentReader(this.catalog).records(liveIndices(this.catalog).filter(d =>
+        d.scopeId === scopeId && d.channel === channel && d.eventNs !== null &&
+        BigInt(d.eventNs) >= start && BigInt(d.eventNs) < end));
+    }
     return this.catalog.database.prepare(
       "SELECT * FROM records WHERE scope_id=? AND channel=? AND event_ns>=? AND event_ns<? ORDER BY event_ns,position",
     ).safeIntegers().all(scopeId, channel, start, end).map(row => fromRow(row as RecordRow));
   }
   records(scopeId?: string): JournalRecord[] {
+    if (isV2(this.catalog)) {
+      verifyMetadata(this.catalog);
+      return new SegmentReader(this.catalog).records(liveIndices(this.catalog).filter(d => !scopeId || d.scopeId === scopeId));
+    }
     const stmt = this.catalog.database.prepare(`SELECT * FROM records${scopeId ? " WHERE scope_id=?" : ""} ORDER BY position`).safeIntegers();
     return (scopeId ? stmt.all(scopeId) : stmt.all()).map(r => fromRow(r as RecordRow));
   }
   replay(scopeId: string, records = this.records(scopeId), initial?: MarketQualityState): MarketQualityState {
     const scope = this.scope(scopeId);
-    let state = initial ?? createMarketQualityState(scope.config, scope.startNs);
+    let state = initial ?? anchorFor(this.catalog, scopeId)?.state ?? createMarketQualityState(scope.config, scope.startNs);
+    const cursor = initial ? 0n : BigInt(anchorFor(this.catalog, scopeId)?.auditPosition ?? "0");
     for (const r of records) {
+      if (BigInt(r.position) <= cursor) continue; // protected pre-cutoff R04 inputs are not applied twice
       insist(r.scopeId === scopeId, "SCOPE_MISMATCH", "Mixed journal scopes");
       const result = applyJournalInput(state, r.input);
       insist(result.applied === r.applied && result.outcome === r.outcome && result.reason === r.reason,
@@ -193,6 +209,13 @@ export class EventJournal {
     insist(inputs.length > 0, "EMPTY_TRANSACTION", "At least one input required");
     const pending = JSON.parse(canonical(inputs)) as JournalInput[];
     for (const input of pending) inputMetadata(input);
+    if (isV2(this.catalog)) {
+      const cutoff = storageState(this.catalog).cutoffNs;
+      if (cutoff !== null) for (const input of pending) {
+        const m = inputMetadata(input);
+        insist(BigInt(m.eventNs ?? m.receiveNs) >= BigInt(cutoff), "EXPIRED_INPUT", "Do not resurrect expired history");
+      }
+    }
     let committed = false;
     return {
       receivedCount: pending.reduce((n, i) => n + eventsIn(i).length, 0),
@@ -228,9 +251,11 @@ export class EventJournal {
           record.eventNs === null ? null : sqliteNs(record.eventNs), sqliteNs(record.receiveNs),
           canonical(input), record.applied ? 1 : 0, record.outcome, record.reason,
           record.previousHash, record.checksum);
+        if (isV2(this.catalog)) insertIndex(this.catalog, record);
         state = result.state;
       }
       this.catalog.setManifest({ ...manifest, recordCount: position.toString(), head });
+      if (isV2(this.catalog)) saveStorageState(this.catalog, storageState(this.catalog));
       beforeCommit?.(); // diagnostics fault injection; exceptions roll back everything
       return { committed: true as const, lastPosition: position.toString(), checksum: head };
     });
@@ -255,9 +280,11 @@ export class EventJournal {
         row.instrument === i.canonicalInstrumentId && row.session === i.sessionId &&
         row.start_ns === sqliteNs(s.startNs), "SCOPE_CHECKSUM", "Scope index differs from original definition");
     }
-    let previous = EMPTY_HASH; let position = 0n;
+    const retained = isV2(this.catalog) ? storageState(this.catalog) : null;
+    if (retained) verifyMetadata(this.catalog);
+    let previous = retained?.floorHash ?? EMPTY_HASH; let position = BigInt(retained?.floorPosition ?? "0");
     for (const record of this.records()) {
-      insist(record.position === (++position).toString() && record.previousHash === previous &&
+      insist((retained || (record.position === (++position).toString() && record.previousHash === previous)) &&
         checksum(recordBody(record)) === record.checksum, "EVENT_CHECKSUM", "Journal chain/count/content corrupt");
       insist(canonical(inputMetadata(record.input)) === canonical({
         channel: record.channel, eventNs: record.eventNs, receiveNs: record.receiveNs,
@@ -265,7 +292,7 @@ export class EventJournal {
       previous = record.checksum;
     }
     const manifest = this.catalog.manifest();
-    insist(position.toString() === manifest.recordCount && previous === manifest.head,
+    insist(retained || (position.toString() === manifest.recordCount && previous === manifest.head),
       "EVENT_MANIFEST", "Missing or uncommitted journal records");
     for (const row of scopes) this.replay(row.id);
     const snapshots = this.catalog.database.prepare("SELECT scope_id,at_ns,audit_position,payload,checksum FROM snapshots ORDER BY scope_id,at_ns")

@@ -6,13 +6,19 @@
   "exports": {
     "./catalog": "./src/sqliteCatalog.ts",
     "./journal": "./src/eventJournal.ts",
-    "./snapshots": "./src/snapshotStore.ts"
+    "./snapshots": "./src/snapshotStore.ts",
+    "./migration": "./src/storageMigration.ts",
+    "./segments": "./src/segmentWriter.ts",
+    "./reader": "./src/segmentReader.ts",
+    "./range": "./src/rangeQuery.ts",
+    "./retention": "./src/retention.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "build": "tsc --noEmit",
-    "diagnostics": "tsx src/diagnostics.ts"
+    "diagnostics": "tsx src/diagnostics.ts",
+    "diagnostics:r15": "tsx src/r15Diagnostics.ts"
   },
   "dependencies": {
     "@workspace/core": "workspace:*",

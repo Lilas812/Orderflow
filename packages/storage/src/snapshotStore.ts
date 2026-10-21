@@ -3,6 +3,7 @@ import type { MbpBook } from "@workspace/core/mbp-book";
 import { createMarketQualityState } from "@workspace/core/quality-timeline";
 import { EventJournal, eventsIn, type JournalRecord } from "./eventJournal";
 import { canonical, checksum, decode, insist, sqliteNs } from "./sqliteCatalog";
+import { anchorFor, compactState, isV2, storageState, verifyMetadata } from "./storageMigration";
 
 export interface ContinuityEvidence {
   schemaVersion: 1;
@@ -14,7 +15,7 @@ export interface ContinuityEvidence {
   description: string;
 }
 export interface BookCheckpoint {
-  schemaVersion: 1;
+  schemaVersion: 1 | 2;
   kind: "LOCAL_MBP_CHECKPOINT_NOT_EXCHANGE_SNAPSHOT";
   scopeId: string;
   channel: "L2_MBP";
@@ -43,7 +44,8 @@ export class SnapshotStore {
 
   private prefix(scopeId: string, atNs: string): JournalRecord[] {
     const at = sqliteNs(atNs);
-    const records = this.journal.records(scopeId);
+    const records = this.journal.records(scopeId).filter(r =>
+      BigInt(r.position) > BigInt(anchorFor(this.journal.catalog, scopeId)?.auditPosition ?? "0"));
     const firstFuture = records.findIndex(r => BigInt(r.eventNs ?? r.receiveNs) > at);
     if (firstFuture < 0) return records;
     insist(!records.slice(firstFuture + 1).some(r => BigInt(r.eventNs ?? r.receiveNs) <= at),
@@ -68,7 +70,8 @@ export class SnapshotStore {
     if (!book) return { book: null, status: currentQuality(state.timeline, "L2_MBP").status };
     const last = book.lastHeader?.exchangeTimeNs;
     // R03 detection time is not silently interpreted as event time.
-    const identicalAxes = records.filter(isL2).every(r => r.eventNs !== null && r.eventNs === r.receiveNs);
+    const identicalAxes = (anchorFor(this.journal.catalog, scopeId)?.clockAligned ?? true) &&
+      records.filter(isL2).every(r => r.eventNs !== null && r.eventNs === r.receiveNs);
     if (last === null || last === undefined || !identicalAxes) return { book: null, status: "UNVERIFIED_TIME_ALIGNMENT" };
     if (BigInt(last) > sqliteNs(atNs)) return { book: null, status: "FUTURE_STATE" };
     if (last !== atNs && !this.evidenceValid(scopeId, last, atNs, proof)) {
@@ -82,47 +85,75 @@ export class SnapshotStore {
     ).get(scopeId, sqliteNs(atNs)) as { payload: string; checksum: string } | undefined;
     if (!row) return null;
     const checkpoint = decode<BookCheckpoint>(row.payload);
+    if (BigInt(checkpoint.auditPosition) < BigInt(anchorFor(this.journal.catalog, scopeId)?.auditPosition ?? "0")) return null;
     insist(checksum(checkpoint) === row.checksum, "SNAPSHOT_CHECKSUM", "Checkpoint checksum invalid");
     this.validateCheckpoint(checkpoint, scopeId);
     return checkpoint;
   }
   private validateCheckpoint(c: BookCheckpoint, scopeId: string): void {
-    insist(c.schemaVersion === 1 && c.kind === "LOCAL_MBP_CHECKPOINT_NOT_EXCHANGE_SNAPSHOT" &&
+    insist((c.schemaVersion === 1 || (c.schemaVersion === 2 && isV2(this.journal.catalog))) && c.kind === "LOCAL_MBP_CHECKPOINT_NOT_EXCHANGE_SNAPSHOT" &&
       c.scopeId === scopeId && c.channel === "L2_MBP", "SNAPSHOT_SCHEMA", "Unknown or mismatched checkpoint");
     const scope = this.journal.scope(scopeId);
     insist(canonical(c.state.config) === canonical(scope.config), "SNAPSHOT_SCOPE", "Checkpoint contract/depth/config differs");
-    const covered = this.journal.records(scopeId).filter(r => BigInt(r.position) <= BigInt(c.auditPosition));
-    insist((covered.at(-1)?.position ?? "0") === c.auditPosition &&
+    const seed = anchorFor(this.journal.catalog, scopeId);
+    const covered = this.journal.records(scopeId).filter(r => BigInt(r.position) <= BigInt(c.auditPosition) &&
+      BigInt(r.position) > BigInt(seed?.auditPosition ?? "0"));
+    insist((covered.at(-1)?.position ?? seed?.auditPosition ?? "0") === c.auditPosition &&
       covered.every(r => BigInt(r.eventNs ?? r.receiveNs) <= sqliteNs(c.checkpointNs)),
     "SNAPSHOT_CURSOR", "Audit cursor differs from covered input prefix");
     const lastApplied = covered.filter(r => r.applied && isL2(r)).at(-1);
-    insist(lastApplied && lastApplied.position === c.lastAppliedPosition, "SNAPSHOT_CURSOR", "Missing applied L2 cursor");
-    const event = eventsIn(lastApplied.input).at(-1);
-    insist(event && event.header.eventId === c.lastAppliedEventId &&
-      event.header.sequence === c.lastAppliedSequence &&
-      event.header.exchangeTimeNs === c.lastMarketEventNs, "SNAPSHOT_CURSOR", "Applied event identity/sequence/time differs");
+    insist((lastApplied?.position ?? seed?.lastAppliedPosition) === c.lastAppliedPosition, "SNAPSHOT_CURSOR", "Missing applied L2 cursor");
+    const header = lastApplied ? eventsIn(lastApplied.input).at(-1)?.header : seed?.state.lastGoodBook.lastHeader;
+    insist(header && header.eventId === c.lastAppliedEventId &&
+      header.sequence === c.lastAppliedSequence &&
+      header.exchangeTimeNs === c.lastMarketEventNs, "SNAPSHOT_CURSOR", "Applied event identity/sequence/time differs");
     // Independent verification replay, never applied ON TOP OF the checkpoint.
     const verified = this.journal.replay(scopeId, covered);
-    insist(canonical(verified) === canonical(c.state), "SNAPSHOT_STATE", "Saved MBP/guard/quality differs from verified input prefix");
+    const cutoff = isV2(this.journal.catalog) ? storageState(this.journal.catalog).cutoffNs : null;
+    insist(canonical(cutoff === null ? verified : compactState(verified, cutoff)) === canonical(c.state),
+      "SNAPSHOT_STATE", "Saved MBP/guard/quality differs from verified input prefix");
     const p = this.publishable(scopeId, c.state, covered, c.checkpointNs, c.continuityEvidence);
     insist(p.book && p.status === "VALID", "INVALID_SNAPSHOT", "Checkpoint is GAP/RESYNCING/unobserved, not a valid board");
   }
   recover(scopeId: string, atNs: string, proof?: ContinuityEvidence): RecoveredBook {
     this.journal.verify();
     const scope = this.journal.scope(scopeId);
+    const cutoff = isV2(this.journal.catalog) ? storageState(this.journal.catalog).cutoffNs : null;
+    insist(cutoff === null || sqliteNs(atNs) >= BigInt(cutoff), "OUTSIDE_RETENTION", "No display of expired seed history");
     const prefix = this.prefix(scopeId, atNs);
     const checkpoint = this.readCheckpoint(scopeId, atNs);
     const cursor = BigInt(checkpoint?.auditPosition ?? "0");
     const suffix = prefix.filter(r => BigInt(r.position) > cursor);
     const state = this.journal.replay(scopeId, suffix, checkpoint?.state ??
-      createMarketQualityState(scope.config, scope.startNs));
+      anchorFor(this.journal.catalog, scopeId)?.state ?? createMarketQualityState(scope.config, scope.startNs));
     const effectiveProof = proof ?? checkpoint?.continuityEvidence;
     const p = this.publishable(scopeId, state, prefix, atNs, effectiveProof);
     return {
-      ...p, state, atNs, auditPosition: prefix.at(-1)?.position ?? "0",
+      ...p, state, atNs, auditPosition: prefix.at(-1)?.position ?? anchorFor(this.journal.catalog, scopeId)?.auditPosition ?? "0",
       checkpointNs: checkpoint?.checkpointNs ?? null,
       replayedPositions: suffix.map(r => r.position),
     };
+  }
+  /** Certified at creation/migration; bounded reads do not replay unrelated chunks. */
+  selectForRange(scopeId: string, atNs: string): BookCheckpoint | null {
+    insist(isV2(this.journal.catalog), "MIGRATION_REQUIRED", "Range reads require v2");
+    verifyMetadata(this.journal.catalog);
+    const rows = this.journal.catalog.database.prepare("SELECT scope_id,at_ns,checksum FROM snapshots ORDER BY scope_id,at_ns")
+      .safeIntegers().all() as { scope_id: string; at_ns: bigint; checksum: string }[];
+    const manifest = this.journal.catalog.manifest();
+    insist(rows.length.toString() === manifest.snapshotCount &&
+      checksum(rows.map(r => [r.scope_id, r.at_ns.toString(), r.checksum])) === manifest.snapshotHead,
+    "SNAPSHOT_MANIFEST", "Range checkpoint index changed");
+    const row = this.journal.catalog.database.prepare(
+      "SELECT payload,checksum FROM snapshots WHERE scope_id=? AND at_ns<=? ORDER BY at_ns DESC LIMIT 1",
+    ).get(scopeId, sqliteNs(atNs)) as { payload: string; checksum: string } | undefined;
+    if (!row) return null;
+    const c = decode<BookCheckpoint>(row.payload);
+    if (BigInt(c.auditPosition) < BigInt(anchorFor(this.journal.catalog, scopeId)?.auditPosition ?? "0")) return null;
+    insist(checksum(c) === row.checksum && c.scopeId === scopeId &&
+      canonical(c.state.config) === canonical(this.journal.scope(scopeId).config) &&
+      (c.schemaVersion === 1 || c.schemaVersion === 2), "SNAPSHOT_CHECKSUM", "Invalid range checkpoint");
+    return c;
   }
   capture(scopeId: string, checkpointNs: string, proof?: ContinuityEvidence) {
     const recovered = this.recover(scopeId, checkpointNs, proof);
@@ -130,15 +161,18 @@ export class SnapshotStore {
     const prefix = this.prefix(scopeId, checkpointNs);
     const lastApplied = prefix.filter(r => r.applied && isL2(r)).at(-1);
     const header = recovered.book.lastHeader;
-    insist(lastApplied && header?.exchangeTimeNs !== null && header !== null,
+    const lastPosition = lastApplied?.position ?? anchorFor(this.journal.catalog, scopeId)?.lastAppliedPosition;
+    insist(lastPosition && header?.exchangeTimeNs !== null && header !== null,
       "SNAPSHOT_CURSOR", "No applied L2 event");
     const checkpoint: BookCheckpoint = {
-      schemaVersion: 1, kind: "LOCAL_MBP_CHECKPOINT_NOT_EXCHANGE_SNAPSHOT",
+      schemaVersion: isV2(this.journal.catalog) ? 2 : 1, kind: "LOCAL_MBP_CHECKPOINT_NOT_EXCHANGE_SNAPSHOT",
       scopeId, channel: "L2_MBP", checkpointNs,
       lastMarketEventNs: header.exchangeTimeNs,
-      auditPosition: recovered.auditPosition, lastAppliedPosition: lastApplied.position,
+      auditPosition: recovered.auditPosition, lastAppliedPosition: lastPosition,
       lastAppliedEventId: header.eventId, lastAppliedSequence: header.sequence,
-      state: recovered.state, continuityEvidence: proof ?? null,
+      state: isV2(this.journal.catalog) && storageState(this.journal.catalog).cutoffNs !== null ?
+        compactState(recovered.state, storageState(this.journal.catalog).cutoffNs!) : recovered.state,
+      continuityEvidence: proof ?? null,
     };
     this.validateCheckpoint(checkpoint, scopeId);
     this.journal.catalog.transaction(() => {

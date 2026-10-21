@@ -103,7 +103,7 @@ export class SqliteCatalog {
         insist(tables.length === 0, "SCHEMA_UNKNOWN", "Refuse to initialize an unrelated database");
         this.initialize();
       } else {
-        insist(version === STORAGE_SCHEMA_VERSION && application === APPLICATION_ID,
+        insist((version === STORAGE_SCHEMA_VERSION || version === 2) && application === APPLICATION_ID,
           "SCHEMA_UNKNOWN", "Unknown storage schema/application ID");
       }
       this.manifest();
