@@ -11,3 +11,4 @@
 - [SQLiteのWAL安全性](sqlite-wal-safety.md) — ドライバー名ではなく実際のSQLite版を確認し、WAL-reset問題の修正版を選ぶ。
 - [保持期限と復元状態](retention-state-boundary.md) — 原本削除だけでは不十分。復元状態・重複判定情報に古いイベント全文が残らないか確認する。
 - [R16実行構成の承認境界](r16-runtime-boundary.md) — 有限CLIと試験IPCのみ承認。常駐化・ブラウザ実接続・新規APIには別途承認が必要。
+- [測定結果の根拠保持](measurement-evidence.md) — 一時領域の出力だけに依存せず、除外済みworkspace内へMOCK計測ログを保存する。

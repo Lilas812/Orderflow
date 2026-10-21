@@ -4,6 +4,8 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { Latencies } from "./metrics";
 import type { StorageAdapter } from "./storageAdapter";
+import { checksum } from "@workspace/storage/catalog";
+import { eventAt } from "./r16Fixtures";
 
 export interface Trace {
   measure<T>(name: string, operation: () => T): T;
@@ -153,12 +155,50 @@ async function main() {
         if(pilot.safeCompleted)console.log(JSON.stringify({phase:"baseline",repeat,...await measureLoad({label,rate,durationMs:1000})}));
         else console.log(JSON.stringify({phase:"baseline",repeat,label,status:"1s NOT RUN: unsafe pilot"}));
       }
+  } else if(mode==="compare") {
+    // Fixed metadata, input count, sequence/content and planned times are identical across policies.
+    // Capped traces test relative costs; they are NOT full target-rate achievement trials.
+    const cases=[
+      {label:"LOW-100ms",rate:1000,durationMs:100,n:96,batch:4,step:4},
+      {label:"LOW-1s",rate:1000,durationMs:1000,n:400,batch:2,step:2},
+      {label:"MEDIUM-100ms",rate:10000,durationMs:100,n:600,batch:20,step:2},
+      {label:"MEDIUM-1s",rate:10000,durationMs:1000,n:1000,batch:20,step:2},
+      {label:"SPIKE-100ms",rate:50000,durationMs:100,n:640,batch:100,step:2},
+      {label:"SPIKE-1s",rate:50000,durationMs:1000,n:1536,batch:128,step:2.56},
+    ];
+    const selected=process.argv[3];
+    if(selected && !cases.some(c=>c.label===selected))throw Error("Unknown fixed comparison case");
+    for(const c of cases.filter(c=>!selected || c.label===selected)) {
+      const trace={batches:Array.from({length:Math.ceil(c.n/c.batch)},(_,i)=>({atMs:i*c.step,count:Math.min(c.batch,c.n-i*c.batch)}))};
+      const expectedHash=checksum(Array.from({length:c.n},(_,i)=>({type:"EVENT",event:eventAt(i,c.rate)})));
+      // Diagnostic milliseconds can be fractional; the market canonicalizer intentionally accepts integer numbers only.
+      // Hash the deterministic metadata string; do not weaken market-event checksum validation.
+      const traceHash=checksum(JSON.stringify({spec:c,trace}));
+      for(let repeat=1;repeat<=3;repeat++) {
+        // Counterbalance policy order, run serially, never overlap CPU profiling/testing with these trials.
+        const policies=repeat%2?["immediate","coalesced"] as const:["coalesced","immediate"] as const;
+        for(const commitPolicy of policies) {
+          const r=await measureLoad(c,{commitPolicy,fixedTrace:trace});
+          const matched=r.safeCompleted && r.fixedTrace.allPlannedInputsSubmitted &&
+            r.sentEvents===c.n && r.durableUniqueEvents===c.n && r.storage?.auditHash===expectedHash;
+          console.log(JSON.stringify({phase:"fixed-comparison",repeat,traceHash,expectedHash,
+            fullTraceAndHashMatched:matched,...r}));
+        }
+      }
+    }
+  } else if(mode==="coalesced") {
+    for(const [label,rate] of [["LOW",1000],["MEDIUM",10000],["SPIKE",50000]] as const) {
+      const pilot=await measureLoad({label,rate,durationMs:100},{commitPolicy:"coalesced"});
+      console.log(JSON.stringify({phase:mode,...pilot}));
+      if(pilot.safeCompleted)console.log(JSON.stringify({phase:mode,...await measureLoad({label,rate,durationMs:1000},{commitPolicy:"coalesced"})}));
+      else console.log(JSON.stringify({phase:mode,label,status:"1s NOT RUN: unsafe pilot"}));
+    }
   } else if(mode==="timing-small") {
     console.log(JSON.stringify({phase:mode,...await measureLoad({label:"LOW-CAPPED-DIAGNOSTIC",rate:1000,durationMs:1000},
       {diagnostic:"timing",diagnosticEventLimit:400})}));
   } else if(mode==="timing" || mode==="cpu") {
     console.log(JSON.stringify({phase:mode,...await measureLoad({label:"LOW",rate:1000,durationMs:1000},{diagnostic:mode})}));
-  } else throw new Error("Expected baseline | timing | timing-small | cpu");
+  } else throw new Error("Expected baseline | compare | coalesced | timing | timing-small | cpu");
 }
 if(process.argv[1] && import.meta.url===pathToFileURL(process.argv[1]).href)
   main().catch(error=>{console.error(error);process.exitCode=1;});

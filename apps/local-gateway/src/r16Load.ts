@@ -4,8 +4,29 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { IpcCredits, ipcBatch } from "./mockTransport";
 import { eventAt, ownedDirectory, removeOwnedDirectory } from "./r16Fixtures";
+import { Latencies } from "./metrics";
+import type { CommitPolicy } from "./commitScheduler";
 
 export interface LoadSpec { label:string;rate:number;durationMs:number }
+export interface FixedLoadTrace { readonly batches: readonly {atMs:number;count:number}[] }
+export function loadOffering(elapsedMs:number,durationMs:number,remainingFixedBatches:number|null) {
+  return {
+    canOffer:remainingFixedBatches===null?elapsedMs<durationMs:remainingFixedBatches>0,
+    canEnd:elapsedMs>=durationMs && (remainingFixedBatches===null || remainingFixedBatches===0),
+  };
+}
+export function validateFixedTrace(trace:FixedLoadTrace,durationMs:number): number {
+  if(!Array.isArray(trace.batches) || trace.batches.length<1 || trace.batches.length>2048)
+    throw Error("Bounded fixed trace required");
+  let previous=-1,total=0;
+  for(const b of trace.batches) {
+    if(!Number.isFinite(b.atMs)||b.atMs<previous||b.atMs<0||b.atMs>=durationMs||
+      !Number.isSafeInteger(b.count)||b.count<1||b.count>128)throw Error("Invalid fixed IPC batch");
+    previous=b.atMs;total+=b.count;
+  }
+  if(total>2048)throw Error("Fixed trace exceeds approved input credits");
+  return total;
+}
 export const LOAD_LIMITS=Object.freeze({workerRss:512*1024*1024,totalRss:768*1024*1024,hardMs:30_000,heapMiB:256});
 export function worker(mode: string, dir: string): ChildProcess {
   return fork(new URL("./r16Worker.ts",import.meta.url),[mode,dir],{
@@ -35,21 +56,29 @@ async function recoveredCursor(dir:string, remainingMs:number):Promise<string|nu
     child.on("exit",code=>{clearTimeout(timer);clearInterval(monitor);resolve(code===0?cursor:null);});
   });
 }
-export async function measureLoad(spec: LoadSpec, options:{diagnostic?:"timing"|"cpu";diagnosticEventLimit?:number}={}) {
+export async function measureLoad(spec: LoadSpec, options:{diagnostic?:"timing"|"cpu";diagnosticEventLimit?:number;
+  commitPolicy?:CommitPolicy;fixedTrace?:FixedLoadTrace}={}) {
   if(!Number.isSafeInteger(spec.rate) || spec.rate<=0 || spec.rate>50_000 ||
     ![100,1000].includes(spec.durationMs)) throw new Error("Outside approved finite load envelope");
   if(options.diagnosticEventLimit!==undefined && (!options.diagnostic ||
     !Number.isSafeInteger(options.diagnosticEventLimit) || options.diagnosticEventLimit<1 || options.diagnosticEventLimit>512))
     throw new Error("Only explicitly capped diagnostic runs may limit inputs (1..512)");
+  if(options.commitPolicy && !["immediate","coalesced"].includes(options.commitPolicy))throw Error("Unknown commit policy");
+  if(options.diagnostic && options.commitPolicy==="coalesced")throw Error("CPU/timing diagnostics remain separate baseline modes");
+  const fixedCount=options.fixedTrace?validateFixedTrace(options.fixedTrace,spec.durationMs):null;
+  if(fixedCount!==null && fixedCount>spec.rate*spec.durationMs/1000)throw Error("Fixed trace cannot exceed nominal offering");
+  // A private, bounded metadata copy prevents either policy from modifying the comparison input.
+  const fixed=options.fixedTrace?.batches.map(b=>({...b}));
+  const ipcWait=new Latencies(),sendDelay=new Latencies();
   const dir=ownedDirectory();
   const diagnostic=options.diagnostic?await import("./r161Diagnostics"):null;
   const parentTrace=options.diagnostic==="timing"?new diagnostic!.DiagnosticTrace():null;
   const parentCpu=options.diagnostic==="cpu"?new diagnostic!.CpuCapture():null;
   if(parentCpu)await parentCpu.start();
-  const child=worker(options.diagnostic?`load:${options.diagnostic}`:"load",dir), credit=new IpcCredits();
+  const child=worker(options.diagnostic?`load:${options.diagnostic}`:options.commitPolicy==="coalesced"?"load:coalesced":"load",dir), credit=new IpcCredits();
   const started=performance.now(), initialCpu=process.cpuUsage(), requested=spec.rate*spec.durationMs/1000;
   let sourceStart:number|null=null,lastSend:number|null=null,firstReceived:number|null=null,lastReceived:number|null=null;
-  let lastCommit:number|null=null,received=0,sent=0,id=0,finish=false,writeReady=true;
+  let lastCommit:number|null=null,received=0,sent=0,id=0,finish=false,writeReady=true,fixedIndex=0;
   let workerPeakRss=0,totalPeakRss=0,cpuPercent:number|null=null,stderr="",lastMetrics:Record<string,any>|null=null;
   let final:Record<string,any>|null=null,stopReason:string|null=null,lastCpu:NodeJS.CpuUsage|null=null;
   child.stderr?.on("data", data=>{stderr=(stderr+String(data)).slice(-8192);});
@@ -74,8 +103,11 @@ export async function measureLoad(spec: LoadSpec, options:{diagnostic?:"timing"|
       if(ended || stopReason || sourceStart===null || finish || !writeReady) return;
       const elapsed=performance.now()-sourceStart;
       const due=Math.min(requested,options.diagnosticEventLimit??requested,Math.floor(elapsed*spec.rate/1000));
-      if(elapsed<spec.durationMs && sent<due) {
-        const count=Math.min(128,due-sent,2048-credit.count);
+      const planned=fixed?.[fixedIndex];
+      const eligible=fixed?!!planned && planned.atMs<=elapsed:sent<due;
+      const offering=loadOffering(elapsed,spec.durationMs,fixed?fixed.length-fixedIndex:null);
+      if(offering.canOffer && eligible) {
+        const count=fixed?planned!.count:Math.min(128,due-sent,2048-credit.count);
         if(count<1 || credit.paused) return;
         const generate=()=>Array.from({length:count},(_,i)=>eventAt(sent+i,spec.rate));
         const events=parentTrace?parentTrace.measure("parent.mock_generation",generate):generate();
@@ -83,6 +115,7 @@ export async function measureLoad(spec: LoadSpec, options:{diagnostic?:"timing"|
         const message=parentTrace?parentTrace.measure("parent.json_serialization_and_bytes",encode):encode(),bytes=message.bytes;
         if(!credit.reserve(next,count,bytes)) return;
         id=next; sent+=count; lastSend=performance.now();
+        if(planned){sendDelay.add(Math.max(0,lastSend-sourceStart-planned.atMs));fixedIndex++;}
         const sendStarted=performance.now();
         writeReady=child.send(message,error=>{
           parentTrace?.add("parent.ipc_send_callback_wait",performance.now()-sendStarted);
@@ -91,9 +124,12 @@ export async function measureLoad(spec: LoadSpec, options:{diagnostic?:"timing"|
         });
         parentTrace?.add("parent.ipc_send_synchronous",performance.now()-sendStarted);
       }
-      // The offering window really ends at 100ms/1s. Paused, never-submitted
-      // test inputs are counted explicitly, not silently emitted after the window.
-      if(elapsed>=spec.durationMs && credit.count===0) {finish=true;child.send({kind:"finish"});}
+      // Natural rate tests retain the strict 100ms/1s offering window.
+      // Fixed replay instead finishes all planned frames within the SAME 25s work/RSS/credit limits;
+      // otherwise truncating one policy on pipe backpressure would invalidate the comparison.
+      // EOF follows the submitted frames on the same FIFO channel, without waiting for commit ACKs.
+      // This permits the scheduler to flush the final partial group immediately.
+      if(offering.canEnd) {finish=true;child.send({kind:"finish"});}
     },2);
     child.on("message",raw=>{
       const message=raw as Record<string,any>;
@@ -103,6 +139,7 @@ export async function measureLoad(spec: LoadSpec, options:{diagnostic?:"timing"|
           const pending=credit.pending.get(message.id);
           if(!pending || pending.count!==message.count || pending.bytes!==message.bytes) throw new Error("Receipt credit does not match submitted payload");
           credit.received(message.id); received+=message.count;
+          if(typeof message.transitMs==="number")ipcWait.add(message.transitMs);
           if(typeof message.transitMs==="number")parentTrace?.add("parent.send_to_received_handler",message.transitMs);
           firstReceived??=performance.now(); lastReceived=performance.now();
         } else if(message.kind==="committed") {
@@ -110,6 +147,7 @@ export async function measureLoad(spec: LoadSpec, options:{diagnostic?:"timing"|
           credit.committed(message.id); lastCommit=performance.now();lastMetrics=message.metrics;lastCpu=message.cpu;
         }
         else if(message.kind==="result") final=message;
+        else if(message.kind==="storage-error" || message.kind==="fatal")stop(`${message.kind}: ${message.reason}`);
         else stop("Unexpected worker message");
       } catch(error) {stop(`IPC protocol error: ${error}`);}
     });
@@ -117,7 +155,9 @@ export async function measureLoad(spec: LoadSpec, options:{diagnostic?:"timing"|
     child.on("exit",async(code,signal)=>{
       ended=true; clearInterval(guard);clearInterval(pump);
       if(!final && !stopReason) stopReason=`Worker exited ${code}/${signal}: ${stderr}`;
-      const sourceMs=sourceStart===null ? null:Math.min(spec.durationMs,performance.now()-sourceStart);
+      const sourceMs=sourceStart===null ? null:fixed?
+        Math.max(spec.durationMs,(lastSend??sourceStart)-sourceStart):
+        Math.min(spec.durationMs,performance.now()-sourceStart);
       const metrics=final?.metrics ?? lastMetrics;
       const cursor=final?.committedCursor ?? await recoveredCursor(dir,LOAD_LIMITS.hardMs-(performance.now()-started));
       const durable=cursor===null ? null:Number(cursor);
@@ -126,7 +166,11 @@ export async function measureLoad(spec: LoadSpec, options:{diagnostic?:"timing"|
       const cpu=process.cpuUsage(initialCpu), workerCpu=final?.cpu ?? lastCpu;
       if(workerCpu) cpuPercent=(cpu.user+cpu.system+workerCpu.user+workerCpu.system)/(elapsedMs*1000)*100;
       const report={
-        ...spec,targetEventsPerSecond:spec.rate,requestedEvents:requested,sentEvents:sent,receivedEvents:received,
+        ...spec,commitPolicy:options.commitPolicy??"immediate",targetEventsPerSecond:spec.rate,requestedEvents:requested,sentEvents:sent,receivedEvents:received,
+        fixedTrace:fixed?{batches:fixed,plannedEvents:fixedCount,sentBatches:fixedIndex,
+          allPlannedInputsSubmitted:fixedIndex===fixed.length,notOfferedByFixedTrace:requested-fixedCount!,
+          offeringPolicy:"REPLAY_ALL_PLANNED; late dispatch measured, never silently truncate; unchanged 25s/RSS/credit caps",
+          plannedButNotSubmittedEvents:fixedCount!-sent,scheduleLatenessMs:sendDelay.report()}:null,
         actualInputEventsPerSecond:sourceMs && sourceMs>0 ? sent*1000/sourceMs:null,
         actualReceivedEventsPerSecond:sourceStart!==null && lastReceived!==null ? received*1000/(lastReceived-sourceStart):null,
         actualPersistedEventsPerSecond:sourceStart!==null && lastCommit!==null && metrics ?
@@ -143,9 +187,12 @@ export async function measureLoad(spec: LoadSpec, options:{diagnostic?:"timing"|
         explicitlyLostEvents:metrics?.explicitlyLostEvents ?? null,
         forcedTerminationUnpersistedTransmissions:final?0:durable===null?null:sent-durable,
         wallMs:elapsedMs,sourceMs,firstReceivedMs:firstReceived===null||sourceStart===null?null:firstReceived-sourceStart,
+        sourceToLastCommitMs:sourceStart===null||lastCommit===null?null:lastCommit-sourceStart,
         lastSendAfterSourceStartMs:lastSend===null||sourceStart===null?null:lastSend-sourceStart,
         targetAchieved:sent===requested,
         ipc:credit.snapshot(),workerPeakRss,totalPeakRss,
+        ipcWaitToReceiptMs:ipcWait.report(),scheduler:final?.scheduler??null,
+        localPeakQueuedEvents:final?Math.max(final.metrics.peakQueueDepth,final.scheduler.peakPendingEvents):null,
         cpuParent:cpu,cpuWorker:workerCpu,totalCpuPercentOfOneCore:cpuPercent,
         cpuMeasurement:final?"RUN + FINALIZATION; worker initialization excluded":"LAST COMMIT ACK: LOWER BOUND; worker initialization excluded",
         kernelWorkerMaxRss:final?.resourceUsage?.maxRSS ? final.resourceUsage.maxRSS*1024:null,

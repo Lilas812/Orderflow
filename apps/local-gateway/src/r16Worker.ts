@@ -1,4 +1,4 @@
-import { readdirSync, statSync } from "node:fs";
+import { readdirSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { checksum, SqliteCatalog } from "@workspace/storage/catalog";
 import { SegmentWriter } from "@workspace/storage/segments";
@@ -8,6 +8,7 @@ import { StorageAdapter } from "./storageAdapter";
 import { config, deterministicDeliveries, eventAt, ns, requireOwnedDirectory } from "./r16Fixtures";
 import type { MarketEvent } from "@workspace/core/events";
 import { Latencies } from "./metrics";
+import { CommitScheduler } from "./commitScheduler";
 
 const [mode,dir]=process.argv.slice(2);
 requireOwnedDirectory(dir);
@@ -20,7 +21,7 @@ const storage=new StorageAdapter(dir), scope=storage.register(config(),ns(0));
 const pipeline=new EventPipeline(storage);
 const transportLatency=new Latencies();
 const initialCpu=process.cpuUsage();
-const diagnostics=mode.startsWith("load:")?await import("./r161Diagnostics"):null;
+const diagnostics=["load:timing","load:cpu"].includes(mode)?await import("./r161Diagnostics"):null;
 const trace=mode==="load:timing"?new diagnostics!.DiagnosticTrace():null;
 const cpu=mode==="load:cpu"?new diagnostics!.CpuCapture():null;
 if(trace){trace.attach(storage);pipeline.trace=trace;}
@@ -85,32 +86,52 @@ if(mode==="restore") {
   } else {
     send({kind:"result",...summary(true)}); storage.close(); process.disconnect?.();
   }
-} else if(mode==="load" || mode==="load:timing" || mode==="load:cpu") {
+} else if(["load","load:timing","load:cpu","load:coalesced","scheduler-test"].includes(mode)) {
   let nextId=1, finishing=false;
-  process.on("message", async raw=>{
-    const message=raw as {kind:string;id:number;events:MarketEvent[];bytes:number;submittedMonoNs:string};
-    if(message.kind==="batch") {
-      if(finishing || message.id!==nextId++ || message.events.length>128 ||
-        Buffer.byteLength(JSON.stringify(message),"utf8")!==message.bytes || message.bytes>8*1024*1024 ||
-        !/^[0-9]+$/.test(message.submittedMonoNs) || BigInt(message.submittedMonoNs)>process.hrtime.bigint())
-        throw new Error("Invalid or out-of-order bounded IPC batch");
-      const transitMs=Number(process.hrtime.bigint()-BigInt(message.submittedMonoNs))/1e6;
-      for(const event of message.events) if(!pipeline.receive(scope,event)) throw new Error("Unexpected loss in pausable load");
-      send({kind:"received",id:message.id,count:message.events.length,bytes:message.bytes,...(trace?{transitMs}:{})});
-      if(!pipeline.drain()) throw new Error("Load storage failure");
-      const transportMs=Number(process.hrtime.bigint()-BigInt(message.submittedMonoNs))/1e6;
-      for(const _event of message.events)transportLatency.add(transportMs);
-      const m=pipeline.metrics;
-      const ackStarted=performance.now();
-      send({kind:"committed",id:message.id,...(trace?{ackMonoNs:process.hrtime.bigint().toString()}:{}),cpu:process.cpuUsage(initialCpu),metrics:{
+  const scheduler=new CommitScheduler(pipeline,scope,{
+    policy:mode==="load:coalesced" || mode==="scheduler-test"?"coalesced":"immediate",
+    onReceived:receipt=>send({kind:"received",id:receipt.id,count:receipt.count,bytes:receipt.bytes,
+      transitMs:Number(process.hrtime.bigint()-BigInt(receipt.submittedMonoNs))/1e6}),
+    onFailure:reason=>send({kind:"storage-error",reason,metrics:pipeline.metrics.snapshot(),scheduler:scheduler.snapshot()}),
+    onCommitted:receipt=>{
+      const transportMs=Number(process.hrtime.bigint()-BigInt(receipt.submittedMonoNs))/1e6;
+      for(let i=0;i<receipt.count;i++)transportLatency.add(transportMs);
+      const m=pipeline.metrics,ackStarted=performance.now();
+      send({kind:"committed",id:receipt.id,ackMonoNs:process.hrtime.bigint().toString(),cpu:process.cpuUsage(initialCpu),metrics:{
         receivedEvents:m.receivedEvents,acceptedEvents:m.acceptedEvents,appliedEvents:m.appliedEvents,
         persistedEvents:m.persistedEvents,auditRecords:m.auditRecords,explicitlyLostEvents:m.explicitlyLostEvents,
         duplicateEvents:m.duplicateEvents,queueDepth:m.queueDepth,peakQueueDepth:m.peakQueueDepth,
         lastPersistedPosition:m.lastPersistedPosition,
       }});
       trace?.add("worker.commit_ack_send_synchronous",performance.now()-ackStarted);
+    },
+  });
+  process.on("message", async raw=>{
+    try {
+    const message=raw as {kind:string;id:number;events:MarketEvent[];bytes:number;submittedMonoNs:string};
+    if(message.kind==="batch") {
+      const receivedMs=performance.now();
+      if(finishing || message.id!==nextId || !Array.isArray(message.events) || message.events.length<1 || message.events.length>128 ||
+        Buffer.byteLength(JSON.stringify(message),"utf8")!==message.bytes || message.bytes>8*1024*1024 ||
+        !/^[0-9]+$/.test(message.submittedMonoNs) || BigInt(message.submittedMonoNs)>process.hrtime.bigint())
+        throw new Error("Invalid or out-of-order bounded IPC batch");
+      nextId++;scheduler.accept(message,receivedMs);
+    } else if(mode==="scheduler-test" && message.kind==="fail-next") {
+      storage.beforeCommit=()=>{storage.beforeCommit=undefined;throw Error("R16.1 injected write failure");};
+      send({kind:"armed"});
+    } else if(mode==="scheduler-test" && message.kind==="arm-crash") {
+      storage.beforeCommit=()=>{
+        // Bounded test-only evidence: this callback runs INSIDE the existing SQLite transaction.
+        // It is not a persistence record or a new storage format.
+        writeFileSync(join(dir,"r161-commit-open.marker"),"R16.1 TEST BEFORE COMMIT",{mode:0o600});
+        process.kill(process.pid,"SIGKILL");
+      };
+      send({kind:"armed"});
+    } else if(mode==="scheduler-test" && message.kind==="retry") {
+      scheduler.retry();
     } else if(message.kind==="finish") {
       finishing=true;
+      if(!scheduler.finish())return;
       const profile=cpu?await cpu.stop(dir):null;
       trace?.sampleMemory("after_ingestion_before_gc");
       const gc=(globalThis as {gc?:()=>void}).gc;
@@ -120,11 +141,16 @@ if(mode==="restore") {
       const retained={guardSeenEntries:[...storage.states.values()].reduce((n,s)=>n+s.guard.seen.size,0),
         tradeRawReferences:[...storage.trades.values()].reduce((n,s)=>n+s.rawEvents.length,0),
         queueDepth:pipeline.metrics.queueDepth,queueBytes:pipeline.metrics.queueBytes};
-      send({kind:"result",...result,...(diagnostics?{diagnostics:{trace:trace?.report(),profile,retained,
+      send({kind:"result",...result,scheduler:scheduler.snapshot(),...(diagnostics?{diagnostics:{trace:trace?.report(),profile,retained,
         snapshotWrites:0,tradeDedupCalls:trace?.report().timings["candidate.trade_dedup"]?.count??0,
         renderNotifications:"NOT EXERCISED; browser disconnected"}}:{})});
-      trace?.detach();storage.close(); process.disconnect?.();
+      scheduler.dispose();trace?.detach();storage.close(); process.disconnect?.();
     } else throw new Error("Invalid IPC command");
+    } catch(error) {
+      scheduler.dispose();
+      send({kind:"fatal",reason:String(error),uncommittedOwnedEvents:scheduler.pendingEvents,
+        metrics:pipeline.metrics.snapshot(),scheduler:scheduler.snapshot()});
+    }
   });
   send({kind:"ready"});
 } else throw new Error("Explicit finite worker mode required");
