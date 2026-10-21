@@ -8,3 +8,4 @@
 - [独立MOCKの比較方針](independent-mock-comparison.md) — F-04/F-05は別Store・別セッションのまま共通UTC軸で比較する。単一セッションとみなさない。
 - [共通Viewportの変更条件](shared-viewport-approval.md) — 既存座標変換式の変更が必要な場合は、実装前に理由と影響範囲を報告する。
 - [設定保存の境界](settings-storage-boundary.md) — 開発用JSONは既存Vite内だけ。workspace内の隠しフォルダーを非公開領域とみなさない。
+- [SQLiteのWAL安全性](sqlite-wal-safety.md) — ドライバー名ではなく実際のSQLite版を確認し、WAL-reset問題の修正版を選ぶ。
