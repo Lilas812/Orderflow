@@ -1,6 +1,6 @@
 import type { LadderView } from "@workspace/core/ladder-view";
 import { ticksToPrice } from "@workspace/core";
-import { fmtJst } from "./TimeAxis";
+import { useTimeFormat } from "./SettingsContext";
 import { LadderRow } from "./LadderRow";
 
 interface Props {
@@ -17,11 +17,12 @@ const tickLabel = (view: LadderView, tick: number | null) => {
   const r = view.rows.find((x) => x.priceTicks === tick);
   return r ? r.priceLabel : ticksToPrice(tick).toFixed(2);
 };
-const jst = (ns: string | null) => (ns ? fmtJst(ns, true) : "\u2014");
 const txt = (o: unknown) => (o === null || o === undefined ? "\u2014" : Object.entries(o as Record<string, unknown>).map(([k, v]) => `${k}=${String(v)}`).join(" / "));
 
 /** Plot column (same grid row as the chart; no header above) + status panel in the Delta/time-axis rows. */
 export function LadderPanel({ view, error, observedNs, stepLabel, timeMode }: Props) {
+  const { fmt } = useTimeFormat();
+  const jst = (ns: string | null) => (ns ? fmt(ns, true) : "\u2014");
   return (
     <>
       <div className="lad-col" data-testid="ladder-panel">

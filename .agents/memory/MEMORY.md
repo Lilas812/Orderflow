@@ -7,3 +7,4 @@
 - [視覚統合の承認方針](visual-clustering-policy.md) — 品質区間のイベント時刻対応を推測しない。連鎖の最大統合範囲は別途承認なしに追加しない。
 - [独立MOCKの比較方針](independent-mock-comparison.md) — F-04/F-05は別Store・別セッションのまま共通UTC軸で比較する。単一セッションとみなさない。
 - [共通Viewportの変更条件](shared-viewport-approval.md) — 既存座標変換式の変更が必要な場合は、実装前に理由と影響範囲を報告する。
+- [設定保存の境界](settings-storage-boundary.md) — 開発用JSONは既存Vite内だけ。workspace内の隠しフォルダーを非公開領域とみなさない。

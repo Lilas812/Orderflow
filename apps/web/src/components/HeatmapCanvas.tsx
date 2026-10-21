@@ -15,7 +15,7 @@ import {
   DISPLAY_INTERVAL_MS, HeatmapRenderer, cellColor, hitTestCell,
   type HeatmapCell, type HeatmapStyle, type RenderStatus,
 } from "@workspace/render";
-import { fmtJst } from "./TimeAxis";
+import { useTimeFormat } from "./SettingsContext";
 
 /* ---------- R04 fixtures: histories computed ONCE; scenes cached per width ---------- */
 export type HeatmapId = "F01" | "F02" | "F03";
@@ -134,6 +134,7 @@ export const HeatmapDemo: Readonly<Record<HeatmapId, HeatmapScene>> = {
 /* ---------- Legend / verification table ---------- */
 const brief = (s: HeatmapStyle) => (["BID", "ASK"] as const).map((k) => `${k} ref ${s.references[k] ?? "NO_BASELINE"}`).join(" / ");
 export function HeatmapLegend({ scene, style }: { scene: HeatmapScene; style?: HeatmapStyle }) {
+  const { fmt: fmtJst, tzLabel } = useTimeFormat();
   const row = (c: HeatmapCell, summary: boolean) => {
     const col = cellColor(c, style);
     let reason = "—", brightness: number | null = null;
@@ -162,7 +163,7 @@ export function HeatmapLegend({ scene, style }: { scene: HeatmapScene; style?: H
         {" "}Filtering is display-only; original TWA is unchanged. Striped amber = NO DATA (never drawn as zero).
       </p>
       <table className="hm-table" data-testid="heatmap-cell-table">
-        <thead><tr><th>cell</th><th>start (JST)</th><th>end (JST)</th><th>ticks</th><th>side</th><th>TWA</th><th>coverage</th><th>status</th><th>intensity</th><th>display</th><th>reason</th><th>brightness</th></tr></thead>
+        <thead><tr><th>cell</th><th>start ({tzLabel})</th><th>end ({tzLabel})</th><th>ticks</th><th>side</th><th>TWA</th><th>coverage</th><th>status</th><th>intensity</th><th>display</th><th>reason</th><th>brightness</th></tr></thead>
         <tbody>
           {scene.cells.map((c) => row(c, false))}
           {scene.summaries.map((c) => row(c, true))}
@@ -180,6 +181,7 @@ type UiStatus = RenderStatus | "INITIALIZING";
 interface Props { cells: readonly HeatmapCell[]; vp: Viewport; style?: HeatmapStyle }
 
 export function HeatmapCanvas({ cells, vp, style }: Props) {
+  const { fmt: fmtJst } = useTimeFormat();
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const rendererRef = useRef<HeatmapRenderer | null>(null);
   const pending = useRef({ cells, vp, style, dirty: true });

@@ -10,6 +10,47 @@ import {
 const ORIGIN = 1767225600000000000n;
 const ns = (seconds: number) => (ORIGIN + BigInt(seconds) * 1_000_000_000n).toString();
 const bounds = { left: 20, top: 10, width: 1000, height: 500 };
+describe("R13 optional display-only viewport parameters", () => {
+  it("changes initial span only at explicit creation/reset; defaults remain 30 minutes", () => {
+    const v = createViewport({ bounds, latestNs: ns(100), initialSpanNs: 600_000_000_000n });
+    expect(BigInt(v.time.maxNs) - BigInt(v.time.minNs)).toBe(600_000_000_000n);
+    expect(BigInt(goLatest(v).time.maxNs) - BigInt(goLatest(v).time.minNs)).toBe(DEFAULT_SPAN_NS);
+    const reset = goLatest(panTime(v, 100), 120_000_000_000n);
+    expect(reset.timeMode).toBe("LIVE");
+    expect(BigInt(reset.time.maxNs) - BigInt(reset.time.minNs)).toBe(120_000_000_000n);
+  });
+  it.each([0n, MIN_SPAN_NS - 1n, MAX_SPAN_NS + 1n])("rejects initial span %s without changing coordinate rules", span => {
+    expect(() => createViewport({ bounds, initialSpanNs: span })).toThrow();
+    expect(() => goLatest(createViewport({ bounds }), span)).toThrow();
+  });
+  it("recomputes AUTO margin but preserves time/HISTORY and raw Trade prices/volumes", () => {
+    const trades = [trade(0, 80000), trade(10, 80100, 2)];
+    const before = JSON.stringify(trades);
+    const v = { ...createViewport({ bounds, latestNs: ns(20) }), timeMode: "HISTORY" as const };
+    const margin0 = autoPrice(v, trades, quality, false, 0), margin50 = autoPrice(v, trades, quality, false, 50);
+    expect(margin0.price).toEqual({ minTick: 80000, maxTick: 80100 });
+    expect(margin50.price).toEqual({ minTick: 79950, maxTick: 80150 });
+    expect(margin50.time).toBe(v.time); expect(margin50.timeMode).toBe("HISTORY");
+    expect(JSON.stringify(trades)).toBe(before);
+    for (const result of [margin0, margin50]) {
+      expect(yToTick(result, tickToY(result, 80000)!)).toBeCloseTo(80000, 8);
+    }
+  });
+  it("MANUAL range is unchanged for every configured AUTO margin", () => {
+    const v = zoomPrice(createViewport({ bounds, latestNs: ns(20), price: { minTick: 79900, maxTick: 80200 } }), 200, 2);
+    for (const margin of [0, 15, 50]) {
+      const next = autoPrice(v, [trade(0, 80000), trade(10, 80100, 2)], quality, false, margin);
+      expect(next.price).toBe(v.price); expect(next.time).toBe(v.time); expect(next.priceMode).toBe("MANUAL");
+    }
+  });
+  it("keeps the established eight-Tick single-price fallback, never a zero-height range", () => {
+    const v = createViewport({ bounds, latestNs: ns(20) });
+    expect(autoPrice(v, [trade(0, 80000)], quality, false, 0).price).toEqual({ minTick: 79992, maxTick: 80008 });
+  });
+  it.each([-1, 51, 0.5, NaN, Infinity])("rejects invalid margin %s", value => {
+    expect(() => autoPrice(createViewport({ bounds }), [], [], false, value)).toThrow();
+  });
+});
 const quality: readonly QualityInterval[] = [{
   channel: "TRADES", startNs: ns(-10000), endNs: null, status: "VALID",
   reason: "Fixed MOCK continuity", sequenceVerification: "CONTIGUOUS",

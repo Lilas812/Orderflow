@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { DeltaBar, DeltaBin, DeltaFrame } from "@workspace/core/delta-timeline";
 import type { Viewport } from "@workspace/core/viewport";
-import { fmtJst } from "./TimeAxis";
+import { useTimeFormat } from "./SettingsContext";
 
 const rec = (o: unknown) => o as Record<string, unknown>;
 export const scopeText = (scope: unknown) =>
@@ -20,6 +20,7 @@ interface Props {
 }
 
 export function DeltaPanel({ frame, vp, sourceOf, error, onZoom, onPan }: Props) {
+  const { fmt: fmtJst, tzLabel } = useTimeFormat();
   const ref = useRef<HTMLDivElement>(null);
   const cv = useRef<HTMLCanvasElement>(null);
   const drag = useRef<number | null>(null);
@@ -114,7 +115,7 @@ export function DeltaPanel({ frame, vp, sourceOf, error, onZoom, onPan }: Props)
             role="tooltip"
             style={{ left: Math.min(hover.x + 12, Math.max(0, w - 350)), top: -260 }}>
             <div>{utc(b.startNs).slice(0, 10)} UTC / MOCK independent source: {sourceOf.get(b) ?? "unknown"}</div>
-            <div>JST {fmtJst(b.startNs, true)} .. {fmtJst(b.endNs, true)}</div>
+            <div>{tzLabel} {fmtJst(b.startNs, true)} .. {fmtJst(b.endNs, true)}</div>
             <div>UTC {utc(b.startNs).slice(11)} .. {utc(b.endNs).slice(11)}</div>
             <div>B {b.B.toString()} / S {b.S.toString()} / U {b.U.toString()}</div>
             <div>V_raw {b.V_raw.toString()} / V {b.V === null ? WITHHELD : b.V.toString()}</div>
@@ -136,10 +137,11 @@ export function DeltaPanel({ frame, vp, sourceOf, error, onZoom, onPan }: Props)
 }
 
 export function DeltaTable({ frame, sourceOf }: { frame: DeltaFrame | null; sourceOf: ReadonlyMap<DeltaBin, string> }) {
+  const { fmt: fmtJst, tzLabel } = useTimeFormat();
   const bars = frame?.bars ?? [];
   return (
     <table className="hm-table" data-testid="delta-table">
-      <thead><tr><th>source (independent MOCK)</th><th>session</th><th>time bin</th><th>start (JST)</th><th>end (JST)</th>
+      <thead><tr><th>source (independent MOCK)</th><th>session</th><th>time bin</th><th>start ({tzLabel})</th><th>end ({tzLabel})</th>
         <th>B</th><th>S</th><th>U</th><th>V_raw</th><th>V</th><th>Delta</th><th>quality</th><th>status</th><th>rev</th><th>final</th>
         <th>direction</th><th>x0</th><th>x1</th></tr></thead>
       <tbody>

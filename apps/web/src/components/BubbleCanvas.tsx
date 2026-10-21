@@ -7,7 +7,8 @@ import type { BubbleState } from "@workspace/core/bubble-finality";
 import type { BubbleSizing } from "@workspace/core/bubble-sizing";
 import type { Viewport } from "@workspace/core/viewport";
 import { DISPLAY_INTERVAL_MS, type RenderStatus } from "@workspace/render";
-import { BubbleRenderer, hitTestProjectedBubble } from "@workspace/render/bubbles";
+import { BubbleRenderer, hitTestProjectedBubble, type BubbleColors } from "@workspace/render/bubbles";
+import type { BubbleFilters } from "@workspace/core/bubble-aggregate";
 import type { ClusteringOptions } from "@workspace/render/bubble-clustering";
 import { BubbleTooltip, type BubbleTip } from "./BubbleTooltip";
 
@@ -54,17 +55,20 @@ export function bubbleBackdropCells(scenarioId: string): BubbleBackdrop {
 }
 
 type UiStatus = RenderStatus | "INITIALIZING";
-interface Props { bubbles: readonly BubbleState[]; vp: Viewport; sizing: BubbleSizing; clustering?: ClusteringOptions }
+interface Props {
+  bubbles: readonly BubbleState[]; vp: Viewport; sizing: BubbleSizing; clustering?: ClusteringOptions;
+  filters?: BubbleFilters; colors?: BubbleColors;
+}
 
-export function BubbleCanvas({ bubbles, vp, sizing, clustering }: Props) {
+export function BubbleCanvas({ bubbles, vp, sizing, clustering, filters, colors }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const pending = useRef({ bubbles, vp, sizing, clustering, dirty: true });
+  const pending = useRef({ bubbles, vp, sizing, clustering, filters, colors, dirty: true });
   const pointer = useRef<{ x: number; y: number } | null>(null);
   const pinned = useRef<string | null>(null);
   const hoverRef = useRef<() => void>(() => {});
   const unpinRef = useRef<() => void>(() => {});
   const lastVp = useRef<Viewport>(vp);
-  const lastSrc = useRef<{ b: readonly BubbleState[]; c?: ClusteringOptions }>({ b: bubbles, c: clustering });
+  const lastSrc = useRef<{ b: readonly BubbleState[]; c?: ClusteringOptions; f?: BubbleFilters }>({ b: bubbles, c: clustering, f: filters });
   const [status, setStatus] = useState<UiStatus>("INITIALIZING");
   const [error, setError] = useState<string | null>(null);
   const [drawError, setDrawError] = useState<string | null>(null);
@@ -74,8 +78,10 @@ export function BubbleCanvas({ bubbles, vp, sizing, clustering }: Props) {
   const [tip, setTip] = useState<BubbleTip | null>(null);
 
   const p = pending.current;
-  if (p.bubbles !== bubbles || p.vp !== vp || p.sizing !== sizing || p.clustering !== clustering) {
-    p.bubbles = bubbles; p.vp = vp; p.sizing = sizing; p.clustering = clustering; p.dirty = true;
+  if (p.bubbles !== bubbles || p.vp !== vp || p.sizing !== sizing || p.clustering !== clustering
+    || p.filters !== filters || p.colors !== colors) {
+    p.bubbles = bubbles; p.vp = vp; p.sizing = sizing; p.clustering = clustering;
+    p.filters = filters; p.colors = colors; p.dirty = true;
   }
 
   useEffect(() => {
@@ -107,10 +113,11 @@ export function BubbleCanvas({ bubbles, vp, sizing, clustering }: Props) {
       if (!q.dirty) return;
       q.dirty = false;
       try {
-        const frame = renderer.draw(q.bubbles, q.vp, q.sizing, undefined, q.clustering);
+        const frame = renderer.draw(q.bubbles, q.vp, q.sizing, q.filters, q.clustering, q.colors);
         n += 1; setCount(n); setVerts(frame.vertexCount); setDisplay(frame.clusters.length); setDrawError(null);
-        const changed = q.vp !== lastVp.current || q.bubbles !== lastSrc.current.b || q.clustering !== lastSrc.current.c;
-        lastVp.current = q.vp; lastSrc.current = { b: q.bubbles, c: q.clustering };
+        const changed = q.vp !== lastVp.current || q.bubbles !== lastSrc.current.b || q.clustering !== lastSrc.current.c
+          || q.filters !== lastSrc.current.f;
+        lastVp.current = q.vp; lastSrc.current = { b: q.bubbles, c: q.clustering, f: q.filters };
         if (changed) { pinned.current = null; setTip(null); }
         else hoverRef.current();
       } catch (e) {

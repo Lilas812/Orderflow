@@ -1,7 +1,7 @@
 import { useState } from "react";
 import type { BubbleState } from "@workspace/core/bubble-finality";
 import type { VisualBubbleCluster } from "@workspace/render/bubble-clustering";
-import { fmtJst } from "./TimeAxis";
+import { useTimeFormat } from "./SettingsContext";
 
 export interface BubbleTip {
   x: number; y: number; state: BubbleState; diameter: number | null;
@@ -12,6 +12,7 @@ const utc = (ns: string) => new Date(Number(BigInt(ns) / 1_000_000n)).toISOStrin
 const W = 320, H = 300;
 
 export function BubbleTooltip({ tip, width, height, onClose }: { tip: BubbleTip; width: number; height: number; onClose?: () => void }) {
+  const { fmt: fmtJst } = useTimeFormat();
   const [open, setOpen] = useState(false);
   const c = tip.cluster;
   const left = Math.max(0, Math.min(tip.x + 12 > width - W ? tip.x - W - 12 : tip.x + 12, width - W));

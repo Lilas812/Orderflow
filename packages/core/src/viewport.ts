@@ -68,7 +68,7 @@ function relativeNs(span: bigint, fraction: number): bigint {
 }
 
 export function createViewport(options: {
-  bounds: ChartBounds; latestNs?: string | null; price?: PriceRange | null; dpr?: number;
+  bounds: ChartBounds; latestNs?: string | null; price?: PriceRange | null; dpr?: number; initialSpanNs?: bigint;
 }): Viewport {
   checkBounds(options.bounds);
   const dpr = options.dpr ?? 1;
@@ -77,9 +77,11 @@ export function createViewport(options: {
   const latestNs = options.latestNs ?? null;
   // With no market clock these are an unlabelled coordinate domain, not market data.
   const end = latestNs === null ? 0n : ns(latestNs);
+  const span = options.initialSpanNs ?? DEFAULT_SPAN_NS;
+  if (typeof span !== "bigint" || span < MIN_SPAN_NS || span > MAX_SPAN_NS) throw new RangeError("Invalid initial time span");
   return {
     bounds: { ...options.bounds }, dpr,
-    time: { minNs: (end - DEFAULT_SPAN_NS).toString(), maxNs: end.toString() },
+    time: { minNs: (end - span).toString(), maxNs: end.toString() },
     price: options.price ? { ...options.price } : null, latestNs,
     timeMode: "LIVE", priceMode: "AUTO", priceData: "NO TRADE PRICE",
   };
@@ -144,9 +146,10 @@ export function receiveLatest(v: Viewport, latestNs: string): Viewport {
   return v.timeMode === "HISTORY" ? next
     : withTime(next, latest - duration(v), duration(v), "LIVE");
 }
-export function goLatest(v: Viewport): Viewport {
+export function goLatest(v: Viewport, initialSpanNs = DEFAULT_SPAN_NS): Viewport {
+  if (typeof initialSpanNs !== "bigint" || initialSpanNs < MIN_SPAN_NS || initialSpanNs > MAX_SPAN_NS) throw new RangeError("Invalid reset time span");
   if (v.latestNs === null) return { ...v, timeMode: "LIVE" };
-  return withTime(v, ns(v.latestNs) - DEFAULT_SPAN_NS, DEFAULT_SPAN_NS, "LIVE");
+  return withTime(v, ns(v.latestNs) - initialSpanNs, initialSpanNs, "LIVE");
 }
 export function panPrice(v: Viewport, deltaCssPx: number): Viewport {
   finite(deltaCssPx);
@@ -255,8 +258,9 @@ export function buildPriceSegments(
   return segments;
 }
 export function autoPrice(
-  v: Viewport, trades: readonly Trade[], quality: readonly QualityInterval[], forceAuto = false,
+  v: Viewport, trades: readonly Trade[], quality: readonly QualityInterval[], forceAuto = false, marginPercent = 15,
 ): Viewport {
+  if (!Number.isSafeInteger(marginPercent) || marginPercent < 0 || marginPercent > 50) throw new RangeError("Invalid AUTO margin percent");
   duration(v);
   const visible = buildPriceSegments(trades, quality).flat().filter((trade) => {
     const time = ns(trade.header.exchangeTimeNs!);
@@ -272,7 +276,7 @@ export function autoPrice(
       max = Math.max(max, trade.priceTicks);
     }
     const range = BigInt(max) - BigInt(min);
-    const margin = range === 0n ? 8n : (range * 15n + 99n) / 100n;
+    const margin = range === 0n ? 8n : (range * BigInt(marginPercent) + 99n) / 100n;
     const low = BigInt(min) - margin, high = BigInt(max) + margin;
     const limit = BigInt(Number.MAX_SAFE_INTEGER);
     if (low < -limit || high > limit) throw new RangeError("AUTO range exceeds safe integer Ticks");

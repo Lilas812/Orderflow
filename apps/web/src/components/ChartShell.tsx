@@ -1,4 +1,8 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import type { DisplaySettings } from "@workspace/core/settings-schema";
+import { hexToRgb as hexToRgbSchema } from "@workspace/core/settings-schema";
+import type { BubbleColors } from "@workspace/render/bubbles";
+import { useTimeFormat, type HeatmapActionsRef } from "./SettingsContext";
 import { executedVolume, type BookSide, type Trade } from "@workspace/core/events";
 import type { QualityInterval } from "@workspace/core/quality-timeline";
 import {
@@ -7,13 +11,13 @@ import {
   type ChartBounds, type Viewport,
 } from "@workspace/core/viewport";
 import {
-  DEFAULT_SCALE, captureBaseline, collectQuantityStages, relativeP95, resolveReference,
+  captureBaseline, collectQuantityStages, relativeP95, resolveReference, DEFAULT_SCALE,
   type RelativeReference, type ScaleBaseline, type ScaleSettings,
 } from "@workspace/core/heatmap-scale";
-import { DEFAULT_PALETTES, projectHeatmap, type HeatmapStyle, type Palette } from "@workspace/render";
+import { projectHeatmap, REFERENCE_QUANTITY, type HeatmapStyle, type Palette } from "@workspace/render";
 import { useViewport } from "../hooks/useViewport";
 import { HeatmapCanvas, HeatmapLegend, HEATMAP_SCENES, sceneForWidth, type HeatmapId, type HeatmapScene } from "./HeatmapCanvas";
-import { HeatmapDebugControls, type Rgb, type SideStatus } from "./HeatmapDebugControls";
+import { HeatmapDebugControls, rgbToHex, type Rgb, type SideStatus } from "./HeatmapDebugControls";
 import { R09_SCENARIOS, R10_SCENARIOS, R10_CONTINUITY, R11_DELTA_CASES } from "@workspace/fixtures";
 import {
   advanceDeltaWatermark, createDeltaTimeline, ingestDeltaTrade, projectDeltaTimeline, queryDeltaTimeline,
@@ -24,9 +28,8 @@ import type { BubbleDensity, ClusteringOptions } from "@workspace/render/bubble-
 
 const ALL_SCN = [...R09_SCENARIOS, ...R10_SCENARIOS];
 const DENSITIES: readonly BubbleDensity[] = ["ALL", "STANDARD", "HIGH_COMPRESSION"];
-import {
-  DEFAULT_BUBBLE_SIZING, type BubbleSizing, type BubbleSizingMode,
-} from "@workspace/core/bubble-sizing";
+import { type BubbleSizing, type BubbleSizingMode } from "@workspace/core/bubble-sizing";
+import type { BubbleFilters } from "@workspace/core/bubble-aggregate";
 import {
   advanceBubbleWatermark, createBubbleFinality, ingestBubbleTrade, setBubbleCondition,
 } from "@workspace/core/bubble-finality";
@@ -39,7 +42,7 @@ import { createMarketQualityState, ingestMarketEvent, markChannelCondition } fro
 import { LadderPanel } from "./LadderPanel";
 
 const EMPTY_SOURCE_OF = new Map<DeltaBin, string>();
-import { TimeAxis, fmtJst } from "./TimeAxis";
+import { TimeAxis } from "./TimeAxis";
 
 export const MOCK_INSTRUMENT = "CME:NQ:2026-03";
 export const MOCK_SESSION = "MOCK-SESSION-2026-01-01";
@@ -92,6 +95,11 @@ interface Props {
   onSelectLadder: (id: string | null) => void;
   /** Raw L2 inputs ingested by the independent Ladder MOCK. */
   onLadderRaw: (n: number) => void;
+  /** PREVIEW display settings from the settings controller (single source of truth). */
+  display: DisplaySettings;
+  onDisplay: (next: (s: DisplaySettings) => DisplaySettings) => void;
+  heatmapActionsRef: HeatmapActionsRef;
+  onOpenSettings: () => void;
 }
 
 /** Verification-mode viewport built only from existing core functions: last 60 s (R05 minimum span), price MANUAL. */
@@ -108,12 +116,39 @@ function verificationViewport(s: { endNs: string; priceMinTick: number; priceMax
 const SIDES: readonly BookSide[] = ["BID", "ASK"];
 const recKey = (mode: string, side: BookSide, width: number) => `${mode}|${side}|${width}`;
 
-export function ChartShell({ trades, mockOn, onToggleMock, onAddThird, heatmap: baseScene, onSelectHeatmap, bubbleId, onSelectBubble, onBubbleRaw, deltaId, onSelectDelta, onDeltaRaw, ladderId, onSelectLadder, onLadderRaw }: Props) {
-  const tv = useViewport(trades, MOCK_QUALITY);
-  const [settings, setSettings] = useState<ScaleSettings>({ ...DEFAULT_SCALE });
-  const [palettes, setPalettes] = useState<Readonly<Record<BookSide, Palette>>>(DEFAULT_PALETTES);
-  const [records, setRecords] = useState<Readonly<Record<string, ScaleBaseline | null>>>({});
+export function ChartShell({ trades, mockOn, onToggleMock, onAddThird, heatmap: baseScene, onSelectHeatmap, bubbleId, onSelectBubble, onBubbleRaw, deltaId, onSelectDelta, onDeltaRaw, ladderId, onSelectLadder, onLadderRaw, display, onDisplay, heatmapActionsRef, onOpenSettings }: Props) {
+  const { fmt: fmtJst, tzLabel } = useTimeFormat();
+  const tv = useViewport(trades, MOCK_QUALITY, {
+    initialMinutes: display.viewport.initialMinutes, autoMarginPercent: display.viewport.autoMarginPercent,
+  });
+  const settings: ScaleSettings = display.heatmap.scale;
+  const palKey = JSON.stringify(display.heatmap.palettes);
+  const palettes = useMemo<Readonly<Record<BookSide, Palette>>>(() => {
+    const p = display.heatmap.palettes;
+    return {
+      BID: { low: hexToRgbSchema(p.BID.low), high: hexToRgbSchema(p.BID.high) },
+      ASK: { low: hexToRgbSchema(p.ASK.low), high: hexToRgbSchema(p.ASK.high) },
+    } as unknown as Readonly<Record<BookSide, Palette>>;
+  }, [palKey]); // eslint-disable-line react-hooks/exhaustive-deps
+  const records: Readonly<Record<string, ScaleBaseline | null>> = display.heatmap.baselines;
   const [captureError, setCaptureError] = useState<string | null>(null);
+  const writeHeatmap = (scale: ScaleSettings, baselines: Record<string, ScaleBaseline | null>) =>
+    onDisplay((s) => ({ ...s, heatmap: { ...s.heatmap, scale, baselines } }));
+  const sizingKey = JSON.stringify(display.bubbles.sizing);
+  const sizing = useMemo<BubbleSizing>(() => display.bubbles.sizing, [sizingKey]); // eslint-disable-line react-hooks/exhaustive-deps
+  const filtersKey = JSON.stringify(display.bubbles.filters);
+  const bubbleFilters = useMemo<BubbleFilters>(() => display.bubbles.filters, [filtersKey]); // eslint-disable-line react-hooks/exhaustive-deps
+  const colorsKey = JSON.stringify(display.bubbles.colors);
+  const bubbleColors = useMemo<BubbleColors>(() => ({
+    buy: hexToRgbSchema(display.bubbles.colors.buy), sell: hexToRgbSchema(display.bubbles.colors.sell),
+    neutral: hexToRgbSchema(display.bubbles.colors.neutral),
+  }), [colorsKey]); // eslint-disable-line react-hooks/exhaustive-deps
+  const bsMode: BubbleSizingMode = display.bubbles.sizing.mode;
+  const density: BubbleDensity = display.bubbles.density;
+  const setBsMode = (mode: BubbleSizingMode) =>
+    onDisplay((s) => ({ ...s, bubbles: { ...s.bubbles, sizing: { ...s.bubbles.sizing, mode } } }));
+  const setDensity = (d: BubbleDensity) => onDisplay((s) => ({ ...s, bubbles: { ...s.bubbles, density: d } }));
+  const pl = display.priceLine;
   const heatmap = useMemo(() => (baseScene ? sceneForWidth(baseScene.id, settings.width) : null), [baseScene, settings.width]);
   // Candidates depend only on scene history/width/side/end, NOT threshold, palette, contrast or viewport.
   const candidates = useMemo(() => {
@@ -138,14 +173,15 @@ export function ChartShell({ trades, mockOn, onToggleMock, onAddThird, heatmap: 
   };
   const update = (patch: Partial<ScaleSettings>) => {
     const next = { ...settings, ...patch };
-    setSettings(next);
     setCaptureError(null);
+    let rec: Record<string, ScaleBaseline | null> = { ...records };
     if (patch.fixedBaseline === true) {
-      try { setRecords(capture(next)); } catch (e) { setCaptureError(e instanceof Error ? e.message : String(e)); }
-    } else if (patch.fixedBaseline === false) setRecords({});
+      try { rec = capture(next); } catch (e) { setCaptureError(e instanceof Error ? e.message : String(e)); }
+    } else if (patch.fixedBaseline === false) rec = {};
+    writeHeatmap(next, rec);
   };
   const recalibrate = () => {
-    try { setRecords((r) => ({ ...r, ...capture(settings) })); setCaptureError(null); }
+    try { writeHeatmap(settings, { ...records, ...capture(settings) }); setCaptureError(null); }
     catch (e) { setCaptureError(e instanceof Error ? e.message : String(e)); }
   };
   const sideStatus: SideStatus[] = SIDES.map((side) => {
@@ -162,18 +198,30 @@ export function ChartShell({ trades, mockOn, onToggleMock, onAddThird, heatmap: 
   const style = useMemo<HeatmapStyle | undefined>(() => heatmap ? {
     settings, references: { BID: bidRef, ASK: askRef }, palettes,
   } : undefined, [heatmap, settings, bidRef, askRef, palettes]);
+  // R09/R10 backdrop remains the fixed, width-1 ABS verification layer.
+  // Share colors without inventing an R07 observation history for that scope.
+  const backdropStyle = useMemo<HeatmapStyle>(() => ({
+    settings: { ...DEFAULT_SCALE, minimumVolume: 0, absoluteMaxQty: REFERENCE_QUANTITY },
+    references: { BID: REFERENCE_QUANTITY, ASK: REFERENCE_QUANTITY }, palettes,
+  }), [palettes]);
   const setPalette = (side: BookSide, end: "low" | "high", rgb: Rgb) =>
-    setPalettes((p) => ({ ...p, [side]: { ...p[side], [end]: rgb } }));
+    onDisplay((s) => ({ ...s, heatmap: { ...s.heatmap, palettes: { ...s.heatmap.palettes,
+      [side]: { ...s.heatmap.palettes[side], [end]: rgbToHex(rgb).toUpperCase() } } } }));
+  const hasCandidate = !!(candidates.BID.ref || candidates.ASK.ref);
+  heatmapActionsRef.current = {
+    settings, update, recalibrate, status: sideStatus, captureError,
+    canRecalibrate: settings.fixedBaseline && hasCandidate,
+    recalibrateReason: !settings.fixedBaseline ? "Enable fixed baseline first."
+      : !hasCandidate ? "No heatmap scene loaded: there is no candidate baseline to capture." : null,
+  };
   const [hmVp, setHmVp] = useState<Viewport>(() => createViewport({ bounds: { left: 0, top: 0, width: 0, height: 0 } }));
   useEffect(() => {
     if (heatmap) setHmVp((v) => verificationViewport(heatmap, v.bounds, v.dpr));
-  }, [heatmap]);
+  }, [baseScene?.id]); // Display-only price-bin edits never reset HISTORY or MANUAL price.
   /* ---- R09 bubble verification (independent of heatmap F01; viewport reset on scenario id only) ---- */
   const scn = useMemo(() => (bubbleId ? ALL_SCN.find((s) => s.id === bubbleId) ?? null : null), [bubbleId]);
   const isR10 = !!scn && R10_SCENARIOS.some((s) => s.id === scn.id);
   const [stage, setStage] = useState(0);
-  const [bsMode, setBsMode] = useState<BubbleSizingMode>(DEFAULT_BUBBLE_SIZING.mode);
-  const [density, setDensity] = useState<BubbleDensity>("STANDARD");
   const [spanS, setSpanS] = useState(600);
   const [selCluster, setSelCluster] = useState<string | null>(null);
   useEffect(() => { setStage(0); setSpanS(600); setSelCluster(null); }, [bubbleId]);
@@ -216,7 +264,6 @@ export function ChartShell({ trades, mockOn, onToggleMock, onAddThird, heatmap: 
     } catch (e) { return { fin: null, raw: 0, error: e instanceof Error ? e.message : String(e) }; }
   }, [scn, stageIdx]);
   const bubbles = useMemo(() => replayed?.fin?.bubbles ?? [], [replayed]);
-  const sizing = useMemo<BubbleSizing>(() => ({ ...DEFAULT_BUBBLE_SIZING, mode: bsMode }), [bsMode]);
   const onBubbleRawRef = useRef(onBubbleRaw); onBubbleRawRef.current = onBubbleRaw;
   const rawNow = scn ? replayed?.raw ?? 0 : 0;
   useEffect(() => { onBubbleRawRef.current(rawNow); }, [rawNow, bubbleId]);
@@ -332,10 +379,10 @@ export function ChartShell({ trades, mockOn, onToggleMock, onAddThird, heatmap: 
   const projected = useMemo(() => {
     if (!scn || vp.bounds.width <= 0) return null;
     try {
-      const f = projectBubbles(bubbles, vp, sizing, undefined, clustering);
+      const f = projectBubbles(bubbles, vp, sizing, bubbleFilters, clustering, bubbleColors);
       return { list: f.bubbles, sources: f.sourceBubbles, clusters: f.clusters, error: null as string | null };
     } catch (e) { return { list: null, sources: null, clusters: null, error: e instanceof Error ? e.message : String(e) }; }
-  }, [scn, bubbles, vp, sizing, clustering]);
+  }, [scn, bubbles, vp, sizing, clustering, bubbleFilters, bubbleColors]);
   const selected = projected?.clusters?.find((c) => c.id === selCluster) ?? null;
   // The unchanged opaque R06 canvas is clipped to its actual R09 tile footprint.
   // This exposes the lower TRADES-gap layer without inventing depth outside cells.
@@ -373,7 +420,7 @@ export function ChartShell({ trades, mockOn, onToggleMock, onAddThird, heatmap: 
     });
   };
   const normalPriceAuto = () => { setSharedPrice(null); priceAuto(); };
-  const ladderAuto = () => { setHmVp((v) => autoPrice({ ...v, priceMode: "AUTO" }, [], [])); };
+  const ladderAuto = () => { setHmVp((v) => autoPrice({ ...v, priceMode: "AUTO" }, [], [], false, display.viewport.autoMarginPercent)); };
   const chartRef = useRef<HTMLDivElement>(null);
   const zoomYRef = useRef(zoomY); zoomYRef.current = zoomY;
   const drag = useRef<number | null>(null);
@@ -535,6 +582,7 @@ export function ChartShell({ trades, mockOn, onToggleMock, onAddThird, heatmap: 
             if (drag.current === null) return;
             const dx = e.clientX - drag.current; drag.current = e.clientX; if (dx) panX(dx);
           }}
+          onContextMenu={(e) => { e.preventDefault(); drag.current = null; onOpenSettings(); }}
           onPointerUp={() => { drag.current = null; }} onPointerCancel={() => { drag.current = null; }}
           onLostPointerCapture={() => { drag.current = null; }}>
           {heatmap && <HeatmapCanvas cells={heatmap.cells} vp={vp} style={style} />}
@@ -546,10 +594,10 @@ export function ChartShell({ trades, mockOn, onToggleMock, onAddThird, heatmap: 
           </svg>}
           {scn && backdrop && backdrop.cells.length > 0 && <div className="bb-depth"
             style={{ "--bb-depth-clip": backdropClip } as CSSProperties}>
-            <HeatmapCanvas cells={backdrop.cells} vp={vp} />
+            <HeatmapCanvas cells={backdrop.cells} vp={vp} style={backdropStyle} />
           </div>}
-          {scn && <BubbleCanvas bubbles={bubbles} vp={vp} sizing={sizing} clustering={clustering} />}
-          {dcase && showDeltaBubbles && <BubbleCanvas bubbles={dBubbles} vp={vp} sizing={sizing} clustering={clustering} />}
+          {scn && <BubbleCanvas bubbles={bubbles} vp={vp} sizing={sizing} clustering={clustering} filters={bubbleFilters} colors={bubbleColors} />}
+          {dcase && showDeltaBubbles && <BubbleCanvas bubbles={dBubbles} vp={vp} sizing={sizing} clustering={clustering} filters={bubbleFilters} colors={bubbleColors} />}
           <svg width={w} height={h} viewBox={`0 0 ${w} ${h}`} data-testid="chart-svg"
             data-width={w} data-height={h} data-dpr={vp.dpr}>
             <defs><clipPath id="chart-clip"><rect x={0} y={0} width={w} height={h} /></clipPath></defs>
@@ -571,9 +619,11 @@ export function ChartShell({ trades, mockOn, onToggleMock, onAddThird, heatmap: 
                 const pts = seg.map(pt).filter((p): p is { x: number; y: number } => p !== null);
                 return (
                   <g key={i} data-testid={`segment-${i}`} data-points={pts.length}>
-                    {pts.length > 1 && <polyline className="price-line"
+                    {pl.visible && pts.length > 1 && <polyline className="price-line" data-testid="price-line"
+                      style={{ stroke: pl.color, strokeWidth: pl.width, strokeOpacity: pl.opacity }}
                       points={pts.map((p) => `${p.x},${p.y}`).join(" ")} />}
-                    {seg.length === 1 && pts[0] && <circle cx={pts[0].x} cy={pts[0].y} r={3} className="iso-dot" />}
+                    {pl.visible && seg.length === 1 && pts[0] && <circle cx={pts[0].x} cy={pts[0].y} r={3} className="iso-dot"
+                      style={{ fill: pl.color, fillOpacity: pl.opacity }} />}
                   </g>
                 );
               })}
@@ -616,7 +666,7 @@ export function ChartShell({ trades, mockOn, onToggleMock, onAddThird, heatmap: 
         </div>
       )}
       <div className="cs-info" data-testid="viewport-info">
-        <span>Time (JST): <b data-testid="text-time-min" data-ns={vp.time.minNs}>{hasData ? fmtJst(vp.time.minNs, true) : "—"}</b>
+        <span>Time ({tzLabel}): <b data-testid="text-time-min" data-ns={vp.time.minNs}>{hasData ? fmtJst(vp.time.minNs, true) : "—"}</b>
           {" → "}<b data-testid="text-time-max" data-ns={vp.time.maxNs}>{hasData ? fmtJst(vp.time.maxNs, true) : "—"}</b></span>
         <span>Price ticks: <b data-testid="text-price-min">{vp.price?.minTick ?? "—"}</b>
           {" → "}<b data-testid="text-price-max">{vp.price?.maxTick ?? "—"}</b></span>
@@ -694,12 +744,12 @@ export function ChartShell({ trades, mockOn, onToggleMock, onAddThird, heatmap: 
             condition {replayed?.fin?.condition ?? "—"} / watermark {replayed?.fin?.watermarkNs ?? "none"} / max valid exchange ns {replayed?.fin?.maxSeenValidExchangeNs ?? "none"} / raw events ingested {rawNow}
           </div>
           <div className="note" data-testid="text-bubble-backdrop">
-            Backdrop: {backdrop?.label}. {backdrop?.error ? `UNAVAILABLE: ${backdrop.error}` : "Default ABS R06 display; explicit synthetic MOCK, not a TWA of F01."}
+            Backdrop: {backdrop?.label}. {backdrop?.error ? `UNAVAILABLE: ${backdrop.error}` : "Fixed ABS R06 verification scale/width; shared color palette only. Explicit synthetic MOCK, not a TWA of F01."}
           </div>
           {replayed?.error && <div className="dbg-warn" role="alert" data-testid="bubble-replay-error">REPLAY ERROR: {replayed.error}</div>}
           {projected?.error && <div className="dbg-warn" role="alert" data-testid="bubble-project-error">PROJECTION ERROR: {projected.error}</div>}
           <table className="hm-table" data-testid="bubble-table">
-            <thead><tr><th>bubble</th><th>start (JST)</th><th>end (JST)</th><th>ticks</th><th>B</th><th>S</th><th>U</th><th>V_raw</th><th>V</th><th>delta</th>
+            <thead><tr><th>bubble</th><th>start ({tzLabel})</th><th>end ({tzLabel})</th><th>ticks</th><th>B</th><th>S</th><th>U</th><th>V_raw</th><th>V</th><th>delta</th>
               <th>bucket</th><th>state</th><th>rev</th><th>final</th><th>quality</th><th>diameter</th><th>alpha</th><th>x</th><th>y</th></tr></thead>
             <tbody>
               {bubbles.map((b) => {

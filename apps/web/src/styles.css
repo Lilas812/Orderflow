@@ -37,6 +37,55 @@ body {
 .axis-dim { fill: #6b7390; }
 .price-line { fill: none; stroke: #e8dff6; stroke-width: 1.3; stroke-linejoin: round; }
 .iso-dot { fill: #e8dff6; }
+
+/* ---- R13 settings drawer: fixed overlay, never participates in layout ---- */
+.bar .spacer-r { margin-left: auto; }
+.btn-gear { display: inline-flex; align-items: center; gap: 6px; }
+.sd { position: fixed; top: 0; right: 0; bottom: 0; width: min(400px, 100vw); z-index: 50; display: flex; flex-direction: column;
+  background: #10131b; border-left: 1px solid #303443; box-shadow: -8px 0 24px rgba(0,0,0,.45); color: #e8eaf0; }
+.sd-head { display: flex; align-items: center; justify-content: space-between; padding: 12px 16px; border-bottom: 1px solid #303443; background: #171a23; }
+.sd-head h2 { margin: 0; font-size: 16px; font-weight: 600; outline: none; }
+.sd-head h2:focus-visible { outline: 2px solid #b9a4f0; outline-offset: 3px; }
+.sd-chips { display: flex; flex-wrap: wrap; gap: 6px; padding: 8px 16px; font-size: 11px; letter-spacing: .04em; }
+.chip { padding: 2px 8px; border: 1px solid #303443; border-radius: 3px; color: #9ca3b4; }
+.chip-warn { color: #d5a74b; border-color: #6b5a2c; }
+.chip-mock { color: #b9a4f0; border-color: #4a3b7a; }
+.sd-banner { margin: 0 16px 8px; padding: 8px 10px; display: flex; gap: 8px; align-items: center; justify-content: space-between;
+  background: #2a1218; border: 1px solid #7a2f3f; color: #f0b4bf; font-size: 13px; border-radius: 3px; }
+.sd-tabs { display: flex; padding: 0 8px; border-bottom: 1px solid #303443; overflow-x: auto; }
+.sd-tab { background: none; border: 0; border-bottom: 2px solid transparent; color: #9ca3b4; padding: 8px 10px; font-size: 13px; cursor: pointer; white-space: nowrap; }
+.sd-tab[aria-selected="true"] { color: #e8eaf0; border-bottom-color: #b9a4f0; }
+.sd-tab:focus-visible, .sd button:focus-visible, .sd input:focus-visible, .sd select:focus-visible { outline: 2px solid #b9a4f0; outline-offset: 1px; }
+.sd-body { flex: 1; min-height: 0; overflow-y: auto; padding: 12px 16px; }
+.sd-foot { display: flex; align-items: center; justify-content: flex-end; gap: 8px; padding: 10px 16px; border-top: 1px solid #303443; background: #171a23; }
+.sd-foot .sf-err { margin-right: auto; }
+.btn-primary { border-color: #6b5aa8; background: #2a2245; }
+.btn:disabled { opacity: .45; cursor: not-allowed; }
+.sd-section { display: flex; flex-direction: column; gap: 12px; }
+.sd-fieldset { border: 1px solid #303443; border-radius: 4px; padding: 8px 10px; margin: 0; display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.sd-fieldset legend { font-size: 12px; color: #9ca3b4; padding: 0 4px; }
+.sf { display: flex; flex-direction: column; gap: 4px; font-size: 13px; }
+.sf-unit { color: #9ca3b4; font-size: 11px; }
+.sf-row { display: flex; align-items: center; gap: 8px; }
+.sf-row input[type="text"] { width: 96px; flex: none; }
+.sf-row input[type="range"] { flex: 1; min-width: 0; }
+.sf input[type="text"], .sf select { background: #08090d; color: #e8eaf0; border: 1px solid #303443; padding: 4px 6px; border-radius: 3px; font-family: inherit; }
+.sf input[aria-invalid="true"] { border-color: #c4475c; }
+.sf-err { color: #f0899a; font-size: 12px; min-height: 0; }
+.sf-hint { color: #9ca3b4; font-size: 11px; }
+.sf-warn { color: #d5a74b; font-size: 12px; }
+.sf-ro { color: #9ca3b4; background: #171a23; border: 1px dashed #303443; padding: 6px 8px; border-radius: 3px; }
+.sf-check { display: flex; align-items: center; gap: 6px; font-size: 13px; }
+.sf-inline { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+.sd-status { display: flex; flex-direction: column; gap: 8px; font-size: 12px; color: #c4c8d4; }
+.sd-dl { margin: 0; display: flex; flex-direction: column; gap: 10px; font-size: 13px; }
+.sd-dl dt { color: #9ca3b4; font-size: 11px; }
+.sd-dl dd { margin: 2px 0 0; word-break: break-word; }
+.sd-skel { display: flex; flex-direction: column; gap: 12px; }
+.sd-skel i { display: block; height: 34px; border-radius: 3px; background: #171a23; animation: sdpulse 1.2s ease-in-out infinite; }
+@keyframes sdpulse { 50% { opacity: .5; } }
+.settings-banner-host { margin: 0; }
+@media (prefers-reduced-motion: reduce) { .sd-skel i { animation: none; } }
 .gap-band { fill: rgba(213, 167, 75, 0.14); stroke: #d5a74b; stroke-width: 1; stroke-dasharray: 4 3; }
 .gap-text { fill: #d5a74b; font-size: 11px; }
 .wm { fill: #4a3b7a; font-size: 12px; letter-spacing: 0.1em; }

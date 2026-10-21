@@ -1,7 +1,11 @@
-import { useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { NQ } from "@workspace/core";
+import type { DisplaySettings } from "@workspace/core/settings-schema";
 import { ChartShell, MOCK_INSTRUMENT, MOCK_TRADES } from "./components/ChartShell";
 import { HeatmapDemo, type HeatmapId } from "./components/HeatmapCanvas";
+import { SettingsDrawer, SettingsErrorBanner } from "./components/SettingsDrawer";
+import { TimeFormatProvider, type HeatmapActions } from "./components/SettingsContext";
+import { useSettings } from "./hooks/useSettings";
 
 function App() {
   const [count, setCount] = useState(0); // 0 = MOCK disabled, 2 or 3 loaded MOCK events
@@ -14,25 +18,59 @@ function App() {
   const [deltaRaw, setDeltaRaw] = useState(0);
   const [ladderId, setLadderId] = useState<string | null>(null);
   const [ladderRaw, setLadderRaw] = useState(0);
+  const settings = useSettings();
+  const heatmapActions = useRef<HeatmapActions | null>(null);
+  const gearRef = useRef<HTMLButtonElement>(null);
+  const wasOpen = useRef(false);
+  useEffect(() => {
+    if (wasOpen.current && !settings.open) gearRef.current?.focus();
+    wasOpen.current = settings.open;
+  }, [settings.open]);
+  const settingsRef = useRef(settings); settingsRef.current = settings;
+  const openSettings = useCallback(() => { if (!settingsRef.current.open) settingsRef.current.begin(); }, []);
+  const updateDisplay = useCallback((next: (s: DisplaySettings) => DisplaySettings) => settingsRef.current.update(next), []);
   const selectLadder = (id: string | null) => { setLadderId(id); if (!id) setLadderRaw(0); };
   const selectHeatmap = (id: HeatmapId | null) => { setHmId(id); if (id) { setCount(0); setBubbleId(null); setDeltaId(null); setDeltaRaw(0); } };
   const selectBubble = (id: string | null) => { setBubbleId(id); if (id) { setHmId(null); setCount(0); setDeltaId(null); setDeltaRaw(0); } else setBubbleRaw(0); };
   const selectDelta = (id: string | null) => { setDeltaId(id); if (id) { setHmId(null); setBubbleId(null); setCount(0); } else setDeltaRaw(0); };
   const setTradeCount = (fn: (c: number) => number) => { setHmId(null); setBubbleId(null); setDeltaId(null); setDeltaRaw(0); setCount(fn); };
+  const statusText = deltaId ? `FIXED DELTA MOCK ${deltaId}` : ladderId && !bubbleId && !scene && count === 0 ? `FIXED LADDER MOCK ${ladderId}` : bubbleId ? `FIXED BUBBLE MOCK ${bubbleId}` : scene ? `FIXED HEATMAP MOCK ${scene.id}` : count === 0 ? "NO DATA" : `MOCK DATA ${count}/3`;
+  const footerText = ladderId && !deltaId && !bubbleId && !scene && count === 0
+    ? `MOCK / events loaded ${ladderRaw} (Ladder MOCK ${ladderId})`
+    : deltaId ? `FIXED DELTA MOCK / events loaded ${deltaRaw}`
+    : bubbleId ? `MOCK / events loaded ${bubbleRaw + 1} (bubble MOCK ${bubbleId})`
+    : scene ? `MOCK / events loaded ${scene.eventCount} (heatmap MOCK ${scene.id})`
+    : `MOCK / events loaded ${count}`;
+  const preview = settings.preview;
   return (
+    <TimeFormatProvider timeZone={preview.viewport.timeZone}>
     <div className="shell">
       <header className="bar">
         <h1 className="brand">Orderflow Lab</h1>
         <span className="instrument">{NQ.root} (contract not selected)</span>
         <span className="tag tag-source">MOCK • SIMULATED</span>
-        <span className="tag tag-state" data-testid="status-data">{deltaId ? `FIXED DELTA MOCK ${deltaId}` : ladderId && !bubbleId && !scene && count === 0 ? `FIXED LADDER MOCK ${ladderId}` : bubbleId ? `FIXED BUBBLE MOCK ${bubbleId}` : scene ? `FIXED HEATMAP MOCK ${scene.id}` : count === 0 ? "NO DATA" : `MOCK DATA ${count}/3`}</span>
+        <span className="tag tag-state" data-testid="status-data">{statusText}</span>
+        <span className="tag tag-source" data-testid="status-settings">
+          {settings.dirty ? "SETTINGS DRAFT (unsaved)" : settings.persisted ? "SETTINGS SAVED" : "SETTINGS DEFAULTS (not saved)"}
+        </span>
+        <button type="button" ref={gearRef} className="btn btn-gear spacer-r" data-testid="button-settings"
+          aria-haspopup="dialog" aria-expanded={settings.open} aria-label="Open display settings"
+          onClick={openSettings}>
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <circle cx="12" cy="12" r="3" />
+            <path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z" />
+          </svg>
+          Settings
+        </button>
       </header>
+      {!settings.open && <SettingsErrorBanner c={settings} />}
       <main className="stage-chart">
         <ChartShell trades={trades} mockOn={count > 0}
           heatmap={scene} onSelectHeatmap={selectHeatmap}
           bubbleId={bubbleId} onSelectBubble={selectBubble} onBubbleRaw={setBubbleRaw}
           deltaId={deltaId} onSelectDelta={selectDelta} onDeltaRaw={setDeltaRaw}
           ladderId={ladderId} onSelectLadder={selectLadder} onLadderRaw={setLadderRaw}
+          display={preview} onDisplay={updateDisplay} heatmapActionsRef={heatmapActions} onOpenSettings={openSettings}
           onToggleMock={() => setTradeCount((c) => (c === 0 ? 2 : 0))}
           onAddThird={() => setTradeCount((c) => (c === 2 ? 3 : c))} />
       </main>
@@ -48,7 +86,12 @@ function App() {
           : <>Data source: MOCK / Events loaded: {count}{count > 0 ? ` of 3 (fixed MOCK ${MOCK_INSTRUMENT}, 2026-01-01 UTC)` : ""}</>}
         {ladderId && (deltaId || bubbleId || scene || count > 0) && <span> / Independent Ladder MOCK {ladderId}: {ladderRaw} raw market inputs (separate scope)</span>}
       </footer>
+      {settings.open && (
+        <SettingsDrawer c={settings} actionsRef={heatmapActions}
+          info={{ source: "MOCK / SIMULATED", state: statusText, footer: footerText }} />
+      )}
     </div>
+    </TimeFormatProvider>
   );
 }
 

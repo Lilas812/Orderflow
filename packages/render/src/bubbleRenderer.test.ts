@@ -25,6 +25,43 @@ function viewport(dpr = 1): Viewport {
     dpr, latestNs: (origin + 6_000_000_000n).toString(), price: { minTick: 79980, maxTick: 80020 } });
   return { ...v, time: { minNs: (origin - 54_000_000_000n).toString(), maxNs: v.latestNs! } };
 }
+describe("R13 bubble palette presentation only", () => {
+  const colors = { buy: [255, 0, 0] as const, sell: [0, 0, 255] as const, neutral: [0, 255, 255] as const };
+  it("updates GPU vertex RGB, preserving alpha, exact quantities, diameter and positions", () => {
+    const bubbles = states(), vp = viewport(), before = JSON.stringify(bubbles, (_, x) => typeof x === "bigint" ? x.toString() : x);
+    const standard = projectBubbles(bubbles, vp), colored = projectBubbles(bubbles, vp, undefined, undefined, undefined, colors);
+    expect(colored.bubbles.length).toBe(standard.bubbles.length);
+    for (const [index, next] of colored.bubbles.entries()) {
+      const old = standard.bubbles[index];
+      expect([next.x, next.y, next.diameter, next.rgba[3]]).toEqual([old.x, old.y, old.diameter, old.rgba[3]]);
+      expect(next.source).toBe(old.source);
+      expect(next.rgba.slice(0, 3)).toEqual([1, 0, 0]);
+      expect(Array.from(colored.vertexData.slice(index * 6 * BUBBLE_FLOATS_PER_VERTEX + 4, index * 6 * BUBBLE_FLOATS_PER_VERTEX + 7))).toEqual([1, 0, 0]);
+    }
+    expect(JSON.stringify(bubbles, (_, x) => typeof x === "bigint" ? x.toString() : x)).toBe(before);
+  });
+  it("uses sell and neutral colors without changing the original alpha formula", () => {
+    const base = states()[0];
+    for (const [delta, expected] of [[-1n, [0, 0, 1]], [0n, [0, 1, 1]], [null, [0, 1, 1]]] as const) {
+      const source = { ...base, bucket: { ...base.bucket, delta } };
+      expect(bubbleColor(source, colors).slice(0, 3)).toEqual(expected);
+      expect(bubbleColor(source, colors)[3]).toBe(bubbleColor(source)[3]);
+    }
+  });
+  it("applies filters and palette only to projection, without changing Delta or raw inputs", () => {
+    const bubbles = states(), before = bubbles.map(b => b.bucket);
+    const filters = { ...DEFAULT_BUBBLE_FILTERS, volume: { enabled: true, minimum: 1000 } };
+    expect(projectBubbles(bubbles, viewport(), undefined, filters, undefined, colors).bubbles).toHaveLength(0);
+    expect(projectBubbles(bubbles, viewport(), undefined, DEFAULT_BUBBLE_FILTERS, undefined, colors).bubbles).toHaveLength(1);
+    expect(bubbles.map(b => b.bucket)).toEqual(before); expect(bubbles[0].bucket.delta).toBe(19n);
+  });
+  it("validates RGB boundaries, rather than sending NaN/out-of-range values to WebGL", () => {
+    for (const rgb of [[-1, 0, 0], [256, 0, 0], [NaN, 0, 0], [1.5, 0, 0], [1, 2]]) {
+      expect(() => projectBubbles(states(), viewport(), undefined, undefined, undefined,
+        { ...colors, buy: rgb as unknown as readonly [number, number, number] })).toThrow();
+    }
+  });
+});
 function fakeGpu() {
   const gl = {
     VERTEX_SHADER: 35633, FRAGMENT_SHADER: 35632, COMPILE_STATUS: 35713, LINK_STATUS: 35714,

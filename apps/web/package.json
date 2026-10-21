@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite --host 0.0.0.0",
     "typecheck": "tsc --noEmit",
+    "test": "vitest run",
     "build": "tsc --noEmit && vite build"
   },
   "dependencies": {
@@ -14,6 +15,7 @@
     "react-dom": "catalog:"
   },
   "devDependencies": {
+    "vitest": "5.0.5",
     "@workspace/render": "workspace:*",
     "@workspace/fixtures": "workspace:*",
     "@types/node": "catalog:",

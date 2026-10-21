@@ -224,3 +224,31 @@ mtime_ms = 1792600079473
 storage_uri = "gcs://replit-rams-assets-pike/rams/assets/repl:396298eb-318f-4ad8-9c4e-13a5b19e25a9/aa2fca16-9869-4eb0-b875-5a37719ee6c5/32a95cdb-9e68-4c00-b8e1-0019c57c3c65"
 storage_version_token = "1792600200140187"
 content_type = "image/png"
+
+[[outputs]]
+id = "4MVLsl0AcJbxM7skdXRy1"
+uri = "file://attached_assets/r13-settings-heatmap-1920x1080.png"
+type = "image"
+title = "R13 — Heatmap設定"
+description = "Vite再起動後にSAVED r5・閾値0を復元した設定画面。右側のドロワーはチャートをリサイズしないオーバーレイです。"
+logical_id = "c01de58d-b37f-497d-97e9-75b14ac7409b"
+content_hash = "sha256:d81dec08a1fc525627e2ab19d83f101780fd499bb461c6549fa204b5b45f6a99"
+size = 240535
+mtime_ms = 1792603199560
+storage_uri = "gcs://replit-rams-assets-pike/rams/assets/repl:396298eb-318f-4ad8-9c4e-13a5b19e25a9/c01de58d-b37f-497d-97e9-75b14ac7409b/649b0fbc-8344-4f86-acad-aa724c07317c"
+storage_version_token = "1792603346954330"
+content_type = "image/png"
+
+[[outputs]]
+id = "RYCLKpsr6lFS9rLNR7XEo"
+uri = "file://attached_assets/r13-settings-bubbles-1920x1080.png"
+type = "image"
+title = "R13 — Bubbles設定と独立Delta比較"
+description = "WebGL2バブル、表示フィルター15/10/40、サイズ・密度・色の設定。背面のDeltaは独立したF-04 +19／F-05 −2を保持しています。"
+logical_id = "3f95d48e-7b56-4015-9c0e-9384d8815aaa"
+content_hash = "sha256:a835ece6bf9e939ce61d8f8f5e378957b34adbe7c81b5285e439f4ff4fadde84"
+size = 224795
+mtime_ms = 1792603285375
+storage_uri = "gcs://replit-rams-assets-pike/rams/assets/repl:396298eb-318f-4ad8-9c4e-13a5b19e25a9/3f95d48e-7b56-4015-9c0e-9384d8815aaa/bf1b186c-294d-421a-a61e-21d412143319"
+storage_version_token = "1792603348279618"
+content_type = "image/png"

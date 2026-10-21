@@ -27,19 +27,38 @@ export interface BubbleFrame {
   readonly clusters: readonly VisualBubbleCluster[];
   readonly sourceBubbles: readonly ProjectedBubble[];
 }
-export function bubbleColor(source: BubbleState): readonly [number, number, number, number] {
+export interface BubbleColors {
+  readonly buy: readonly [number, number, number];
+  readonly sell: readonly [number, number, number];
+  readonly neutral: readonly [number, number, number];
+}
+export const DEFAULT_BUBBLE_COLORS: BubbleColors = {
+  buy: [67, 250, 85], sell: [178, 53, 250], neutral: [156, 163, 180],
+};
+function validateColors(colors: BubbleColors): void {
+  for (const key of ["buy", "sell", "neutral"] as const) {
+    const rgb = colors?.[key];
+    if (!Array.isArray(rgb) || rgb.length !== 3 || !rgb.every(v => Number.isInteger(v) && v >= 0 && v <= 255)) {
+      throw new RangeError("Invalid bubble RGB palette");
+    }
+  }
+}
+export function bubbleColor(source: BubbleState, colors: BubbleColors = DEFAULT_BUBBLE_COLORS): readonly [number, number, number, number] {
+  validateColors(colors);
   const delta = source.bucket.delta;
-  const rgb = delta === null || delta === 0n ? [156, 163, 180]
-    : delta > 0n ? [67, 250, 85] : [178, 53, 250];
+  const rgb = delta === null || delta === 0n ? colors.neutral
+    : delta > 0n ? colors.buy : colors.sell;
   return [rgb[0] / 255, rgb[1] / 255, rgb[2] / 255, bubbleOpacity(source)];
 }
 /** Only projection, filtering and sizing. All quantity arithmetic remains in R08. */
 export function projectBubbles(
   sources: readonly BubbleState[], vp: Viewport, sizing: BubbleSizing = DEFAULT_BUBBLE_SIZING,
   filters?: BubbleFilters, clustering: ClusteringOptions = { mode: "ALL" },
+  colors: BubbleColors = DEFAULT_BUBBLE_COLORS,
 ): BubbleFrame {
   // Validate display settings even for an empty frame.
   bubbleDiameter(0, sizing);
+  validateColors(colors);
   const bubbles: ProjectedBubble[] = [], values: number[] = [], bounds = vp.bounds;
   const seen = new Set<string>();
   for (const source of sources) {
@@ -56,7 +75,7 @@ export function projectBubbles(
     const y = tickToY(vp, centerTick), diameter = bubbleDiameter(bucket.V!, sizing), radius = diameter / 2;
     if (x === null || y === null || x + radius <= bounds.left || x - radius >= bounds.left + bounds.width
       || y + radius <= bounds.top || y - radius >= bounds.top + bounds.height) continue;
-    const rgba = bubbleColor(source);
+    const rgba = bubbleColor(source, colors);
     bubbles.push({ source, x, y, diameter, rgba });
   }
   const clusters = clusterBubbles(bubbles, clustering, sizing, filters);
@@ -126,6 +145,7 @@ export class BubbleRenderer {
   private viewport: Viewport | null = null;
   private sizing: BubbleSizing = DEFAULT_BUBBLE_SIZING;
   private filters: BubbleFilters | undefined;
+  private colors: BubbleColors = DEFAULT_BUBBLE_COLORS;
   private clustering: ClusteringOptions = { mode: "ALL" };
   private disposed = false;
   private lost = false;
@@ -206,17 +226,19 @@ export class BubbleRenderer {
     this.lost = false;
     try {
       this.initialize();
-      if (this.viewport) this.draw(this.sources, this.viewport, this.sizing, this.filters, this.clustering);
+      if (this.viewport) this.draw(this.sources, this.viewport, this.sizing, this.filters, this.clustering, this.colors);
     } catch (e) { this.fail(e); }
   };
   draw(
     sources: readonly BubbleState[], vp: Viewport, sizing: BubbleSizing = DEFAULT_BUBBLE_SIZING,
     filters?: BubbleFilters, clustering: ClusteringOptions = { mode: "ALL" },
+    colors: BubbleColors = DEFAULT_BUBBLE_COLORS,
   ): BubbleFrame {
     if (this.disposed) throw new Error("Bubble renderer disposed");
     this.sources = sources; this.viewport = vp; this.sizing = sizing; this.filters = filters;
     this.clustering = clustering;
-    this.lastFrame = projectBubbles(sources, vp, sizing, filters, clustering);
+    this.colors = colors;
+    this.lastFrame = projectBubbles(sources, vp, sizing, filters, clustering, colors);
     if (this.lost || !this.gl || !this.program) return this.lastFrame;
     const gl = this.gl, b = vp.bounds;
     const cssWidth = b.left + b.width, cssHeight = b.top + b.height;
