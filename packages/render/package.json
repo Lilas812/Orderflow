@@ -3,9 +3,9 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "exports": { ".": "./src/heatmapRenderer.ts", "./bubbles": "./src/bubbleRenderer.ts" },
+  "exports": { ".": "./src/heatmapRenderer.ts", "./bubbles": "./src/bubbleRenderer.ts", "./bubble-clustering": "./src/bubbleClustering.ts" },
   "scripts": {
-    "typecheck": "tsc --noEmit --strict --skipLibCheck --target ES2022 --module ESNext --moduleResolution Bundler --lib ES2022,DOM src/heatmapRenderer.ts src/heatmapRenderer.test.ts src/bubbleRenderer.ts src/bubbleRenderer.test.ts",
+    "typecheck": "tsc --noEmit --strict --skipLibCheck --target ES2022 --module ESNext --moduleResolution Bundler --lib ES2022,DOM src/heatmapRenderer.ts src/heatmapRenderer.test.ts src/bubbleRenderer.ts src/bubbleRenderer.test.ts src/bubbleClustering.ts src/bubbleClustering.test.ts",
     "build": "tsc --noEmit --strict --skipLibCheck --target ES2022 --module ESNext --moduleResolution Bundler --lib ES2022,DOM src/heatmapRenderer.ts src/bubbleRenderer.ts",
     "test": "vitest run"
   },

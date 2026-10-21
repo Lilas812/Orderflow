@@ -58,6 +58,13 @@ body {
 .bb-error { position: absolute; left: 12px; right: 12px; top: 60px; z-index: 3; padding: 8px 10px; font-size: 12px; color: #e8dff6; background: rgba(8, 9, 13, 0.92); border: 1px solid #d5a74b; pointer-events: none; }
 .bb-tip { position: absolute; z-index: 6; padding: 6px 8px; font-size: 11px; line-height: 1.5; color: #e8eaf0; background: #10131b; border: 1px solid #303443; border-radius: 3px; pointer-events: none; font-family: Consolas, ui-monospace, monospace; }
 .bb-tip .dim { color: #6b7390; }
+.bb-tip-pinned { pointer-events: auto; max-height: 300px; overflow: auto; border-color: #b9a4f0; cursor: default; user-select: text; }
+.bb-tip-ctl { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-top: 4px; }
+.bb-tip-ctl .btn { font-size: 11px; padding: 2px 8px; }
+.bb-children { margin-top: 4px; display: flex; flex-direction: column; gap: 4px; }
+.bb-child { border-top: 1px solid #303443; padding-top: 3px; word-break: break-all; }
+.bb-audit { border: 1px solid #303443; padding: 6px 8px; font-family: Consolas, ui-monospace, monospace; word-break: break-all; }
+.hm-table tr[data-selected="true"] { background: #1c1f2a; }
 .cs-chart:has(.bb-canvas) > svg { z-index: 2; }
 .cs-chart > svg.bb-gaps { z-index: 0; pointer-events: none; }
 .bb-dbg { max-height: none; flex-shrink: 0; overflow-x: auto; }

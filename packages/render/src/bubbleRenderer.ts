@@ -3,6 +3,7 @@ import { bubbleOpacity, type BubbleState } from "@workspace/core/bubble-finality
 import { bubbleDiameter, DEFAULT_BUBBLE_SIZING, type BubbleSizing } from "@workspace/core/bubble-sizing";
 import { evaluateBubbleFilter, type BubbleFilters } from "@workspace/core/bubble-aggregate";
 import type { RenderStatus } from "./heatmapRenderer";
+import { clusterBubbles, type ClusteringOptions, type VisualBubbleCluster } from "./bubbleClustering";
 
 export const BUBBLE_LAYER_ORDER = ["background", "gap", "heatmap", "price", "bubbles", "tooltip"] as const;
 /** CSS xy, local xy, straight RGBA, CSS radius, diagnostic B/S/V/Delta.
@@ -15,12 +16,16 @@ export interface ProjectedBubble {
   readonly y: number;
   readonly diameter: number;
   readonly rgba: readonly [number, number, number, number];
+  /** Display aggregate only; source is still an original R09 BubbleState. */
+  readonly cluster?: VisualBubbleCluster;
 }
 export interface BubbleFrame {
   readonly bubbles: readonly ProjectedBubble[];
   readonly vertexData: Float32Array;
   readonly vertexCount: number;
   readonly bounds: ChartBounds;
+  readonly clusters: readonly VisualBubbleCluster[];
+  readonly sourceBubbles: readonly ProjectedBubble[];
 }
 export function bubbleColor(source: BubbleState): readonly [number, number, number, number] {
   const delta = source.bucket.delta;
@@ -31,7 +36,7 @@ export function bubbleColor(source: BubbleState): readonly [number, number, numb
 /** Only projection, filtering and sizing. All quantity arithmetic remains in R08. */
 export function projectBubbles(
   sources: readonly BubbleState[], vp: Viewport, sizing: BubbleSizing = DEFAULT_BUBBLE_SIZING,
-  filters?: BubbleFilters,
+  filters?: BubbleFilters, clustering: ClusteringOptions = { mode: "ALL" },
 ): BubbleFrame {
   // Validate display settings even for an empty frame.
   bubbleDiameter(0, sizing);
@@ -53,23 +58,36 @@ export function projectBubbles(
       || y + radius <= bounds.top || y - radius >= bounds.top + bounds.height) continue;
     const rgba = bubbleColor(source);
     bubbles.push({ source, x, y, diameter, rgba });
+  }
+  const clusters = clusterBubbles(bubbles, clustering, sizing, filters);
+  const drawn: ProjectedBubble[] = clusters.map(cluster => ({
+    source: cluster.children[0].source, x: cluster.x, y: cluster.y,
+    diameter: cluster.diameter, rgba: cluster.rgba, cluster,
+  }));
+  for (const p of drawn) {
+    const r = p.diameter / 2, q = p.cluster!;
     for (const [u, v] of [[-1, -1], [1, -1], [-1, 1], [-1, 1], [1, -1], [1, 1]]) {
-      values.push(x + u * radius, y + v * radius, u, v, ...rgba, radius,
-        Number(bucket.B), Number(bucket.S), Number(bucket.V), Number(bucket.delta));
+      values.push(p.x + u * r, p.y + v * r, u, v, ...p.rgba, r,
+        Number(q.B), Number(q.S), Number(q.V), Number(q.delta));
     }
   }
-  return { bubbles, vertexData: new Float32Array(values), vertexCount: bubbles.length * 6, bounds: { ...bounds } };
+  return { bubbles: drawn, sourceBubbles: bubbles, clusters, vertexData: new Float32Array(values),
+    vertexCount: drawn.length * 6, bounds: { ...bounds } };
 }
-/** Reverse draw order resolves overlaps; references CPU source, never GPU pixels. */
-export function hitTestBubble(frame: BubbleFrame, x: number, y: number): BubbleState | null {
+/** Hit the actual drawn aggregate, including its exact CPU children. */
+export function hitTestProjectedBubble(frame: BubbleFrame, x: number, y: number): ProjectedBubble | null {
   const b = frame.bounds;
   if (!Number.isFinite(x) || !Number.isFinite(y) || x < b.left || x >= b.left + b.width
     || y < b.top || y >= b.top + b.height) return null;
   for (let i = frame.bubbles.length - 1; i >= 0; i--) {
     const p = frame.bubbles[i];
-    if ((x - p.x) ** 2 + (y - p.y) ** 2 <= (p.diameter / 2) ** 2) return p.source;
+    if ((x - p.x) ** 2 + (y - p.y) ** 2 <= (p.diameter / 2) ** 2) return p;
   }
   return null;
+}
+/** R09-compatible original-source helper. Cluster consumers use projected hits. */
+export function hitTestBubble(frame: BubbleFrame, x: number, y: number): BubbleState | null {
+  return hitTestProjectedBubble(frame, x, y)?.source ?? null;
 }
 const VERTEX = `#version 300 es
 layout(location=0) in vec2 a_position;
@@ -108,13 +126,14 @@ export class BubbleRenderer {
   private viewport: Viewport | null = null;
   private sizing: BubbleSizing = DEFAULT_BUBBLE_SIZING;
   private filters: BubbleFilters | undefined;
+  private clustering: ClusteringOptions = { mode: "ALL" };
   private disposed = false;
   private lost = false;
   status: RenderStatus = "RENDER ERROR";
   error: string | null = null;
   lastFrame: BubbleFrame = {
     bubbles: [], vertexData: new Float32Array(), vertexCount: 0,
-    bounds: { left: 0, top: 0, width: 0, height: 0 },
+    bounds: { left: 0, top: 0, width: 0, height: 0 }, clusters: [], sourceBubbles: [],
   };
   constructor(
     private canvas: HTMLCanvasElement,
@@ -187,16 +206,17 @@ export class BubbleRenderer {
     this.lost = false;
     try {
       this.initialize();
-      if (this.viewport) this.draw(this.sources, this.viewport, this.sizing, this.filters);
+      if (this.viewport) this.draw(this.sources, this.viewport, this.sizing, this.filters, this.clustering);
     } catch (e) { this.fail(e); }
   };
   draw(
     sources: readonly BubbleState[], vp: Viewport, sizing: BubbleSizing = DEFAULT_BUBBLE_SIZING,
-    filters?: BubbleFilters,
+    filters?: BubbleFilters, clustering: ClusteringOptions = { mode: "ALL" },
   ): BubbleFrame {
     if (this.disposed) throw new Error("Bubble renderer disposed");
     this.sources = sources; this.viewport = vp; this.sizing = sizing; this.filters = filters;
-    this.lastFrame = projectBubbles(sources, vp, sizing, filters);
+    this.clustering = clustering;
+    this.lastFrame = projectBubbles(sources, vp, sizing, filters, clustering);
     if (this.lost || !this.gl || !this.program) return this.lastFrame;
     const gl = this.gl, b = vp.bounds;
     const cssWidth = b.left + b.width, cssHeight = b.top + b.height;

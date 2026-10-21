@@ -1,3 +1,4 @@
+export { R10_SCENARIOS, R10_CONTINUITY, R10_OVERLAY_DEPTH, R10_DENSITY_EXPECTED } from "./r10-density";
 export { R09_SCENARIOS, R09_BUBBLE_EXPECTED, R09_OVERLAY_DEPTH, type BubbleDemoScenario, type BubbleDemoStep } from "./r09-bubbles";
 export { F01_BOOK } from "./f01-book";
 export { F04_TRADES } from "./f04-trades";

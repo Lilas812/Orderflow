@@ -14,7 +14,11 @@ import { DEFAULT_PALETTES, projectHeatmap, type HeatmapStyle, type Palette } fro
 import { useViewport } from "../hooks/useViewport";
 import { HeatmapCanvas, HeatmapLegend, HEATMAP_SCENES, sceneForWidth, type HeatmapId, type HeatmapScene } from "./HeatmapCanvas";
 import { HeatmapDebugControls, type Rgb, type SideStatus } from "./HeatmapDebugControls";
-import { R09_SCENARIOS } from "@workspace/fixtures";
+import { R09_SCENARIOS, R10_SCENARIOS, R10_CONTINUITY } from "@workspace/fixtures";
+import type { BubbleDensity, ClusteringOptions } from "@workspace/render/bubble-clustering";
+
+const ALL_SCN = [...R09_SCENARIOS, ...R10_SCENARIOS];
+const DENSITIES: readonly BubbleDensity[] = ["ALL", "STANDARD", "HIGH_COMPRESSION"];
 import {
   DEFAULT_BUBBLE_SIZING, type BubbleSizing, type BubbleSizingMode,
 } from "@workspace/core/bubble-sizing";
@@ -72,12 +76,12 @@ interface Props {
 }
 
 /** Verification-mode viewport built only from existing core functions: last 60 s (R05 minimum span), price MANUAL. */
-function verificationViewport(s: { endNs: string; priceMinTick: number; priceMaxTick: number }, bounds: ChartBounds, dpr: number): Viewport {
+function verificationViewport(s: { endNs: string; priceMinTick: number; priceMaxTick: number; spanNs?: bigint }, bounds: ChartBounds, dpr: number): Viewport {
   const base = createViewport({
     bounds, latestNs: s.endNs, dpr, price: { minTick: s.priceMinTick, maxTick: s.priceMaxTick },
   });
   return {
-    ...base, time: { minNs: (BigInt(s.endNs) - MIN_SPAN_NS).toString(), maxNs: s.endNs },
+    ...base, time: { minNs: (BigInt(s.endNs) - (s.spanNs ?? MIN_SPAN_NS)).toString(), maxNs: s.endNs },
     timeMode: "HISTORY", priceMode: "MANUAL",
   };
 }
@@ -146,16 +150,27 @@ export function ChartShell({ trades, mockOn, onToggleMock, onAddThird, heatmap: 
     if (heatmap) setHmVp((v) => verificationViewport(heatmap, v.bounds, v.dpr));
   }, [heatmap]);
   /* ---- R09 bubble verification (independent of heatmap F01; viewport reset on scenario id only) ---- */
-  const scn = useMemo(() => (bubbleId ? R09_SCENARIOS.find((s) => s.id === bubbleId) ?? null : null), [bubbleId]);
+  const scn = useMemo(() => (bubbleId ? ALL_SCN.find((s) => s.id === bubbleId) ?? null : null), [bubbleId]);
+  const isR10 = !!scn && R10_SCENARIOS.some((s) => s.id === scn.id);
   const [stage, setStage] = useState(0);
   const [bsMode, setBsMode] = useState<BubbleSizingMode>(DEFAULT_BUBBLE_SIZING.mode);
-  useEffect(() => { setStage(0); }, [bubbleId]);
+  const [density, setDensity] = useState<BubbleDensity>("STANDARD");
+  const [spanS, setSpanS] = useState(600);
+  const [selCluster, setSelCluster] = useState<string | null>(null);
+  useEffect(() => { setStage(0); setSpanS(600); setSelCluster(null); }, [bubbleId]);
   const bubbleSeed = useMemo(() => {
     if (!scn) return null;
     const t0 = scn.events.reduce((m, e) => { const t = BigInt(e.header.exchangeTimeNs!); return m === null || t < m ? t : m; }, null as bigint | null);
     const start = ((t0 ?? 0n) / BUBBLE_NS) * BUBBLE_NS;
+    if (isR10) {
+      return { endNs: (start + 30n * S).toString(), priceMinTick: 79900, priceMaxTick: 80100, spanNs: BigInt(spanS) * S };
+    }
     return { endNs: (start + 6n * S).toString(), priceMinTick: 79980, priceMaxTick: 80020 };
-  }, [scn]);
+  }, [scn, isR10, spanS]);
+  const clustering = useMemo<ClusteringOptions>(() => {
+    const c = isR10 && scn ? R10_CONTINUITY[scn.id] : undefined;
+    return { mode: density, continuity: c ? [c] : [] };
+  }, [density, isR10, scn]);
   const backdrop = useMemo(() => (bubbleId ? bubbleBackdropCells(bubbleId) : null), [bubbleId]);
   useEffect(() => {
     if (bubbleSeed) setHmVp((v) => verificationViewport(bubbleSeed, v.bounds, v.dpr));
@@ -190,9 +205,11 @@ export function ChartShell({ trades, mockOn, onToggleMock, onAddThird, heatmap: 
   const projected = useMemo(() => {
     if (!scn || vp.bounds.width <= 0) return null;
     try {
-      return { list: projectBubbles(bubbles, vp, sizing).bubbles, error: null as string | null };
-    } catch (e) { return { list: null, error: e instanceof Error ? e.message : String(e) }; }
-  }, [scn, bubbles, vp, sizing]);
+      const f = projectBubbles(bubbles, vp, sizing, undefined, clustering);
+      return { list: f.bubbles, sources: f.sourceBubbles, clusters: f.clusters, error: null as string | null };
+    } catch (e) { return { list: null, sources: null, clusters: null, error: e instanceof Error ? e.message : String(e) }; }
+  }, [scn, bubbles, vp, sizing, clustering]);
+  const selected = projected?.clusters?.find((c) => c.id === selCluster) ?? null;
   // The unchanged opaque R06 canvas is clipped to its actual R09 tile footprint.
   // This exposes the lower TRADES-gap layer without inventing depth outside cells.
   const backdropClip = useMemo(() => {
@@ -234,6 +251,8 @@ export function ChartShell({ trades, mockOn, onToggleMock, onAddThird, heatmap: 
     };
     const ro = new ResizeObserver(measure); ro.observe(el); measure();
     const wheel = (e: WheelEvent) => {
+      // Interactive source details scroll locally, never zoom the shared chart.
+      if (e.target instanceof Element && e.target.closest(".bb-tip")) return;
       e.preventDefault();
       const r = el.getBoundingClientRect();
       if (e.deltaY !== 0) zoomRef.current(e.clientX - r.left, e.deltaY > 0 ? 1.15 : 1 / 1.15);
@@ -316,7 +335,7 @@ export function ChartShell({ trades, mockOn, onToggleMock, onAddThird, heatmap: 
         <select className="btn" data-testid="select-bubble" aria-label="Bubble verification scenario" value={bubbleId ?? ""}
           onChange={(e) => onSelectBubble(e.target.value === "" ? null : e.target.value)}>
           <option value="">Bubble off</option>
-          {R09_SCENARIOS.map((s) => <option key={s.id} value={s.id}>Bubble {s.id}</option>)}
+          {ALL_SCN.map((s) => <option key={s.id} value={s.id}>Bubble {s.id}</option>)}
         </select>
         <button type="button" className="btn" data-testid="button-bubble-off" disabled={!scn}
           onClick={() => onSelectBubble(null)}>Bubble off</button>
@@ -357,7 +376,7 @@ export function ChartShell({ trades, mockOn, onToggleMock, onAddThird, heatmap: 
             style={{ "--bb-depth-clip": backdropClip } as CSSProperties}>
             <HeatmapCanvas cells={backdrop.cells} vp={vp} />
           </div>}
-          {scn && <BubbleCanvas bubbles={bubbles} vp={vp} sizing={sizing} />}
+          {scn && <BubbleCanvas bubbles={bubbles} vp={vp} sizing={sizing} clustering={clustering} />}
           <svg width={w} height={h} viewBox={`0 0 ${w} ${h}`} data-testid="chart-svg"
             data-width={w} data-height={h} data-dpr={vp.dpr}>
             <defs><clipPath id="chart-clip"><rect x={0} y={0} width={w} height={h} /></clipPath></defs>
@@ -417,6 +436,21 @@ export function ChartShell({ trades, mockOn, onToggleMock, onAddThird, heatmap: 
                 {(["FIXED", "LINEAR", "SQRT", "LOG"] as const).map((m) => <option key={m} value={m}>{m}</option>)}
               </select>
             </label>
+            <label className="dbg-field">density
+              <select data-testid="select-bubble-density" value={density} onChange={(e) => setDensity(e.target.value as BubbleDensity)}>
+                {DENSITIES.map((m) => <option key={m} value={m}>{m}</option>)}
+              </select>
+            </label>
+            {isR10 && <>
+              <button type="button" className="btn" data-testid="button-bubble-span-10m" aria-pressed={spanS === 600}
+                onClick={() => setSpanS(600)}>10 min</button>
+              <button type="button" className="btn" data-testid="button-bubble-span-3m" aria-pressed={spanS === 180}
+                onClick={() => setSpanS(180)}>3 min</button>
+            </>}
+          </div>
+          <div data-testid="bubble-cluster-count" data-source-count={bubbles.length}
+            data-display-count={projected?.clusters?.length ?? 0}>
+            source bubbles {bubbles.length} / displayed clusters {projected?.clusters?.length ?? 0} / density {density} / continuity {clustering.continuity?.length ? "explicit MOCK exchange-time" : "none (no merging across unknown alignment)"}
           </div>
           <div data-testid="text-bubble-condition">
             condition {replayed?.fin?.condition ?? "—"} / watermark {replayed?.fin?.watermarkNs ?? "none"} / max valid exchange ns {replayed?.fin?.maxSeenValidExchangeNs ?? "none"} / raw events ingested {rawNow}
@@ -431,10 +465,12 @@ export function ChartShell({ trades, mockOn, onToggleMock, onAddThird, heatmap: 
               <th>bucket</th><th>state</th><th>rev</th><th>final</th><th>quality</th><th>diameter</th><th>alpha</th><th>x</th><th>y</th></tr></thead>
             <tbody>
               {bubbles.map((b) => {
-                const k = b.bucket, pr = projected?.list?.find((p) => p.source === b) ?? null;
+                const k = b.bucket;
+                const cl = projected?.clusters?.find((c) => c.childrenIds.includes(b.id)) ?? null;
+                const pr = projected?.sources?.find((p) => p.source === b) ?? null;
                 return (
                   <tr key={b.id} data-testid={`bubble-row-${b.id}`} data-status={b.status} data-revision={b.revision}
-                    data-projected={String(!!pr)}>
+                    data-projected={String(!!pr)} data-cluster-id={cl?.id ?? ""}>
                     <td title={b.id}>{b.id}</td><td>{fmtJst(k.startNs)}</td><td>{fmtJst(k.endNs)}</td><td>{k.minTick}..{k.maxTick}</td>
                     <td>{k.B.toString()}</td><td>{k.S.toString()}</td><td>{k.U.toString()}</td><td>{k.V_raw.toString()}</td>
                     <td>{k.V === null ? "withheld (incomplete)" : k.V.toString()}</td>
@@ -447,10 +483,42 @@ export function ChartShell({ trades, mockOn, onToggleMock, onAddThird, heatmap: 
                 );
               })}
               {bubbles.length === 0 && (
-                <tr data-testid="bubble-row-empty"><td colSpan={19}>No bubble state yet at this step (no accepted Trade bucket; not a statement of zero market activity).</td></tr>
+                <tr data-testid="bubble-row-empty"><td colSpan={20}>No bubble state yet at this step (no accepted Trade bucket; not a statement of zero market activity).</td></tr>
               )}
             </tbody>
           </table>
+          <table className="hm-table" data-testid="bubble-cluster-table">
+            <thead><tr><th>cluster</th><th>children</th><th>B</th><th>S</th><th>V</th><th>delta</th><th>state</th><th>rev</th><th>diameter</th>
+              <th>x</th><th>y</th><th>bounds x</th><th>bounds y</th><th>audit</th></tr></thead>
+            <tbody>
+              {(projected?.clusters ?? []).map((c) => (
+                <tr key={c.id} data-testid={`bubble-cluster-row-${c.id}`} data-children-count={c.children.length}
+                  data-selected={String(c.id === selCluster)}>
+                  <td title={c.id}>{c.id}</td><td>{c.children.length}</td><td>{c.B.toString()}</td><td>{c.S.toString()}</td>
+                  <td>{c.V.toString()}</td><td>{c.delta.toString()}</td><td>{c.status}</td><td>{c.revision}</td>
+                  <td>{c.diameter.toFixed(6)}</td><td>{c.x.toFixed(2)}</td><td>{c.y.toFixed(2)}</td>
+                  <td>{c.spread.minX.toFixed(2)}..{c.spread.maxX.toFixed(2)}</td>
+                  <td>{c.spread.minY.toFixed(2)}..{c.spread.maxY.toFixed(2)}</td>
+                  <td><button type="button" className="btn" data-testid={`button-cluster-audit-${c.id}`}
+                    onClick={() => setSelCluster(c.id === selCluster ? null : c.id)}>{c.id === selCluster ? "Hide" : "Audit"}</button></td>
+                </tr>
+              ))}
+              {!(projected?.clusters?.length) && (
+                <tr data-testid="bubble-cluster-row-empty"><td colSpan={14}>No displayed cluster at this step or viewport.</td></tr>
+              )}
+            </tbody>
+          </table>
+          {selected && (
+            <div className="bb-audit" data-testid="bubble-cluster-audit" data-cluster-id={selected.id}>
+              <div>Selected cluster {selected.id}: {selected.children.length} source bubbles, {selected.status} / rev {selected.revision}</div>
+              <div>B {selected.B.toString()} / S {selected.S.toString()} / V {selected.V.toString()} / Delta {selected.delta.toString()} / |Delta|/V {selected.imbalancePercent.toFixed(6)}%</div>
+              <div>time {selected.startNs} .. {selected.endNs} ns / ticks {selected.minTick}..{selected.maxTick}</div>
+              <div>children {selected.childrenIds.join(", ")}</div>
+              <div>spread maxCenterDistance {selected.spread.maxCenterDistance.toFixed(3)} px / footprint {selected.spread.footprintWidth.toFixed(3)} x {selected.spread.footprintHeight.toFixed(3)} px
+                / center width {selected.spread.width.toFixed(3)} height {selected.spread.height.toFixed(3)}</div>
+              <div>Quantities are source Trade aggregates, not inferred from pixels.</div>
+            </div>
+          )}
           <p className="note">MOCK / SIMULATED. CPU projection values are not proof of GPU success; check BUBBLE GL status. Hidden or INCOMPLETE buckets are listed here, never treated as no activity.</p>
         </div>
       ) : (

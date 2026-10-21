@@ -98,3 +98,59 @@ mtime_ms = 1792592949480
 storage_uri = "gcs://replit-rams-assets-pike/rams/assets/repl:396298eb-318f-4ad8-9c4e-13a5b19e25a9/7433231a-af8c-456e-bdcf-6df1c16bcff4/80852f67-be02-44e5-8f61-47867694e4ba"
 storage_version_token = "1792593053637041"
 content_type = "image/png"
+
+[[outputs]]
+id = "8N0kEQyj1e2QfD4cTalH2"
+uri = "file://attached_assets/r10-all.png"
+type = "image"
+title = "R10 — ALL：4個を個別表示"
+description = "10分の検証範囲。元バブル4個をWebGL2で描画。重なりがあっても統合しません。"
+logical_id = "4fb740bc-5ab8-4381-9f54-96d0afe882fd"
+content_hash = "sha256:1213cc26fc6dc8b7590a84d4c4e9ebe791f4fa254408849a25ca618379e8c8ed"
+size = 141251
+mtime_ms = 1792594569391
+storage_uri = "gcs://replit-rams-assets-pike/rams/assets/repl:396298eb-318f-4ad8-9c4e-13a5b19e25a9/4fb740bc-5ab8-4381-9f54-96d0afe882fd/992eb260-1bd1-477a-acbf-a84ad6947185"
+storage_version_token = "1792595147664060"
+content_type = "image/png"
+
+[[outputs]]
+id = "j1SPun_j7c0Q-zovVz_xD"
+uri = "file://attached_assets/r10-standard-hover-expanded.png"
+type = "image"
+title = "R10 — STANDARD：2表示とホバー内訳展開"
+description = "買い3個を統合。B69／S12／V81／Delta +57、直径22.4px。クリック固定後に内訳を展開しています。"
+logical_id = "25b0854d-a4d2-4c21-ac9e-c71552a4d781"
+content_hash = "sha256:b791287caca8dc70808c862632c00b0ff426a561b3cc24bc93eed7c59b511db1"
+size = 181574
+mtime_ms = 1792594996287
+storage_uri = "gcs://replit-rams-assets-pike/rams/assets/repl:396298eb-318f-4ad8-9c4e-13a5b19e25a9/25b0854d-a4d2-4c21-ac9e-c71552a4d781/1b991e92-637c-4d3a-a07e-862428658ba5"
+storage_version_token = "1792595148943596"
+content_type = "image/png"
+
+[[outputs]]
+id = "byAFqkxcAqG06mrGA5Aam"
+uri = "file://attached_assets/r10-high-compression.png"
+type = "image"
+title = "R10 — HIGH_COMPRESSION：2表示"
+description = "10分の指定ズームで買いクラスター1個と売りバブル1個。実WebGL2で確認。"
+logical_id = "dc051dd8-2025-44b3-929b-b3fe9a6eea03"
+content_hash = "sha256:2a0be2b3064dad05695e687a0bac404ff23222813582e7d917e5d38dfd66f70c"
+size = 144319
+mtime_ms = 1792594570631
+storage_uri = "gcs://replit-rams-assets-pike/rams/assets/repl:396298eb-318f-4ad8-9c4e-13a5b19e25a9/dc051dd8-2025-44b3-929b-b3fe9a6eea03/e44d1f4b-3261-4610-9365-c7aa2246c006"
+storage_version_token = "1792595150255213"
+content_type = "image/png"
+
+[[outputs]]
+id = "sJLGVNJhC_rc0v7BD1vTG"
+uri = "file://attached_assets/r10-source-details.png"
+type = "image"
+title = "R10 — 元バブルの内訳をスクロール確認"
+description = "構成元のID、時刻、価格帯、B／S／V、Delta、FINAL状態を元データ参照で表示。内訳のスクロールでチャートはズームしません。"
+logical_id = "6d982af5-bbe3-4522-bdea-4201ef224e3a"
+content_hash = "sha256:f40ccad580b4d39d1719665eeb51d4788903e2abb2a886567ea92de232fe85e1"
+size = 184024
+mtime_ms = 1792594996907
+storage_uri = "gcs://replit-rams-assets-pike/rams/assets/repl:396298eb-318f-4ad8-9c4e-13a5b19e25a9/6d982af5-bbe3-4522-bdea-4201ef224e3a/23bd41e3-f557-4dfa-8c35-98d969d4dc45"
+storage_version_token = "1792595151544963"
+content_type = "image/png"
