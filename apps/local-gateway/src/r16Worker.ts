@@ -20,6 +20,12 @@ const storage=new StorageAdapter(dir), scope=storage.register(config(),ns(0));
 const pipeline=new EventPipeline(storage);
 const transportLatency=new Latencies();
 const initialCpu=process.cpuUsage();
+const diagnostics=mode.startsWith("load:")?await import("./r161Diagnostics"):null;
+const trace=mode==="load:timing"?new diagnostics!.DiagnosticTrace():null;
+const cpu=mode==="load:cpu"?new diagnostics!.CpuCapture():null;
+if(trace){trace.attach(storage);pipeline.trace=trace;}
+if(cpu)await cpu.start();
+const timed=<T,>(name:string,operation:()=>T):T=>trace?trace.measure(name,operation):operation();
 function sizes(path: string): {db:number;wal:number;chunks:number;total:number} {
   const result={db:0,wal:0,chunks:0,total:0};
   for(const entry of readdirSync(path,{withFileTypes:true})) {
@@ -35,23 +41,24 @@ function sizes(path: string): {db:number;wal:number;chunks:number;total:number} 
   return result;
 }
 function summary(withChunk: boolean) {
-  const start=performance.now(), records=storage.journal.records(scope);
+  const start=performance.now(), records=timed("summary.audit_read",()=>storage.journal.records(scope));
+  trace?.sampleMemory("summary_after_audit_read");
   const rawReadMs=performance.now()-start;
   let chunkWriteMs: number | null=null, chunkBytes=0;
   if(withChunk && records.length) {
     const begin=performance.now();
-    const segment=new SegmentWriter(storage.journal).write(scope,"L2_MBP",records.map(r=>r.position));
+    const segment=timed("summary.chunk_write_checksum",()=>new SegmentWriter(storage.journal).write(scope,"L2_MBP",records.map(r=>r.position)));
     chunkWriteMs=performance.now()-begin; chunkBytes=segment.bytes;
   }
   const queryStart=performance.now();
   const maxEventNs=records.reduce((max,r)=>BigInt(r.eventNs ?? r.receiveNs)>max?BigInt(r.eventNs ?? r.receiveNs):max,BigInt(ns(0)));
-  const query=new RangeQuery(storage.journal).query(scope,"L2_MBP",ns(0),
-    (maxEventNs+1n).toString());
+  const query=timed("summary.range_snapshot_read",()=>new RangeQuery(storage.journal).query(scope,"L2_MBP",ns(0),
+    (maxEventNs+1n).toString()));
   const rangeQueryMs=performance.now()-queryStart;
-  const restoreStart=performance.now(); const restored=storage.journal.replay(scope);
+  const restoreStart=performance.now(); const restored=timed("summary.restore",()=>storage.journal.replay(scope));
   const restoreMs=performance.now()-restoreStart;
   return { metrics:pipeline.metrics.snapshot(), auditCount:records.length,
-    auditHash:checksum(records.map(r=>r.input)), committedCursor:storage.catalog.manifest().recordCount,
+    auditHash:timed("summary.audit_checksum",()=>checksum(records.map(r=>r.input))), committedCursor:storage.catalog.manifest().recordCount,
     finalBidQty:restored.lastGoodBook.bids.get(80000) ?? null,
     uniqueAccepted:records.filter(r=>r.applied).length,
     rangeQueryMs, rangeStatus:query.status,rangeFaults:query.faults,rangeRecords:query.records.length, rawReadMs, restoreMs, chunkWriteMs,chunkBytes,
@@ -78,29 +85,45 @@ if(mode==="restore") {
   } else {
     send({kind:"result",...summary(true)}); storage.close(); process.disconnect?.();
   }
-} else if(mode==="load") {
+} else if(mode==="load" || mode==="load:timing" || mode==="load:cpu") {
   let nextId=1, finishing=false;
-  process.on("message", raw=>{
+  process.on("message", async raw=>{
     const message=raw as {kind:string;id:number;events:MarketEvent[];bytes:number;submittedMonoNs:string};
     if(message.kind==="batch") {
       if(finishing || message.id!==nextId++ || message.events.length>128 ||
         Buffer.byteLength(JSON.stringify(message),"utf8")!==message.bytes || message.bytes>8*1024*1024 ||
         !/^[0-9]+$/.test(message.submittedMonoNs) || BigInt(message.submittedMonoNs)>process.hrtime.bigint())
         throw new Error("Invalid or out-of-order bounded IPC batch");
+      const transitMs=Number(process.hrtime.bigint()-BigInt(message.submittedMonoNs))/1e6;
       for(const event of message.events) if(!pipeline.receive(scope,event)) throw new Error("Unexpected loss in pausable load");
-      send({kind:"received",id:message.id,count:message.events.length,bytes:message.bytes});
+      send({kind:"received",id:message.id,count:message.events.length,bytes:message.bytes,...(trace?{transitMs}:{})});
       if(!pipeline.drain()) throw new Error("Load storage failure");
       const transportMs=Number(process.hrtime.bigint()-BigInt(message.submittedMonoNs))/1e6;
       for(const _event of message.events)transportLatency.add(transportMs);
       const m=pipeline.metrics;
-      send({kind:"committed",id:message.id,cpu:process.cpuUsage(initialCpu),metrics:{
+      const ackStarted=performance.now();
+      send({kind:"committed",id:message.id,...(trace?{ackMonoNs:process.hrtime.bigint().toString()}:{}),cpu:process.cpuUsage(initialCpu),metrics:{
         receivedEvents:m.receivedEvents,acceptedEvents:m.acceptedEvents,appliedEvents:m.appliedEvents,
         persistedEvents:m.persistedEvents,auditRecords:m.auditRecords,explicitlyLostEvents:m.explicitlyLostEvents,
         duplicateEvents:m.duplicateEvents,queueDepth:m.queueDepth,peakQueueDepth:m.peakQueueDepth,
         lastPersistedPosition:m.lastPersistedPosition,
       }});
+      trace?.add("worker.commit_ack_send_synchronous",performance.now()-ackStarted);
     } else if(message.kind==="finish") {
-      finishing=true; send({kind:"result",...summary(true)}); storage.close(); process.disconnect?.();
+      finishing=true;
+      const profile=cpu?await cpu.stop(dir):null;
+      trace?.sampleMemory("after_ingestion_before_gc");
+      const gc=(globalThis as {gc?:()=>void}).gc;
+      if(trace && gc){gc();trace.sampleMemory("after_ingestion_after_diagnostic_gc");}
+      const result=summary(true);
+      trace?.sampleMemory("after_summary");
+      const retained={guardSeenEntries:[...storage.states.values()].reduce((n,s)=>n+s.guard.seen.size,0),
+        tradeRawReferences:[...storage.trades.values()].reduce((n,s)=>n+s.rawEvents.length,0),
+        queueDepth:pipeline.metrics.queueDepth,queueBytes:pipeline.metrics.queueBytes};
+      send({kind:"result",...result,...(diagnostics?{diagnostics:{trace:trace?.report(),profile,retained,
+        snapshotWrites:0,tradeDedupCalls:trace?.report().timings["candidate.trade_dedup"]?.count??0,
+        renderNotifications:"NOT EXERCISED; browser disconnected"}}:{})});
+      trace?.detach();storage.close(); process.disconnect?.();
     } else throw new Error("Invalid IPC command");
   });
   send({kind:"ready"});

@@ -12,7 +12,8 @@
     "typecheck": "tsc --noEmit",
     "build": "tsc --noEmit",
     "test": "vitest run",
-    "load:r16": "tsx src/r16Load.ts"
+    "load:r16": "tsx src/r16Load.ts",
+    "diagnostics:r161": "tsx src/r161Diagnostics.ts"
   },
   "dependencies": {
     "@workspace/core": "workspace:*",

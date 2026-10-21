@@ -8,8 +8,10 @@ import { createTradeStore, ingestTrade, type TradeStore } from "@workspace/core/
 import type { MarketEvent } from "@workspace/core/events";
 import { maxNs } from "./metrics";
 import { requireOwnedDirectory } from "./r16Fixtures";
+import type { Trace } from "./r161Diagnostics";
 
 export class StorageAdapter {
+  trace: Trace | undefined;
   readonly catalog: SqliteCatalog;
   readonly journal: EventJournal;
   readonly states = new Map<string, MarketQualityState>();
@@ -49,14 +51,17 @@ export class StorageAdapter {
   }
   private applyTrade(id: string, event: MarketEvent, stores: Map<string, TradeStore>): string {
     const current = stores.get(id) ?? createTradeStore(event.header);
-    const result = ingestTrade(current,event); stores.set(id,result.store); return result.disposition;
+    const result = this.trace ? this.trace.measure("candidate.trade_dedup",()=>ingestTrade(current,event)) : ingestTrade(current,event);
+    stores.set(id,result.store); return result.disposition;
   }
   commit(scopeId: string, inputs: readonly JournalInput[]) {
     let state = this.states.get(scopeId);
     if (!state) throw new Error("Unregistered scope");
     const trades = new Map(this.trades);
     const outcomes = inputs.map(input => {
-      const result = applyJournalInput(state!,input); state = result.state;
+      const stage=input.type==="EVENT" && input.event.kind==="L2_SNAPSHOT"?"candidate.snapshot_sequence_quality":"candidate.sequence_quality";
+      const result = this.trace ? this.trace.measure(stage,()=>applyJournalInput(state!,input)) : applyJournalInput(state!,input);
+      state = result.state;
       let applied = result.applied, duplicate = result.outcome === "DUPLICATE";
       for (const event of eventsIn(input)) if (event.header.channel === "TRADES" && (applied || duplicate)) {
         const disposition = this.applyTrade(scopeId,event,trades);
@@ -67,6 +72,7 @@ export class StorageAdapter {
     });
     // Candidate states above are private until FULL transaction commit has returned.
     const committed = this.journal.stage(scopeId,inputs).commit(this.beforeCommit);
+    const publishStarted=this.trace?performance.now():0;
     this.states.set(scopeId,state!);
     this.trades.clear(); for (const [key,value] of trades) this.trades.set(key,value);
     const firstPosition=BigInt(committed.lastPosition)-BigInt(inputs.length)+1n;
@@ -77,6 +83,8 @@ export class StorageAdapter {
         this.lastLogicalAppliedTime=maxNs(this.lastLogicalAppliedTime,e.header.exchangeTimeNs);
       }
     }
+    this.trace?.add("canonical.publish",performance.now()-publishStarted);
+    this.trace?.count("committed.input_entries",inputs.length);
     return { ...committed, outcomes };
   }
   condition(scopeId: string, channel: QualityChannel, atNs: string, status: "GAP" | "RESYNCING", reason: string) {

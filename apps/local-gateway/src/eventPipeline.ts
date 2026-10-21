@@ -7,6 +7,7 @@ import { Metrics, maxNs, type ModelStamp } from "./metrics";
 import { ReconnectController } from "./reconnectController";
 import type { MarketQualityState } from "@workspace/core/quality-timeline";
 import type { TradeStore } from "@workspace/core/trade-store";
+import type { Trace } from "./r161Diagnostics";
 
 export interface QueueLimits { events: number; bytes: number; high: number; low: number; batch: number }
 export const LIMITS: Readonly<QueueLimits> = Object.freeze({ events: 2048, bytes: 8*1024*1024, high: .75, low: .5, batch: 128 });
@@ -16,6 +17,7 @@ interface Fault {
   status: "GAP" | "RESYNCING"; reason: string; recorded: boolean;
 }
 export class EventPipeline {
+  trace: Trace | undefined;
   readonly metrics: Metrics;
   private queue: Entry[] = [];
   private bytes = 0; private ordinal = 0;
@@ -72,8 +74,9 @@ export class EventPipeline {
     const m = this.metrics; m.receivedEvents++;
     let event: MarketEvent;
     try {
-      event = validateMarketEvent(input);
-      inputMetadata({ type: "EVENT", event });
+      event = this.trace ? this.trace.measure("ingress.event_validation",()=>validateMarketEvent(input)) : validateMarketEvent(input);
+      if(this.trace)this.trace.measure("ingress.metadata_validation",()=>inputMetadata({type:"EVENT",event}));
+      else inputMetadata({ type: "EVENT", event });
       if(event.header.channel==="TRADES" && event.header.exchangeTimeNs===null)
         throw new TypeError("R08 canonical Trade requires known exchange time; never substitute receipt time");
       const identity = this.storage.states.get(scopeId)?.config.identity;
@@ -88,14 +91,16 @@ export class EventPipeline {
       return false;
     }
     m.latestExchangeEventTime = maxNs(m.latestExchangeEventTime,event.header.exchangeTimeNs);
-    const bytes = Buffer.byteLength(canonical(event),"utf8");
+    const encodedForBytes=this.trace?this.trace.measure("ingress.canonical_for_bytes",()=>canonical(event)):canonical(event);
+    const bytes = Buffer.byteLength(encodedForBytes,"utf8");
     if (this.queue.length+1 > this.limits.events || this.bytes+bytes > this.limits.bytes) {
       m.overflowEvents++; m.explicitlyLostEvents++;
       this.invalidate(scopeId,event.header.channel as QualityChannel,event.header.receiveTimeNs,"QUEUE OVERFLOW: delivery not admitted");
       return false;
     }
     // Strictly bounded ownership copy: caller mutation cannot change a queued input.
-    const copy = JSON.parse(canonical(event)) as MarketEvent;
+    const encodedForCopy=this.trace?this.trace.measure("ingress.canonical_for_copy",()=>canonical(event)):canonical(event);
+    const copy = this.trace?this.trace.measure("ingress.clone_parse",()=>JSON.parse(encodedForCopy)) as MarketEvent:JSON.parse(encodedForCopy) as MarketEvent;
     this.queue.push({ scopeId,event:copy,bytes,ordinal:++this.ordinal,mono:this.clock() });
     this.bytes += bytes; m.depth(this.queue.length,this.bytes,this.queue[0]?.mono??null); this.watermark();
     return true;
@@ -143,6 +148,7 @@ export class EventPipeline {
       for (let i=0;i<group.length;i++) {
         const e=group[i], result=commit.outcomes[i], position=(startPosition+BigInt(i)).toString();
         m.queueWait.add(Math.max(0,begin-e.mono)); m.processing.add(Math.max(0,end-e.mono));
+        this.trace?.add("storage.queue_wait",Math.max(0,begin-e.mono));
         m.latestPersistedEventTime=maxNs(m.latestPersistedEventTime,e.event.header.exchangeTimeNs);
         if (result.duplicate) m.duplicateEvents++;
         else if (result.applied) {

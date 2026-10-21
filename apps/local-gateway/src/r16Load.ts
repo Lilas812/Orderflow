@@ -9,7 +9,7 @@ export interface LoadSpec { label:string;rate:number;durationMs:number }
 export const LOAD_LIMITS=Object.freeze({workerRss:512*1024*1024,totalRss:768*1024*1024,hardMs:30_000,heapMiB:256});
 export function worker(mode: string, dir: string): ChildProcess {
   return fork(new URL("./r16Worker.ts",import.meta.url),[mode,dir],{
-    execArgv:["--max-old-space-size=256","--import","tsx"],stdio:["ignore","pipe","pipe","ipc"],
+    execArgv:["--max-old-space-size=256",...(mode==="load:timing"?["--expose-gc"]:[]),"--import","tsx"],stdio:["ignore","pipe","pipe","ipc"],
   });
 }
 export function processRss(pid: number): number {
@@ -35,10 +35,18 @@ async function recoveredCursor(dir:string, remainingMs:number):Promise<string|nu
     child.on("exit",code=>{clearTimeout(timer);clearInterval(monitor);resolve(code===0?cursor:null);});
   });
 }
-export async function measureLoad(spec: LoadSpec) {
+export async function measureLoad(spec: LoadSpec, options:{diagnostic?:"timing"|"cpu";diagnosticEventLimit?:number}={}) {
   if(!Number.isSafeInteger(spec.rate) || spec.rate<=0 || spec.rate>50_000 ||
     ![100,1000].includes(spec.durationMs)) throw new Error("Outside approved finite load envelope");
-  const dir=ownedDirectory(), child=worker("load",dir), credit=new IpcCredits();
+  if(options.diagnosticEventLimit!==undefined && (!options.diagnostic ||
+    !Number.isSafeInteger(options.diagnosticEventLimit) || options.diagnosticEventLimit<1 || options.diagnosticEventLimit>512))
+    throw new Error("Only explicitly capped diagnostic runs may limit inputs (1..512)");
+  const dir=ownedDirectory();
+  const diagnostic=options.diagnostic?await import("./r161Diagnostics"):null;
+  const parentTrace=options.diagnostic==="timing"?new diagnostic!.DiagnosticTrace():null;
+  const parentCpu=options.diagnostic==="cpu"?new diagnostic!.CpuCapture():null;
+  if(parentCpu)await parentCpu.start();
+  const child=worker(options.diagnostic?`load:${options.diagnostic}`:"load",dir), credit=new IpcCredits();
   const started=performance.now(), initialCpu=process.cpuUsage(), requested=spec.rate*spec.durationMs/1000;
   let sourceStart:number|null=null,lastSend:number|null=null,firstReceived:number|null=null,lastReceived:number|null=null;
   let lastCommit:number|null=null,received=0,sent=0,id=0,finish=false,writeReady=true;
@@ -65,18 +73,23 @@ export async function measureLoad(spec: LoadSpec) {
     const pump=setInterval(()=>{
       if(ended || stopReason || sourceStart===null || finish || !writeReady) return;
       const elapsed=performance.now()-sourceStart;
-      const due=Math.min(requested,Math.floor(elapsed*spec.rate/1000));
+      const due=Math.min(requested,options.diagnosticEventLimit??requested,Math.floor(elapsed*spec.rate/1000));
       if(elapsed<spec.durationMs && sent<due) {
         const count=Math.min(128,due-sent,2048-credit.count);
         if(count<1 || credit.paused) return;
-        const events=Array.from({length:count},(_,i)=>eventAt(sent+i,spec.rate));
-        const next=id+1, message=ipcBatch(next,events,process.hrtime.bigint().toString()), bytes=message.bytes;
+        const generate=()=>Array.from({length:count},(_,i)=>eventAt(sent+i,spec.rate));
+        const events=parentTrace?parentTrace.measure("parent.mock_generation",generate):generate();
+        const next=id+1, encode=()=>ipcBatch(next,events,process.hrtime.bigint().toString());
+        const message=parentTrace?parentTrace.measure("parent.json_serialization_and_bytes",encode):encode(),bytes=message.bytes;
         if(!credit.reserve(next,count,bytes)) return;
         id=next; sent+=count; lastSend=performance.now();
+        const sendStarted=performance.now();
         writeReady=child.send(message,error=>{
+          parentTrace?.add("parent.ipc_send_callback_wait",performance.now()-sendStarted);
           if(error) stop(`IPC send error: ${error.message}`);
           else writeReady=true;
         });
+        parentTrace?.add("parent.ipc_send_synchronous",performance.now()-sendStarted);
       }
       // The offering window really ends at 100ms/1s. Paused, never-submitted
       // test inputs are counted explicitly, not silently emitted after the window.
@@ -90,8 +103,12 @@ export async function measureLoad(spec: LoadSpec) {
           const pending=credit.pending.get(message.id);
           if(!pending || pending.count!==message.count || pending.bytes!==message.bytes) throw new Error("Receipt credit does not match submitted payload");
           credit.received(message.id); received+=message.count;
+          if(typeof message.transitMs==="number")parentTrace?.add("parent.send_to_received_handler",message.transitMs);
           firstReceived??=performance.now(); lastReceived=performance.now();
-        } else if(message.kind==="committed") { credit.committed(message.id); lastCommit=performance.now();lastMetrics=message.metrics;lastCpu=message.cpu; }
+        } else if(message.kind==="committed") {
+          if(typeof message.ackMonoNs==="string")parentTrace?.add("parent.commit_ack_return_transit",Number(process.hrtime.bigint()-BigInt(message.ackMonoNs))/1e6);
+          credit.committed(message.id); lastCommit=performance.now();lastMetrics=message.metrics;lastCpu=message.cpu;
+        }
         else if(message.kind==="result") final=message;
         else stop("Unexpected worker message");
       } catch(error) {stop(`IPC protocol error: ${error}`);}
@@ -105,6 +122,7 @@ export async function measureLoad(spec: LoadSpec) {
       const cursor=final?.committedCursor ?? await recoveredCursor(dir,LOAD_LIMITS.hardMs-(performance.now()-started));
       const durable=cursor===null ? null:Number(cursor);
       const elapsedMs=performance.now()-started;
+      const parentProfile=parentCpu?await parentCpu.stop(dir,"parent"):null;
       const cpu=process.cpuUsage(initialCpu), workerCpu=final?.cpu ?? lastCpu;
       if(workerCpu) cpuPercent=(cpu.user+cpu.system+workerCpu.user+workerCpu.system)/(elapsedMs*1000)*100;
       const report={
@@ -139,8 +157,12 @@ export async function measureLoad(spec: LoadSpec) {
         diskAtWorkerExit:diskSizes(dir),
         safeCompleted:!!final && code===0 && !stopReason,stopReason,
         limits:LOAD_LIMITS,note:"MOCK only; timings include IPC/backpressure. GPU not measured. Peak RSS sampled every 10ms.",
+        diagnostics:options.diagnostic?{kind:options.diagnostic,parent:parentTrace?.report(),parentProfile,
+          worker:final?.diagnostics??null,directory:dir,eventLimit:options.diagnosticEventLimit??null,
+          overhead:"NOT FOR BASELINE PERFORMANCE COMPARISON"}:null,
       };
-      removeOwnedDirectory(dir); resolve(report);
+      if(!options.diagnostic)removeOwnedDirectory(dir);
+      resolve(report);
     });
   });
 }
