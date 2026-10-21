@@ -1,0 +1,19 @@
+kind = "web"
+previewPath = "/"
+title = "Orderflow Lab"
+description = "R00-only React shell for a future CME NQ orderflow analysis desktop application. MOCK and NO DATA only; zero market events, no market connection, no chart engine."
+version = "1.0.0"
+id = "artifacts/orderflow-lab"
+router = "path"
+
+[[services]]
+name = "web"
+paths = ["/"]
+localPort = 22274
+
+[services.development]
+run = "pnpm --filter @workspace/orderflow-lab run dev"
+
+[services.env]
+PORT = "22274"
+BASE_PATH = "/"
