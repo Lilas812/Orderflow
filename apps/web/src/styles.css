@@ -103,4 +103,22 @@ body {
 .dl-yscale { display: flex; flex-direction: column; justify-content: space-between; padding: 4px 6px; border-top: 1px solid #303443; background: #10131b; font-size: 10px; color: #9cA3b4; font-family: Consolas, ui-monospace, monospace; overflow: hidden; }
 .bb-scope-line { stroke: #b9a4f0; stroke-width: 1; stroke-dasharray: 2 4; }
 .bb-scope-text { fill: #b9a4f0; font-size: 10px; }
+.cs-grid.cs-ladder { grid-template-columns: minmax(0, 1fr) 72px var(--lad-w, 300px); }
+.cs-ladder .lad-col { grid-column: 3; grid-row: 1; position: relative; min-height: 0; overflow: hidden; background: #0c0e14; border-left: 1px solid #303443; }
+.lad-plot { position: absolute; inset: 0; overflow: hidden; }
+.lad-row { position: absolute; left: 0; right: 0; transform: translateY(-50%); display: grid; grid-template-columns: 1fr 1fr 1fr; align-items: center; font-family: Consolas, ui-monospace, monospace; border-bottom: 1px solid rgba(48, 52, 67, 0.4); white-space: nowrap; overflow: hidden; }
+.lad-q { padding: 0 8px; }
+.lad-ask { text-align: right; color: #B548DB; background: rgba(181, 72, 219, 0.1); }
+.lad-bid { text-align: left; color: #17C96B; background: rgba(23, 201, 107, 0.1); }
+.lad-q[data-status]:not([data-status="KNOWN"]) { color: #6b7390; background: transparent; }
+.lad-price { text-align: center; color: #e8eaf0; }
+.lad-row[data-is-best-bid="true"] { box-shadow: inset 0 -1px 0 #17C96B; }
+.lad-row[data-is-best-ask="true"] { box-shadow: inset 0 1px 0 #B548DB; }
+.lad-tag { font-style: normal; font-size: 9px; margin-left: 4px; padding: 0 3px; border: 1px solid; border-radius: 2px; }
+.lad-tag-ask { color: #B548DB; } .lad-tag-bid { color: #17C96B; }
+.lad-empty { padding: 12px; color: #6b7390; letter-spacing: 0.1em; }
+.cs-ladder .lad-info { grid-column: 3; grid-row: 2 / 4; overflow: auto; min-height: 0; padding: 4px 8px; font-size: 11px; line-height: 1.4; color: #9cA3b4; background: #10131b; border-top: 1px solid #303443; font-family: Consolas, ui-monospace, monospace; display: flex; flex-direction: column; gap: 2px; word-break: break-all; }
+.lad-info .dim { color: #6b7390; }
+.lad-info b { color: #e8eaf0; font-weight: 500; }
+.lad-head { position: absolute; left: 0; right: 0; top: 0; z-index: 1; display: grid; grid-template-columns: 1fr 1.2fr 1fr; padding: 2px 0; font-size: 10px; text-align: center; color: #9ca3b4; background: #10131b; pointer-events: none; }
 .cs-heatmap .hm-legend { min-width: 0; overflow-x: auto; }

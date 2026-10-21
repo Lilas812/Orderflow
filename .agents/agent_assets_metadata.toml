@@ -196,3 +196,31 @@ mtime_ms = 1792597670886
 storage_uri = "gcs://replit-rams-assets-pike/rams/assets/repl:396298eb-318f-4ad8-9c4e-13a5b19e25a9/46010029-0560-4bff-bcf5-218a4e5067f3/b465eecf-462b-4131-b50e-5d501665f8bc"
 storage_version_token = "1792597904339174"
 content_type = "image/png"
+
+[[outputs]]
+id = "OmjkzqPOS6j8pka7rb1WW"
+uri = "file://attached_assets/r12-ladder-1280x720.png"
+type = "image"
+title = "R12：1280×720・価格ラダーとWebGL2ヒートマップ"
+description = "独立したMOCK板のBid60/20・Ask30/15、Bestの強調、既存価格軸、NO DATAのDeltaを表示。ヒートマップとは別の入力scopeです。"
+logical_id = "648f9ad5-4535-41d8-acf7-ac07e6eb6f3d"
+content_hash = "sha256:5cefd82ffb3d53ea1db7b1b6b64ed5561f45c7ca0174543942edf6e4cf0c3156"
+size = 113003
+mtime_ms = 1792600168053
+storage_uri = "gcs://replit-rams-assets-pike/rams/assets/repl:396298eb-318f-4ad8-9c4e-13a5b19e25a9/648f9ad5-4535-41d8-acf7-ac07e6eb6f3d/70e9c38f-1cc9-431e-9463-4d6702526211"
+storage_version_token = "1792600198793481"
+content_type = "image/png"
+
+[[outputs]]
+id = "mReZc11LS3ykdjAH6uELf"
+uri = "file://attached_assets/r12-ladder-delta-1920x1080.png"
+type = "image"
+title = "R12：1920×1080・価格ラダーとDelta比較"
+description = "F-04のDelta+19、F-05のDelta−2を独立セッションのまま比較。ラダーも独立した最新MOCK板を維持します。"
+logical_id = "aa2fca16-9869-4eb0-b875-5a37719ee6c5"
+content_hash = "sha256:5f157d07643ce317cd0245dbcd49781f707ae45e6f55166fd8c42f979649c476"
+size = 259937
+mtime_ms = 1792600079473
+storage_uri = "gcs://replit-rams-assets-pike/rams/assets/repl:396298eb-318f-4ad8-9c4e-13a5b19e25a9/aa2fca16-9869-4eb0-b875-5a37719ee6c5/32a95cdb-9e68-4c00-b8e1-0019c57c3c65"
+storage_version_token = "1792600200140187"
+content_type = "image/png"

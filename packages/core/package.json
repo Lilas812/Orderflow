@@ -17,7 +17,8 @@
     "./bubble-aggregate": "./src/bubbleAggregate.ts",
     "./bubble-sizing": "./src/bubbleSizing.ts",
     "./bubble-finality": "./src/bubbleFinality.ts",
-    "./delta-timeline": "./src/deltaTimeline.ts"
+    "./delta-timeline": "./src/deltaTimeline.ts",
+    "./ladder-view": "./src/ladderView.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",

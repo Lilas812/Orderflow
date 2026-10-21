@@ -157,6 +157,31 @@ export function panPrice(v: Viewport, deltaCssPx: number): Viewport {
   return { ...v, price, priceMode: "MANUAL" };
 }
 
+/**
+ * Shared price-range operation. Integer display bounds can move the anchor by
+ * <= .5 Tick; market prices/quantities and the existing transforms never change.
+ * Time tracking, latest timestamp, and time object identity are preserved.
+ */
+export function zoomPrice(v: Viewport, anchorY: number, factor: number): Viewport {
+  finite(anchorY);
+  if (!Number.isFinite(factor) || factor <= 0) throw new RangeError("Invalid price zoom factor");
+  checkPrice(v.price);
+  if (!v.price || v.bounds.height === 0) return v;
+  const oldSpan = BigInt(v.price.maxTick) - BigInt(v.price.minTick);
+  const limit = BigInt(Number.MAX_SAFE_INTEGER);
+  const requested = relativeNs(oldSpan, factor);
+  const span = requested < 1n ? 1n : requested > limit ? limit : requested;
+  const fraction = Math.max(0, Math.min(1, (anchorY - v.bounds.top) / v.bounds.height));
+  const difference = span - oldSpan;
+  const offset = relativeNs(difference < 0n ? -difference : difference, fraction)
+    * (difference < 0n ? -1n : 1n);
+  const max = BigInt(v.price.maxTick) + offset, min = max - span;
+  if (min < -limit || max > limit) throw new RangeError("Price zoom exceeds safe integer Tick bounds");
+  const price = { minTick: Number(min), maxTick: Number(max) };
+  checkPrice(price);
+  return { ...v, price, priceMode: "MANUAL" };
+}
+
 function validateQuality(intervals: readonly QualityInterval[]): void {
   let previousEnd: bigint | null = null;
   for (let i = 0; i < intervals.length; i++) {

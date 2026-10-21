@@ -3,7 +3,7 @@ import { executedVolume, type Trade } from "./events";
 import type { QualityInterval } from "./qualityTimeline";
 import {
   createViewport, timeToX, xToTime, tickToY, yToTick, resizeViewport,
-  zoomTime, panTime, receiveLatest, goLatest, panPrice, autoPrice,
+  zoomTime, panTime, receiveLatest, goLatest, panPrice, autoPrice, zoomPrice,
   buildPriceSegments, DEFAULT_SPAN_NS, MAX_SPAN_NS, MIN_SPAN_NS,
 } from "./viewport";
 
@@ -117,6 +117,63 @@ describe("R05 shared CSS-pixel coordinates", () => {
     expect(() => timeToX(view(), "1.5")).toThrow();
     expect(() => xToTime(view(), NaN)).toThrow();
     expect(() => yToTick(view(), Infinity)).toThrow();
+  });
+});
+
+describe("R12 shared price zoom extension (existing transforms unchanged)", () => {
+  const v = () => createViewport({ bounds, latestNs: ns(1000), price: { minTick: 79990, maxTick: 80010 } });
+  it.each(["LIVE", "HISTORY"] as const)("keeps the %s time viewport and latest timestamp exactly unchanged", mode => {
+    const start = { ...v(), timeMode: mode }, next = zoomPrice(start, 260, .5);
+    expect(next.time).toBe(start.time); expect(next.timeMode).toBe(mode);
+    expect(next.latestNs).toBe(start.latestNs);
+    expect(next.bounds).toBe(start.bounds); expect(next.dpr).toBe(start.dpr);
+    expect(next.priceMode).toBe("MANUAL");
+    expect(next.price).toEqual({ minTick: 79995, maxTick: 80005 });
+  });
+  it.each([0, .25, .5, .75, 1])("anchors fraction %s within the integer-display rounding tolerance", f => {
+    const start = v(), y = bounds.top + f * bounds.height;
+    const tick = yToTick(start, y)!;
+    const next = zoomPrice(start, y, .5);
+    expect(Math.abs(yToTick(next, y)! - tick)).toBeLessThanOrEqual(.5);
+    expect(Number.isSafeInteger(next.price!.minTick)).toBe(true);
+    expect(Number.isSafeInteger(next.price!.maxTick)).toBe(true);
+  });
+  it("zooms out symmetrically and never changes time-X mapping", () => {
+    const start = v(), next = zoomPrice(start, 260, 2);
+    expect(next.price).toEqual({ minTick: 79980, maxTick: 80020 });
+    expect(timeToX(next, ns(500))).toBe(timeToX(start, ns(500)));
+  });
+  it("returns unchanged with no price range or zero plot height", () => {
+    const noPrice = { ...v(), price: null }, noHeight = { ...v(), bounds: { ...bounds, height: 0 } };
+    expect(zoomPrice(noPrice, 10, .5)).toBe(noPrice);
+    expect(zoomPrice(noHeight, 10, .5)).toBe(noHeight);
+  });
+  it.each([0, -1, NaN, Infinity])("rejects invalid factor %s without mutating prior state", factor => {
+    const start = v(), before = JSON.stringify(start);
+    expect(() => zoomPrice(start, 10, factor)).toThrow();
+    expect(JSON.stringify(start)).toBe(before);
+  });
+  it("has a minimum one-Tick display span, not a rounded market price", () => {
+    const next = zoomPrice(v(), 260, Number.MIN_VALUE);
+    expect(next.price!.maxTick - next.price!.minTick).toBe(1);
+  });
+  it("rejects unsafe price-range overflow rather than silently clipping", () => {
+    const start = { ...v(), price: { minTick: Number.MAX_SAFE_INTEGER - 20, maxTick: Number.MAX_SAFE_INTEGER } };
+    expect(() => zoomPrice(start, 260, 2)).toThrow(/safe integer/);
+  });
+  it("handles negative Tick ranges with the unchanged tickToY transform", () => {
+    const next = zoomPrice({ ...v(), price: { minTick: -110, maxTick: -90 } }, 260, .5);
+    expect(next.price).toEqual({ minTick: -105, maxTick: -95 });
+    expect(tickToY(next, -100)).toBe(260);
+  });
+  it("price drag remains orthogonal after zoom, and AUTO preserves HISTORY", () => {
+    const start = { ...v(), timeMode: "HISTORY" as const };
+    const zoomed = zoomPrice(start, 260, .5), moved = panPrice(zoomed, 50);
+    expect(moved.time).toBe(start.time); expect(moved.timeMode).toBe("HISTORY");
+    const automatic = autoPrice({ ...moved, priceMode: "AUTO" }, [], []);
+    expect(automatic.priceMode).toBe("AUTO"); expect(automatic.timeMode).toBe("HISTORY");
+    expect(automatic.time).toBe(start.time); expect(automatic.priceData).toBe("NO TRADE PRICE");
+    expect(automatic.price).toBe(moved.price);
   });
 });
 

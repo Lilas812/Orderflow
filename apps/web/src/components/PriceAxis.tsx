@@ -1,10 +1,23 @@
-import { useRef } from "react";
+import { useEffect, useRef } from "react";
 import { tickToY, type Viewport } from "@workspace/core/viewport";
 
 const STEPS = [1, 2, 4, 8, 20, 40, 100, 200, 400, 1000, 2000, 4000];
 
-export function PriceAxis({ vp, onPan }: { vp: Viewport; onPan: (dy: number, start: Viewport) => void }) {
+export function PriceAxis({ vp, onPan, onZoom }: { vp: Viewport; onPan: (dy: number, start: Viewport) => void; onZoom?: (y: number, factor: number) => void }) {
   const last = useRef<{ y: number; vp: Viewport } | null>(null);
+  const svgRef = useRef<SVGSVGElement>(null);
+  const zoomRef = useRef(onZoom); zoomRef.current = onZoom;
+  const hasZoom = !!onZoom;
+  useEffect(() => {
+    const el = svgRef.current; if (!el || !hasZoom) return;
+    const wheel = (e: WheelEvent) => {
+      e.preventDefault();
+      const localY = e.clientY - el.getBoundingClientRect().top;
+      if (e.deltaY !== 0) zoomRef.current?.(localY, e.deltaY > 0 ? 1.15 : 1 / 1.15);
+    };
+    el.addEventListener("wheel", wheel, { passive: false });
+    return () => el.removeEventListener("wheel", wheel);
+  }, [hasZoom]);
   const h = vp.bounds.height;
   const ticks: { tick: number; y: number }[] = [];
   if (vp.price && h > 0) {
@@ -17,7 +30,7 @@ export function PriceAxis({ vp, onPan }: { vp: Viewport; onPan: (dy: number, sta
   }
   return (
     <svg
-      className="price-axis" width={72} height={h} viewBox={`0 0 72 ${h}`}
+      ref={svgRef} className="price-axis" width={72} height={h} viewBox={`0 0 72 ${h}`}
       data-testid="price-axis" data-min-tick={vp.price?.minTick ?? ""} data-max-tick={vp.price?.maxTick ?? ""}
       onPointerDown={(e) => {
         if (e.button !== 0) return;

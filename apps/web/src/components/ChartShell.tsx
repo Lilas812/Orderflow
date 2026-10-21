@@ -3,7 +3,7 @@ import { executedVolume, type BookSide, type Trade } from "@workspace/core/event
 import type { QualityInterval } from "@workspace/core/quality-timeline";
 import {
   buildPriceSegments, tickToY, timeToX, MAX_SPAN_NS, MIN_SPAN_NS,
-  createViewport, resizeViewport, zoomTime, panTime, panPrice, goLatest,
+  createViewport, resizeViewport, zoomTime, panTime, panPrice, goLatest, autoPrice, zoomPrice,
   type ChartBounds, type Viewport,
 } from "@workspace/core/viewport";
 import {
@@ -33,6 +33,12 @@ import {
 import { projectBubbles } from "@workspace/render/bubbles";
 import { BubbleCanvas, bubbleBackdropCells } from "./BubbleCanvas";
 import { PriceAxis } from "./PriceAxis";
+import { R12_LADDER_SCENARIOS } from "@workspace/fixtures";
+import { buildLadderView, type LadderView, type LadderTopEvidence } from "@workspace/core/ladder-view";
+import { createMarketQualityState, ingestMarketEvent, markChannelCondition } from "@workspace/core/quality-timeline";
+import { LadderPanel } from "./LadderPanel";
+
+const EMPTY_SOURCE_OF = new Map<DeltaBin, string>();
 import { TimeAxis, fmtJst } from "./TimeAxis";
 
 export const MOCK_INSTRUMENT = "CME:NQ:2026-03";
@@ -82,6 +88,10 @@ interface Props {
   onSelectDelta: (id: string | null) => void;
   /** Raw Trade inputs ingested across all independent Delta sources. */
   onDeltaRaw: (n: number) => void;
+  ladderId: string | null;
+  onSelectLadder: (id: string | null) => void;
+  /** Raw L2 inputs ingested by the independent Ladder MOCK. */
+  onLadderRaw: (n: number) => void;
 }
 
 /** Verification-mode viewport built only from existing core functions: last 60 s (R05 minimum span), price MANUAL. */
@@ -98,7 +108,7 @@ function verificationViewport(s: { endNs: string; priceMinTick: number; priceMax
 const SIDES: readonly BookSide[] = ["BID", "ASK"];
 const recKey = (mode: string, side: BookSide, width: number) => `${mode}|${side}|${width}`;
 
-export function ChartShell({ trades, mockOn, onToggleMock, onAddThird, heatmap: baseScene, onSelectHeatmap, bubbleId, onSelectBubble, onBubbleRaw, deltaId, onSelectDelta, onDeltaRaw }: Props) {
+export function ChartShell({ trades, mockOn, onToggleMock, onAddThird, heatmap: baseScene, onSelectHeatmap, bubbleId, onSelectBubble, onBubbleRaw, deltaId, onSelectDelta, onDeltaRaw, ladderId, onSelectLadder, onLadderRaw }: Props) {
   const tv = useViewport(trades, MOCK_QUALITY);
   const [settings, setSettings] = useState<ScaleSettings>({ ...DEFAULT_SCALE });
   const [palettes, setPalettes] = useState<Readonly<Record<BookSide, Palette>>>(DEFAULT_PALETTES);
@@ -259,13 +269,66 @@ export function ChartShell({ trades, mockOn, onToggleMock, onAddThird, heatmap: 
   useEffect(() => { onDeltaRawRef.current(dRaw); }, [dRaw, deltaId]);
   const dBubbles = useMemo(() => dReplay?.tls.flatMap((t) => t.tradeState.bubbles) ?? [], [dReplay]);
 
-  const fixed = !!heatmap || !!scn || !!dcase;
-  const vp = fixed ? hmVp : tv.vp;
+  /* ---- R12 Ladder: independent latest-book replay; never retimes other layers ---- */
+  const lad = useMemo(() => (ladderId ? R12_LADDER_SCENARIOS.find((s) => s.id === ladderId) ?? null : null), [ladderId]);
+  const [lStep, setLStep] = useState(0);
+  const [ladW, setLadW] = useState(300);
+  useEffect(() => { setLStep(0); }, [ladderId]);
+  const lIdx = lad ? Math.min(lStep, lad.steps.length - 1) : 0;
+  const otherActive = !!heatmap || !!scn || !!dcase;
+  const otherRef = useRef(otherActive); otherRef.current = otherActive;
+  const ladderSeed = useMemo(() => lad ? { endNs: lad.endNs, priceMinTick: lad.priceMinTick, priceMaxTick: lad.priceMaxTick } : null, [lad]);
+  useEffect(() => {
+    if (ladderSeed && !otherRef.current) setHmVp((v) => verificationViewport(ladderSeed, v.bounds, v.dpr));
+  }, [ladderSeed]);
+  const lReplay = useMemo(() => {
+    if (!lad) return null;
+    try {
+      let st = createMarketQualityState(lad.config, lad.startNs);
+      let n = 0;
+      for (let i = 0; i <= lIdx; i++) {
+        const step = lad.steps[i];
+        for (; n < step.eventCount; n++) st = ingestMarketEvent(st, lad.events[n]).state;
+        if (step.condition) {
+          const c = step.condition;
+          st = markChannelCondition(st, c.channel, c.status, c.atNs, c.reason);
+        }
+      }
+      const covers = st.lastGoodBook.snapshotCoversSequence;
+      const evidence: LadderTopEvidence | undefined = covers === undefined || covers === null ? undefined
+        : lad.topEvidence.find((e) => e.snapshotCoversSequence === covers);
+      return { st, evidence, raw: n, error: null as string | null };
+    } catch (e) { return { st: null, evidence: undefined, raw: 0, error: e instanceof Error ? e.message : String(e) }; }
+  }, [lad, lIdx]);
+  const onLadderRawRef = useRef(onLadderRaw); onLadderRawRef.current = onLadderRaw;
+  const lRaw = lReplay?.raw ?? 0;
+  useEffect(() => { onLadderRawRef.current(lRaw); }, [lRaw, ladderId]);
+  const ladderOn = !!lad;
+  const ladderOnly = ladderOn && !otherActive && trades.length === 0;
+
+  const fixed = otherActive || ladderOnly;
+  // The legacy R05 hook owns time tracking and has no arbitrary setter. Its
+  // price-zoom result is shared by ALL projections, never a ladder-only scale.
+  const [sharedPrice, setSharedPrice] = useState<Pick<Viewport, "price" | "priceMode"> | null>(null);
+  useEffect(() => { setSharedPrice(null); }, [mockOn, fixed]);
+  const vp = fixed ? hmVp : sharedPrice ? { ...tv.vp, ...sharedPrice } : tv.vp;
+  const ladderView = useMemo<{ view: LadderView | null; error: string | null }>(() => {
+    if (!lad || !lReplay) return { view: null, error: null };
+    if (lReplay.error) return { view: null, error: lReplay.error };
+    if (vp.bounds.height <= 0 || !vp.price) return { view: null, error: null };
+    try { return { view: buildLadderView(lReplay.st, vp, lReplay.evidence), error: null }; }
+    catch (e) { return { view: null, error: e instanceof Error ? e.message : String(e) }; }
+  }, [lad, lReplay, vp]);
   const dFrame = useMemo<{ frame: DeltaFrame | null; error: string | null }>(() => {
+    if (!dcase && ladderOn) {
+      if (vp.bounds.width <= 0) return { frame: null, error: null };
+      try { return { frame: projectDeltaTimeline([], vp, 126), error: null }; }
+      catch (e) { return { frame: null, error: e instanceof Error ? e.message : String(e) }; }
+    }
     if (!dcase || !dReplay || vp.bounds.width <= 0) return { frame: null, error: dReplay?.error ?? null };
     try { return { frame: projectDeltaTimeline(dReplay.bins, vp, 126), error: dReplay.error }; }
     catch (e) { return { frame: null, error: e instanceof Error ? e.message : String(e) }; }
-  }, [dcase, dReplay, vp]);
+  }, [dcase, dReplay, vp, ladderOn]);
   const projected = useMemo(() => {
     if (!scn || vp.bounds.width <= 0) return null;
     try {
@@ -292,17 +355,27 @@ export function ChartShell({ trades, mockOn, onToggleMock, onAddThird, heatmap: 
   const zoom = (x: number, f: number) => { if (fixed) setHmVp((v) => zoomTime(v, x, f)); else tv.zoom(x, f); };
   const panX = (dx: number) => { if (fixed) setHmVp((v) => panTime(v, dx)); else tv.panX(dx); };
   const panY = (dy: number, start: Viewport) => {
-    if (!fixed) { tv.panY(dy, start); return; }
+    if (!fixed) { tv.panY(dy, start); setSharedPrice(null); return; }
     setHmVp((v) => {
       if (!start.price) return v;
       return { ...v, price: panPrice(start, dy).price, priceMode: "MANUAL" };
     });
   };
   const fitFixture = () => {
-    const seed = heatmap ?? bubbleSeed ?? dSeed;
+    const seed = heatmap ?? bubbleSeed ?? dSeed ?? ladderSeed;
     if (seed) setHmVp((v) => verificationViewport(seed, v.bounds, v.dpr));
   };
+  const zoomY = (y: number, f: number) => {
+    if (fixed) setHmVp((v) => zoomPrice(v, y, f));
+    else setSharedPrice((price) => {
+      const next = zoomPrice({ ...tv.vp, ...price }, y, f);
+      return { price: next.price, priceMode: next.priceMode };
+    });
+  };
+  const normalPriceAuto = () => { setSharedPrice(null); priceAuto(); };
+  const ladderAuto = () => { setHmVp((v) => autoPrice({ ...v, priceMode: "AUTO" }, [], [])); };
   const chartRef = useRef<HTMLDivElement>(null);
+  const zoomYRef = useRef(zoomY); zoomYRef.current = zoomY;
   const drag = useRef<number | null>(null);
   const zoomRef = useRef(zoom); zoomRef.current = zoom;
   const resizeRef = useRef(resize); resizeRef.current = resize;
@@ -319,6 +392,12 @@ export function ChartShell({ trades, mockOn, onToggleMock, onAddThird, heatmap: 
       if (e.target instanceof Element && e.target.closest(".bb-tip")) return;
       e.preventDefault();
       const r = el.getBoundingClientRect();
+      if (e.shiftKey) {
+        // Shift+wheel: shared price zoom only; time viewport untouched.
+        const d = e.deltaY || e.deltaX;
+        if (d !== 0) zoomYRef.current(e.clientY - r.top, d > 0 ? 1.15 : 1 / 1.15);
+        return;
+      }
       if (e.deltaY !== 0) zoomRef.current(e.clientX - r.left, e.deltaY > 0 ? 1.15 : 1 / 1.15);
     };
     el.addEventListener("wheel", wheel, { passive: false });
@@ -389,7 +468,7 @@ export function ChartShell({ trades, mockOn, onToggleMock, onAddThird, heatmap: 
           VIEWPORT {vp.timeMode}
         </span>
         <span className="note">viewport tracking only; not a live connection</span>
-        {dcase && <button type="button" className="btn" data-testid="button-delta-latest"
+        {(dcase || ladderOn) && fixed && <button type="button" className="btn" data-testid={dcase ? "button-delta-latest" : "button-ladder-latest"}
           onClick={() => setHmVp((v) => goLatest(v))}>最新（MOCK検証軸）</button>}
         {fixed ? (
           <button type="button" className="btn" data-testid="button-fit-fixture" onClick={fitFixture}>検証範囲へ</button>
@@ -410,9 +489,15 @@ export function ChartShell({ trades, mockOn, onToggleMock, onAddThird, heatmap: 
             {vp.priceData === "VALID" ? "PRICE VALID" : "NO TRADE PRICE"}
           </span>
         )}
-        <button type="button" className="btn" data-testid="button-price-auto" onClick={priceAuto} disabled={fixed}>価格自動</button>
-        {fixed && <span className="note" data-testid="text-price-auto-note">AUTO disabled: fixed verification range, not a Trade price</span>}
+        <button type="button" className="btn" data-testid="button-price-auto" onClick={ladderOnly ? ladderAuto : normalPriceAuto} disabled={fixed && !ladderOnly}>価格自動</button>
+        {ladderOnly ? <span className="note" data-testid="text-price-auto-note">検証用レンジ保持／Trade価格なし</span>
+          : fixed && <span className="note" data-testid="text-price-auto-note">AUTO disabled: fixed verification range, not a Trade price</span>}
         <span className="spacer" />
+        <select className="btn" data-testid="select-ladder" aria-label="Ladder MOCK case" value={ladderId ?? ""}
+          onChange={(e) => onSelectLadder(e.target.value === "" ? null : e.target.value)}>
+          <option value="">Ladder off</option>
+          {R12_LADDER_SCENARIOS.map((c) => <option key={c.id} value={c.id}>Ladder {c.id}</option>)}
+        </select>
         <select className="btn" data-testid="select-delta" aria-label="Delta MOCK case" value={deltaId ?? ""}
           onChange={(e) => onSelectDelta(e.target.value === "" ? null : e.target.value)}>
           <option value="">Delta off</option>
@@ -439,7 +524,8 @@ export function ChartShell({ trades, mockOn, onToggleMock, onAddThird, heatmap: 
         <button type="button" className="btn" data-testid="button-mock-third"
           disabled={!mockOn || trades.length !== 2} onClick={onAddThird}>MOCK 3点目を追加</button>
       </div>
-      <div className={dcase ? "cs-grid cs-delta" : "cs-grid"}>
+      <div className={`cs-grid${dcase || ladderOn ? " cs-delta" : ""}${ladderOn ? " cs-ladder" : ""}`}
+        style={ladderOn ? ({ "--lad-w": `${ladW}px` } as CSSProperties) : undefined}>
         <div className="cs-chart" ref={chartRef} data-testid="chart-area"
           onPointerDown={(e) => {
             if (e.button !== 0) return;
@@ -499,13 +585,36 @@ export function ChartShell({ trades, mockOn, onToggleMock, onAddThird, heatmap: 
             )}
           </svg>
         </div>
-        <PriceAxis vp={vp} onPan={panY} />
-        {dcase && dReplay && (
+        <PriceAxis vp={vp} onPan={panY} onZoom={zoomY} />
+        {dcase && dReplay ? (
           <DeltaPanel frame={dFrame.frame} vp={vp} sourceOf={dReplay.sourceOf} error={dFrame.error}
+            onZoom={zoom} onPan={panX} />
+        ) : ladderOn && (
+          <DeltaPanel frame={dFrame.frame} vp={vp} sourceOf={EMPTY_SOURCE_OF} error={dFrame.error}
             onZoom={zoom} onPan={panX} />
         )}
         <TimeAxis vp={vp} />
+        {lad && <LadderPanel view={ladderView.view} timeMode={vp.timeMode} error={ladderView.error ?? lReplay?.error ?? null}
+          observedNs={lad.steps[lIdx].asOfNs} stepLabel={`step ${lIdx + 1}/${lad.steps.length}: ${lad.steps[lIdx].label}`} />}
       </div>
+      {lad && (
+        <div className="dbg bb-dbg" data-testid="ladder-controls">
+          <div className="dbg-row dbg-wrap">
+            <span data-testid="text-ladder-case">LADDER MOCK {lad.id}: {lad.label}. Independent L2 MOCK input; latest selected book, not tied to chart time.</span>
+            <button type="button" className="btn" data-testid="button-ladder-prev" disabled={lIdx === 0}
+              onClick={() => setLStep(lIdx - 1)}>Step -</button>
+            <span data-testid="text-ladder-step" data-step={lIdx}>step {lIdx + 1}/{lad.steps.length}: {lad.steps[lIdx].label}</span>
+            <button type="button" className="btn" data-testid="button-ladder-next" disabled={lIdx >= lad.steps.length - 1}
+              onClick={() => setLStep(lIdx + 1)}>Step +</button>
+            <label className="dbg-field">width {ladW}px
+              <input type="range" data-testid="ladder-width" min={280} max={440} value={ladW}
+                onChange={(e) => setLadW(Number(e.target.value))} />
+            </label>
+          </div>
+          <div data-testid="text-ladder-raw">raw market events ingested {lRaw} (independent Ladder MOCK input; F07 includes a Trade-channel event; not derived from rows)</div>
+          {otherActive && <div className="note" data-testid="text-ladder-scope">Ladder and chart layers are independent MOCK comparison data scopes, not one market session.</div>}
+        </div>
+      )}
       <div className="cs-info" data-testid="viewport-info">
         <span>Time (JST): <b data-testid="text-time-min" data-ns={vp.time.minNs}>{hasData ? fmtJst(vp.time.minNs, true) : "—"}</b>
           {" → "}<b data-testid="text-time-max" data-ns={vp.time.maxNs}>{hasData ? fmtJst(vp.time.maxNs, true) : "—"}</b></span>
