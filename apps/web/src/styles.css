@@ -16,3 +16,32 @@ body {
 .stage { flex: 1; min-height: 300px; display: flex; align-items: center; justify-content: center; border: 1px dashed #2a2e3c; border-radius: 6px; padding: 16px; }
 .stage-label { margin: 0; color: #9298a8; font-size: 20px; text-align: center; }
 .foot { color: #9298a8; font-size: 13px; padding-top: 12px; border-top: 1px solid #1c1f2a; }
+
+.cs { display: flex; flex-direction: column; gap: 8px; flex: 1; min-height: 0; min-width: 0; }
+.cs-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px; }
+.cs-bar .spacer { flex: 1; }
+.pill { font-size: 12px; letter-spacing: 0.06em; padding: 3px 8px; border: 1px solid #303443; border-radius: 3px; color: #9cA3b4; }
+.pill-on { color: #8fd9a8; border-color: #2f5a41; }
+.btn { font: inherit; font-size: 13px; color: #e8eaf0; background: #171a23; border: 1px solid #303443; border-radius: 3px; padding: 4px 12px; cursor: pointer; }
+.btn:hover:not(:disabled) { border-color: #6b7390; }
+.btn:focus-visible { outline: 2px solid #b9a4f0; outline-offset: 1px; }
+.btn:disabled { opacity: 0.4; cursor: not-allowed; }
+.note { color: #9cA3b4; font-size: 12px; margin: 0; }
+.cs-grid { flex: 1; min-height: 360px; display: grid; grid-template-columns: minmax(0, 1fr) 72px; grid-template-rows: minmax(0, 1fr) 34px; background: #08090d; border: 1px solid #303443; }
+.cs-chart { position: relative; min-width: 0; min-height: 0; overflow: hidden; cursor: grab; touch-action: none; user-select: none; }
+.cs-chart svg { position: absolute; inset: 0; display: block; }
+.price-axis { cursor: ns-resize; touch-action: none; user-select: none; background: #10131b; display: block; }
+.time-axis { background: #10131b; display: block; }
+.axis-line { stroke: #303443; stroke-width: 1; }
+.axis-text { fill: #9cA3b4; font-size: 11px; font-family: Consolas, ui-monospace, monospace; }
+.axis-dim { fill: #6b7390; }
+.price-line { fill: none; stroke: #e8dff6; stroke-width: 1.3; stroke-linejoin: round; }
+.iso-dot { fill: #e8dff6; }
+.gap-band { fill: rgba(213, 167, 75, 0.14); stroke: #d5a74b; stroke-width: 1; stroke-dasharray: 4 3; }
+.gap-text { fill: #d5a74b; font-size: 11px; }
+.wm { fill: #4a3b7a; font-size: 12px; letter-spacing: 0.1em; }
+.empty-text { fill: #6b7390; font-size: 18px; letter-spacing: 0.1em; }
+.cs-info { display: flex; flex-wrap: wrap; gap: 4px 24px; font-size: 12px; color: #9cA3b4; font-family: Consolas, ui-monospace, monospace; }
+.cs-info b { color: #e8eaf0; font-weight: 500; }
+.howto { line-height: 1.5; }
+.stage-chart { flex: 1; min-height: 0; min-width: 0; display: flex; flex-direction: column; }

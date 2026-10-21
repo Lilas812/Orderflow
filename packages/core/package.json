@@ -10,7 +10,8 @@
     "./sequence-guard": "./src/sequenceGuard.ts",
     "./quality-timeline": "./src/qualityTimeline.ts",
     "./price-bins": "./src/priceBins.ts",
-    "./time-weighted-depth": "./src/timeWeightedDepth.ts"
+    "./time-weighted-depth": "./src/timeWeightedDepth.ts",
+    "./viewport": "./src/viewport.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
