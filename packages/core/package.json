@@ -8,7 +8,9 @@
     "./events": "./src/events.ts",
     "./mbp-book": "./src/mbpBook.ts",
     "./sequence-guard": "./src/sequenceGuard.ts",
-    "./quality-timeline": "./src/qualityTimeline.ts"
+    "./quality-timeline": "./src/qualityTimeline.ts",
+    "./price-bins": "./src/priceBins.ts",
+    "./time-weighted-depth": "./src/timeWeightedDepth.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
