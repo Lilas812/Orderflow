@@ -11,7 +11,8 @@
     "./quality-timeline": "./src/qualityTimeline.ts",
     "./price-bins": "./src/priceBins.ts",
     "./time-weighted-depth": "./src/timeWeightedDepth.ts",
-    "./viewport": "./src/viewport.ts"
+    "./viewport": "./src/viewport.ts",
+    "./heatmap-scale": "./src/heatmapScale.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",

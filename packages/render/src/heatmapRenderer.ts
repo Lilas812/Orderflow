@@ -1,5 +1,7 @@
 import { timeToX, tickToY, type Viewport } from "@workspace/core/viewport";
 import type { TimeWeightedDepth } from "@workspace/core/time-weighted-depth";
+import type { BookSide } from "@workspace/core/events";
+import { scaleQuantity, validateScale, type ScaleSettings } from "@workspace/core/heatmap-scale";
 
 export const REFERENCE_QUANTITY = 80; // R06 MOCK provisional ABS scale, NOT p95 or a volume filter.
 export const DISPLAY_INTERVAL_MS = 250;
@@ -16,6 +18,32 @@ export interface CellColor {
   readonly intensity: number | null;
   readonly rgba: readonly [number, number, number, number];
   readonly missing: boolean;
+  readonly visible?: boolean;
+  readonly reason?: string;
+}
+export interface Palette {
+  readonly low: readonly [number, number, number];
+  readonly high: readonly [number, number, number];
+}
+export const DEFAULT_PALETTES: Readonly<Record<BookSide, Palette>> = {
+  BID: { low: [6, 28, 19], high: [67, 250, 85] },
+  ASK: { low: [27, 9, 42], high: [178, 53, 250] },
+};
+export interface HeatmapStyle {
+  readonly settings: ScaleSettings;
+  readonly references: Readonly<Record<BookSide, number | null>>;
+  readonly palettes: Readonly<Record<BookSide, Palette>>;
+}
+function validateStyle(style: HeatmapStyle): void {
+  validateScale(style.settings);
+  for (const side of ["BID", "ASK"] as const) {
+    const ref = style.references[side];
+    if (ref !== null && (!Number.isFinite(ref) || ref <= 0)) throw new TypeError("Invalid reference quantity");
+    const p = style.palettes[side];
+    for (const rgb of [p.low, p.high]) {
+      if (rgb.length !== 3 || rgb.some(v => !Number.isInteger(v) || v < 0 || v > 255)) throw new TypeError("Invalid RGB palette");
+    }
+  }
 }
 export interface ProjectedCell {
   readonly source: HeatmapCell;
@@ -32,8 +60,22 @@ export interface HeatmapFrame {
 }
 
 /** Display mapping only. Missingness is never coerced to a quantity or partialTWA. */
-export function cellColor(cell: HeatmapCell): CellColor {
+export function cellColor(cell: HeatmapCell, style?: HeatmapStyle): CellColor {
   const r = cell.result;
+  if (style) {
+    validateStyle(style);
+    if (style.settings.width !== r.width) throw new TypeError("Style/reference width must match the computed cell");
+    const mapped = scaleQuantity(r, style.settings, style.references[r.side]);
+    if (mapped.reason === "NO DATA") return { intensity: null, rgba: [213 / 255, 167 / 255, 75 / 255, 0.6],
+      missing: true, visible: true, reason: mapped.reason };
+    if (!mapped.visible) return { intensity: mapped.brightness, rgba: [0, 0, 0, 0],
+      missing: false, visible: false, reason: mapped.reason };
+    const intensity = mapped.brightness!;
+    const p = style.palettes[r.side];
+    const rgb = intensity === 0 ? BACKGROUND : p.low.map((v, i) => Math.round(v + (p.high[i] - v) * intensity));
+    return { intensity, rgba: [rgb[0] / 255, rgb[1] / 255, rgb[2] / 255, 1],
+      missing: false, visible: true, reason: mapped.reason };
+  }
   if (!Number.isFinite(r.coverageRatio) || r.coverageRatio < 0 || r.coverageRatio > 1) {
     throw new RangeError("Invalid coverage");
   }
@@ -52,7 +94,8 @@ export function cellColor(cell: HeatmapCell): CellColor {
 }
 
 /** Shared R05 transforms; clip before Float32 conversion to keep off-screen epochs out of GPU math. */
-export function projectHeatmap(cells: readonly HeatmapCell[], vp: Viewport): HeatmapFrame {
+export function projectHeatmap(cells: readonly HeatmapCell[], vp: Viewport, style?: HeatmapStyle): HeatmapFrame {
+  if (style) validateStyle(style);
   const rects: ProjectedCell[] = [];
   const values: number[] = [];
   const b = vp.bounds;
@@ -61,7 +104,8 @@ export function projectHeatmap(cells: readonly HeatmapCell[], vp: Viewport): Hea
     if (!Number.isSafeInteger(source.priceTicks) || ![1, 2, 4, 8].includes(r.width)
       || Math.floor(source.priceTicks / r.width) !== r.binId
       || BigInt(r.endNs) <= BigInt(r.startNs)) throw new TypeError("Invalid heatmap cell geometry");
-    const color = cellColor(source);
+    const color = cellColor(source, style);
+    if (color.visible === false) continue;
     if (!vp.price || b.width === 0 || b.height === 0
       || BigInt(r.endNs) <= BigInt(vp.time.minNs) || BigInt(r.startNs) >= BigInt(vp.time.maxNs)) continue;
     const first = r.binId * r.width;
@@ -119,6 +163,7 @@ export class HeatmapRenderer {
   private uniform: WebGLUniformLocation | null = null;
   private cells: readonly HeatmapCell[] = [];
   private viewport: Viewport | null = null;
+  private style: HeatmapStyle | undefined;
   private disposed = false;
   private lost = false;
   status: RenderStatus = "RENDER ERROR";
@@ -190,13 +235,13 @@ export class HeatmapRenderer {
     this.lost = false;
     try {
       this.initialize();
-      if (this.viewport) this.draw(this.cells, this.viewport);
+      if (this.viewport) this.draw(this.cells, this.viewport, this.style);
     } catch (error) { this.fail(error); }
   };
-  draw(cells: readonly HeatmapCell[], vp: Viewport): HeatmapFrame {
+  draw(cells: readonly HeatmapCell[], vp: Viewport, style?: HeatmapStyle): HeatmapFrame {
     if (this.disposed) throw new Error("Renderer disposed");
-    this.cells = cells; this.viewport = vp;
-    this.lastFrame = projectHeatmap(cells, vp);
+    this.cells = cells; this.viewport = vp; this.style = style;
+    this.lastFrame = projectHeatmap(cells, vp, style);
     if (this.lost || !this.program || !this.gl) return this.lastFrame;
     const gl = this.gl, b = vp.bounds;
     const cssWidth = b.left + b.width, cssHeight = b.top + b.height;

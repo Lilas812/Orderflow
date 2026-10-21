@@ -4,9 +4,10 @@ import type { L2Snapshot } from "@workspace/core/events";
 import { createMarketQualityState, ingestMarketEvent, markChannelCondition } from "@workspace/core/quality-timeline";
 import { calculateTimeWeightedDepth, type DepthHistory } from "@workspace/core/time-weighted-depth";
 import { createViewport, resizeViewport, zoomTime, panTime, tickToY } from "@workspace/core/viewport";
+import { DEFAULT_SCALE } from "@workspace/core/heatmap-scale";
 import {
   BACKGROUND, FLOATS_PER_VERTEX, REFERENCE_QUANTITY, DISPLAY_INTERVAL_MS,
-  HeatmapRenderer, cellColor, projectHeatmap, hitTestCell, type HeatmapCell,
+  HeatmapRenderer, cellColor, projectHeatmap, hitTestCell, DEFAULT_PALETTES, type HeatmapCell, type HeatmapStyle,
 } from "./heatmapRenderer";
 
 const start = BigInt(F01.expected.startNs);
@@ -22,6 +23,84 @@ function initial(snapshot: L2Snapshot) {
     snapshotAlignmentEvidence: "MOCK header sequence == snapshot covered sequence",
   }, h.exchangeTimeNs!);
 }
+
+describe("R07 display styles preserve R06 inputs and resource behavior", () => {
+  const style = (minimumVolume = 50): HeatmapStyle => ({
+    settings: { ...DEFAULT_SCALE, minimumVolume },
+    references: { BID: 200, ASK: 200 }, palettes: DEFAULT_PALETTES,
+  });
+  it("leaves the R06 default API reference80 unchanged, R07 explicitly uses200", () => {
+    expect(cellColor(cells[0]).intensity).toBe(.75);
+    expect(cellColor(cells[0], style()).intensity).toBe(.3);
+  });
+  it("filter50 uploads only 60,60, filter0 restores all five unchangedcells", () => {
+    const v = viewport(), before = JSON.stringify(cells);
+    const filtered = projectHeatmap(cells, v, style());
+    expect(filtered.rects.map(r => r.source.result.twa)).toEqual([60, 60]);
+    expect(filtered.vertexCount).toBe(12);
+    expect(projectHeatmap(cells, v, style(0)).rects.map(r => r.source)).toEqual(cells);
+    expect(JSON.stringify(cells)).toBe(before);
+  });
+  it("0->50->100->0 reproduces exact original GPUbuffer", () => {
+    const v = viewport(), before = projectHeatmap(cells, v, style(0)).vertexData;
+    expect([0, 50, 100, 0].map(t => projectHeatmap(cells, v, style(t)).vertexCount)).toEqual([30, 12, 0, 30]);
+    expect(projectHeatmap(cells, v, style(0)).vertexData).toEqual(before);
+  });
+  it("filteredcells are not drawn or hit-tested, known0 returns whenfilteroff", () => {
+    const v = viewport(), hidden = projectHeatmap(cells, v, style()), all = projectHeatmap(cells, v, style(0));
+    const zero = all.rects[4], x = (zero.left + zero.right) / 2, y = (zero.top + zero.bottom) / 2;
+    expect(hitTestCell(hidden, x, y)).toBe(null);
+    expect(hitTestCell(all, x, y)).toBe(cells[4]);
+    expect(cellColor(cells[4], style(0))).toMatchObject({ visible: true, missing: false, intensity: 0,
+      rgba: [8 / 255, 9 / 255, 13 / 255, 1] });
+  });
+  it("missingness bypassesfilter100 and preserves hatching/partial35", () => {
+    const mapped = cellColor(gapCell, style(100));
+    expect(mapped).toMatchObject({ missing: true, visible: true, intensity: null });
+    expect(gapCell.result).toMatchObject({ twa: null, partialTWA: 35, coverageRatio: .5 });
+  });
+  it("palette and contrast changes leave TWA and quantities unchanged", () => {
+    const before = JSON.stringify(cells), s = style(0);
+    const changed: HeatmapStyle = { ...s, settings: { ...s.settings, liquidityContrast: 2, topContrast: 2 },
+      palettes: { ...s.palettes, BID: { low: [1, 10, 2], high: [20, 200, 30] } } };
+    expect(cellColor(cells[0], changed).rgba).not.toEqual(cellColor(cells[0], s).rgba);
+    expect(JSON.stringify(cells)).toBe(before);
+    expect(projectHeatmap(cells, viewport(), changed).vertexData.filter((_, i) => i % 8 === 7))
+      .toEqual(projectHeatmap(cells, viewport(), s).vertexData.filter((_, i) => i % 8 === 7));
+  });
+  it("ASKpalette cannot change BID and viceversa", () => {
+    const s = style(0), changed: HeatmapStyle = { ...s,
+      palettes: { ...s.palettes, ASK: { low: [12, 13, 14], high: [100, 101, 102] } } };
+    expect(cellColor(cells[0], changed)).toEqual(cellColor(cells[0], s));
+    const ask: HeatmapCell = { ...cells[0], result: { ...cells[0].result, side: "ASK" } };
+    expect(cellColor(ask, changed).rgba).not.toEqual(cellColor(ask, s).rgba);
+  });
+  it("restoring settings restoresexactRGBA andGPUvertices", () => {
+    const s = style(0), v = viewport(), original = projectHeatmap(cells, v, s).vertexData;
+    projectHeatmap(cells, v, { ...s, settings: { ...s.settings, topContrast: 4 } });
+    expect(projectHeatmap(cells, v, s).vertexData).toEqual(original);
+  });
+  it("no reference hides positiveVALID cells without coercing them to0 orNO DATA", () => {
+    const s: HeatmapStyle = { ...style(0), references: { BID: null, ASK: null } };
+    expect(cellColor(cells[0], s)).toMatchObject({ reason: "NO_BASELINE", visible: false, missing: false });
+    expect(cells[0].result).toMatchObject({ twa: 60, status: "VALID" });
+    expect(cellColor(cells[4], s)).toMatchObject({ visible: true, missing: false });
+  });
+  it.each([-1, 256, 1.5, NaN])("rejects invalid RGB component%s", component => {
+    const s: HeatmapStyle = { ...style(), palettes: { ...DEFAULT_PALETTES,
+      BID: { low: [component, 0, 0], high: [0, 255, 0] } } };
+    expect(() => cellColor(cells[0], s)).toThrow();
+  });
+  it("contextrestore reapplies the lateststyle, without regeneratingcells", () => {
+    const { canvas, element } = fakeGpu(), renderer = new HeatmapRenderer(element), v = viewport();
+    renderer.draw(cells, v, style(0));
+    canvas.dispatchEvent(new Event("webglcontextlost", { cancelable: true }));
+    renderer.draw(cells, v, style(50));
+    canvas.dispatchEvent(new Event("webglcontextrestored"));
+    expect(renderer.lastFrame.rects.map(r => r.source.result.twa)).toEqual([60, 60]);
+    expect(renderer.status).toBe("READY"); renderer.dispose();
+  });
+});
 function history(gap = false): DepthHistory {
   const events = gap ? F03.events : F01.events;
   let state = initial(events[0]);

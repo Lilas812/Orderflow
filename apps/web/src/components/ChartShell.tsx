@@ -1,13 +1,19 @@
-import { useEffect, useRef, useState } from "react";
-import { executedVolume, type Trade } from "@workspace/core/events";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { executedVolume, type BookSide, type Trade } from "@workspace/core/events";
 import type { QualityInterval } from "@workspace/core/quality-timeline";
 import {
   buildPriceSegments, tickToY, timeToX, MAX_SPAN_NS, MIN_SPAN_NS,
   createViewport, resizeViewport, zoomTime, panTime, panPrice,
   type ChartBounds, type Viewport,
 } from "@workspace/core/viewport";
+import {
+  DEFAULT_SCALE, captureBaseline, collectQuantityStages, relativeP95, resolveReference,
+  type RelativeReference, type ScaleBaseline, type ScaleSettings,
+} from "@workspace/core/heatmap-scale";
+import { DEFAULT_PALETTES, type HeatmapStyle, type Palette } from "@workspace/render";
 import { useViewport } from "../hooks/useViewport";
-import { HeatmapCanvas, HeatmapLegend, HEATMAP_SCENES, type HeatmapId, type HeatmapScene } from "./HeatmapCanvas";
+import { HeatmapCanvas, HeatmapLegend, HEATMAP_SCENES, sceneForWidth, type HeatmapId, type HeatmapScene } from "./HeatmapCanvas";
+import { HeatmapDebugControls, type Rgb, type SideStatus } from "./HeatmapDebugControls";
 import { PriceAxis } from "./PriceAxis";
 import { TimeAxis, fmtJst } from "./TimeAxis";
 
@@ -62,8 +68,65 @@ function verificationViewport(s: HeatmapScene, bounds: ChartBounds, dpr: number)
   };
 }
 
-export function ChartShell({ trades, mockOn, onToggleMock, onAddThird, heatmap, onSelectHeatmap }: Props) {
+const SIDES: readonly BookSide[] = ["BID", "ASK"];
+const recKey = (mode: string, side: BookSide, width: number) => `${mode}|${side}|${width}`;
+
+export function ChartShell({ trades, mockOn, onToggleMock, onAddThird, heatmap: baseScene, onSelectHeatmap }: Props) {
   const tv = useViewport(trades, MOCK_QUALITY);
+  const [settings, setSettings] = useState<ScaleSettings>({ ...DEFAULT_SCALE });
+  const [palettes, setPalettes] = useState<Readonly<Record<BookSide, Palette>>>(DEFAULT_PALETTES);
+  const [records, setRecords] = useState<Readonly<Record<string, ScaleBaseline | null>>>({});
+  const [captureError, setCaptureError] = useState<string | null>(null);
+  const heatmap = useMemo(() => (baseScene ? sceneForWidth(baseScene.id, settings.width) : null), [baseScene, settings.width]);
+  // Candidates depend only on scene history/width/side/end, NOT threshold, palette, contrast or viewport.
+  const candidates = useMemo(() => {
+    const out = {} as Record<BookSide, { ref: RelativeReference | null; error: string | null }>;
+    for (const side of SIDES) {
+      if (!heatmap) { out[side] = { ref: null, error: null }; continue; }
+      try {
+        const query = { side, width: heatmap.width, priceTicks: heatmap.referencePrices, asOfNs: heatmap.endNs };
+        out[side] = { ref: relativeP95(collectQuantityStages(heatmap.history, query), query), error: null };
+      } catch (e) { out[side] = { ref: null, error: e instanceof Error ? e.message : String(e) }; }
+    }
+    return out;
+  }, [heatmap]);
+  // A scene/HISTORY change must not silently replace or erase a captured comparison baseline.
+  const capture = (s: ScaleSettings) => {
+    const out: Record<string, ScaleBaseline | null> = {};
+    for (const side of SIDES) {
+      const c = candidates[side].ref; if (!c) continue;
+      out[recKey(s.mode, side, s.width)] = captureBaseline(s, c);
+    }
+    return out;
+  };
+  const update = (patch: Partial<ScaleSettings>) => {
+    const next = { ...settings, ...patch };
+    setSettings(next);
+    setCaptureError(null);
+    if (patch.fixedBaseline === true) {
+      try { setRecords(capture(next)); } catch (e) { setCaptureError(e instanceof Error ? e.message : String(e)); }
+    } else if (patch.fixedBaseline === false) setRecords({});
+  };
+  const recalibrate = () => {
+    try { setRecords((r) => ({ ...r, ...capture(settings) })); setCaptureError(null); }
+    catch (e) { setCaptureError(e instanceof Error ? e.message : String(e)); }
+  };
+  const sideStatus: SideStatus[] = SIDES.map((side) => {
+    const cand = candidates[side];
+    const record = records[recKey(settings.mode, side, settings.width)];
+    let reference: number | null = null, error = cand.error;
+    if (cand.ref) {
+      try { reference = resolveReference(settings, cand.ref, record ?? null); }
+      catch (e) { error = e instanceof Error ? e.message : String(e); }
+    }
+    return { side, reference, candidate: cand.ref, record, error };
+  });
+  const bidRef = sideStatus[0].reference, askRef = sideStatus[1].reference;
+  const style = useMemo<HeatmapStyle | undefined>(() => heatmap ? {
+    settings, references: { BID: bidRef, ASK: askRef }, palettes,
+  } : undefined, [heatmap, settings, bidRef, askRef, palettes]);
+  const setPalette = (side: BookSide, end: "low" | "high", rgb: Rgb) =>
+    setPalettes((p) => ({ ...p, [side]: { ...p[side], [end]: rgb } }));
   const [hmVp, setHmVp] = useState<Viewport>(() => createViewport({ bounds: { left: 0, top: 0, width: 0, height: 0 } }));
   useEffect(() => {
     if (heatmap) setHmVp((v) => verificationViewport(heatmap, v.bounds, v.dpr));
@@ -127,7 +190,7 @@ export function ChartShell({ trades, mockOn, onToggleMock, onAddThird, heatmap, 
   const spanMin = Number((BigInt(vp.time.maxNs) - BigInt(vp.time.minNs)) / 1_000_000_000n) / 60;
 
   return (
-    <section className="cs" data-testid="chart-shell">
+    <section className={heatmap ? "cs cs-heatmap" : "cs"} data-testid="chart-shell">
       <div className="cs-bar">
         <span className={`pill ${vp.timeMode === "LIVE" ? "pill-on" : ""}`} data-testid="mode-time" data-mode={vp.timeMode}>
           VIEWPORT {vp.timeMode}
@@ -153,6 +216,8 @@ export function ChartShell({ trades, mockOn, onToggleMock, onAddThird, heatmap, 
         <span className="spacer" />
         <button type="button" className="btn" data-testid="button-heatmap-f01" aria-pressed={heatmap?.id === "F01"}
           onClick={() => onSelectHeatmap("F01")}>Heatmap F01</button>
+        <button type="button" className="btn" data-testid="button-heatmap-f02" aria-pressed={heatmap?.id === "F02"}
+          onClick={() => onSelectHeatmap("F02")}>Heatmap F02</button>
         <button type="button" className="btn" data-testid="button-heatmap-f03" aria-pressed={heatmap?.id === "F03"}
           onClick={() => onSelectHeatmap("F03")}>Heatmap F03</button>
         <button type="button" className="btn" data-testid="button-heatmap-off" disabled={!heatmap}
@@ -175,7 +240,7 @@ export function ChartShell({ trades, mockOn, onToggleMock, onAddThird, heatmap, 
           }}
           onPointerUp={() => { drag.current = null; }} onPointerCancel={() => { drag.current = null; }}
           onLostPointerCapture={() => { drag.current = null; }}>
-          {heatmap && <HeatmapCanvas cells={heatmap.cells} vp={vp} />}
+          {heatmap && <HeatmapCanvas cells={heatmap.cells} vp={vp} style={style} />}
           <svg width={w} height={h} viewBox={`0 0 ${w} ${h}`} data-testid="chart-svg"
             data-width={w} data-height={h} data-dpr={vp.dpr}>
             <defs><clipPath id="chart-clip"><rect x={0} y={0} width={w} height={h} /></clipPath></defs>
@@ -215,7 +280,11 @@ export function ChartShell({ trades, mockOn, onToggleMock, onAddThird, heatmap, 
           {" → "}<b data-testid="text-price-max">{vp.price?.maxTick ?? "—"}</b></span>
         <span data-testid="text-span">Span {hasData ? spanMin.toFixed(1) : "—"} min (recommended max {String(MAX_SPAN_NS / 60_000_000_000n / 60n)} h)</span>
       </div>
-      {heatmap ? <HeatmapLegend scene={heatmap} /> : (
+      {heatmap ? (<>
+        <HeatmapDebugControls settings={settings} onChange={update} palettes={palettes} onPalette={setPalette}
+          onRecalibrate={recalibrate} status={sideStatus} captureError={captureError} />
+        <HeatmapLegend scene={heatmap} style={style} />
+      </>) : (
         <p className="note howto" data-testid="text-mock-howto">
           MOCK fixture: {MOCK_INSTRUMENT}, 2026-01-01 00:00:00 UTC (09:00:00 JST), three Trades at +0s 80000, +300s 80100, +600s 80040 ticks;
           TRADES GAP [+360s, +540s). Verify: enable MOCK (2 events, one segment), add 3rd point (isolated marker; no line across the GAP).

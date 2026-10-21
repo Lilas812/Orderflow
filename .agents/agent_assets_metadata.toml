@@ -28,3 +28,45 @@ mtime_ms = 1792587416386
 storage_uri = "gcs://replit-rams-assets-pike/rams/assets/repl:396298eb-318f-4ad8-9c4e-13a5b19e25a9/48dfab6b-1fcc-4674-b9ea-9f33ca37e598/7b5b498f-539a-4edb-a5fc-111cca688d9b"
 storage_version_token = "1792587513007134"
 content_type = "image/png"
+
+[[outputs]]
+id = "GyDsAfDybf80a2nqJDJGP"
+uri = "file://attached_assets/r07-settings-f01.png"
+type = "image"
+title = "R07 設定UI — F-01"
+description = "閾値50で60枚の2セルだけを描画。暫定P95 80枚を固定し、WARMING UPを明示しています。"
+logical_id = "0a37b653-526e-493a-ad5a-b1e7baab26c3"
+content_hash = "sha256:c9a926021988b735f6c8721db4bc58428f9a421df55dbcbf9a1fc31663a0e5b5"
+size = 181343
+mtime_ms = 1792588929018
+storage_uri = "gcs://replit-rams-assets-pike/rams/assets/repl:396298eb-318f-4ad8-9c4e-13a5b19e25a9/0a37b653-526e-493a-ad5a-b1e7baab26c3/34752132-a028-4934-85df-4e790a66a751"
+storage_version_token = "1792589026261881"
+content_type = "image/png"
+
+[[outputs]]
+id = "T76tEwW1dKeIMyeAXHyl8"
+uri = "file://attached_assets/r07-settings-f02.png"
+type = "image"
+title = "R07 設定UI — F-02 2Tick"
+description = "価格幅2Tickの集約後TWA58枚を表示。原イベントは5件のままです。"
+logical_id = "bd2ca151-99c4-4a34-a7af-9aca98619a01"
+content_hash = "sha256:beebdfc64fa7ee254fa25c1bc5a1d7a618758e13e08b1068d4f7cd6d7585f891"
+size = 155287
+mtime_ms = 1792588932102
+storage_uri = "gcs://replit-rams-assets-pike/rams/assets/repl:396298eb-318f-4ad8-9c4e-13a5b19e25a9/bd2ca151-99c4-4a34-a7af-9aca98619a01/fdd6c2f5-0af7-48cb-8a1f-96b5e5c1bb41"
+storage_version_token = "1792589027774757"
+content_type = "image/png"
+
+[[outputs]]
+id = "AzBegXicXH1VTiS98mQOB"
+uri = "file://attached_assets/r07-settings-f03.png"
+type = "image"
+title = "R07 設定UI — F-03 NO DATA"
+description = "coverage 0.5のセルは設定変更後も斜線表示。partialTWA35を確定数量として描画していません。"
+logical_id = "4fb7f8a5-3c39-48cc-8f2d-70db29f954c5"
+content_hash = "sha256:9b0389a280e961ab1212df64d40292cdbb6c1815dd3fb49917a863104369a187"
+size = 155547
+mtime_ms = 1792588930374
+storage_uri = "gcs://replit-rams-assets-pike/rams/assets/repl:396298eb-318f-4ad8-9c4e-13a5b19e25a9/4fb7f8a5-3c39-48cc-8f2d-70db29f954c5/3cd2248d-918e-48f3-88bc-3322d53df011"
+storage_version_token = "1792589029097762"
+content_type = "image/png"

@@ -26,7 +26,7 @@ function App() {
       </main>
       <footer className="foot" data-testid="text-footer">
         {scene
-          ? `Data source: MOCK / Events loaded: ${scene.eventCount} (raw depth events; fixed heatmap MOCK ${scene.id}, ${scene.cells.length} computed cells)`
+          ? `Data source: MOCK / Events loaded: ${scene.eventCount} (raw depth events; heatmap MOCK ${scene.id})`
           : <>Data source: MOCK / Events loaded: {count}{count > 0 ? ` of 3 (fixed MOCK ${MOCK_INSTRUMENT}, 2026-01-01 UTC)` : ""}</>}
       </footer>
     </div>
