@@ -12,7 +12,9 @@
     "./price-bins": "./src/priceBins.ts",
     "./time-weighted-depth": "./src/timeWeightedDepth.ts",
     "./viewport": "./src/viewport.ts",
-    "./heatmap-scale": "./src/heatmapScale.ts"
+    "./heatmap-scale": "./src/heatmapScale.ts",
+    "./trade-store": "./src/tradeStore.ts",
+    "./bubble-aggregate": "./src/bubbleAggregate.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",

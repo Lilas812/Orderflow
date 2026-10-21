@@ -4,3 +4,7 @@ export { F07_SEQUENCE_GAP } from "./f07-sequence-gap";
 export { F16_NO_L1 } from "./f16-no-l1";
 export { F02_TWO_TICKS } from "./f02-two-ticks";
 export { F03_GAP_TWA } from "./f03-gap-twa";
+export { F05_TRADES } from "./f05-trades";
+export { F08_DUPLICATE_TRADES } from "./f08-duplicate-trades";
+export { F09_UNKNOWN_TRADES } from "./f09-unknown-trades";
+export { F10_TRADE_BOUNDARY } from "./f10-trade-boundary";
