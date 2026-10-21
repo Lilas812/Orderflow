@@ -1,0 +1,29 @@
+{
+  "name": "@workspace/storage",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./catalog": "./src/sqliteCatalog.ts",
+    "./journal": "./src/eventJournal.ts",
+    "./snapshots": "./src/snapshotStore.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "build": "tsc --noEmit",
+    "diagnostics": "tsx src/diagnostics.ts"
+  },
+  "dependencies": {
+    "@workspace/core": "workspace:*",
+    "better-sqlite3": "13.0.3"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "9.6.0",
+    "@types/node": "25.9.6",
+    "@workspace/fixtures": "workspace:*",
+    "tsx": "4.23.13",
+    "typescript": "5.9.3",
+    "vitest": "5.0.5"
+  }
+}
