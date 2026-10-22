@@ -420,3 +420,45 @@ mtime_ms = 1792670908610
 storage_uri = "gcs://replit-rams-assets-pike/rams/assets/repl:396298eb-318f-4ad8-9c4e-13a5b19e25a9/a6f47a50-c125-41ea-861f-50c8829d9598/89beef4d-b7bf-4e22-a05b-d158dc628a5d"
 storage_version_token = "1792671039004673"
 content_type = "application/octet-stream"
+
+[[outputs]]
+id = "C6YfAjACn1LFnklf8KPqm"
+uri = "file://.local/r166-design.md"
+type = "text"
+title = "R16.6 調査・詳細設計報告"
+description = "現行データフロー、統合アーキテクチャ、互換性、障害対策、変更予定ファイル、段階的実装・承認事項。製品コード変更なし。"
+logical_id = "7a68e3d6-4625-4607-a6ac-798c2974bd17"
+content_hash = "sha256:e71a199f0adfd1e047a89383a43470349209bf2ff3d63c61dcccdd09ff433f17"
+size = 43591
+mtime_ms = 1792672558798
+storage_uri = "gcs://replit-rams-assets-pike/rams/assets/repl:396298eb-318f-4ad8-9c4e-13a5b19e25a9/7a68e3d6-4625-4607-a6ac-798c2974bd17/6fa7f47e-aa8b-4adc-b4c5-55624783ad51"
+storage_version_token = "1792672601663462"
+content_type = "text/markdown"
+
+[[outputs]]
+id = "DQQyogTKTw4e5Ywt2q4vI"
+uri = "file://.local/r166-capacity.csv"
+type = "table"
+title = "7日容量・RAM・読取量の試算"
+description = "100／1,000／10,000／50,000 events/sの仮定別。実CMEレートや実機性能ではありません。"
+logical_id = "413d20d2-237b-46c6-bab5-8aedfefaf522"
+content_hash = "sha256:5cffd6953c93b7b85e4f930b39fea4e83d72a2bd297df33a4af1a63126f1d17e"
+size = 1436
+mtime_ms = 1792672176322
+storage_uri = "gcs://replit-rams-assets-pike/rams/assets/repl:396298eb-318f-4ad8-9c4e-13a5b19e25a9/413d20d2-237b-46c6-bab5-8aedfefaf522/cbd22655-78d6-4095-92ba-75001418fcde"
+storage_version_token = "1792672602970766"
+content_type = "text/csv"
+
+[[outputs]]
+id = "PElj7xVGVh6Ctd_xrcpnD"
+uri = "file://.local/r166-analysis.json"
+type = "unspecified"
+title = "R16.5基準値と試算根拠"
+description = "正式測定記録からの導出値、UTF-8サイズ、明示した容量仮定。今回の新規時間ベンチマークではありません。"
+logical_id = "1976a0c9-fe1c-4da2-9c91-4371865c8f13"
+content_hash = "sha256:752f0b8c15e85837131b03b664defc20c918f8de4bc9fe8f48a0610bc411ea62"
+size = 6924
+mtime_ms = 1792672176326
+storage_uri = "gcs://replit-rams-assets-pike/rams/assets/repl:396298eb-318f-4ad8-9c4e-13a5b19e25a9/1976a0c9-fe1c-4da2-9c91-4371865c8f13/90eff306-5fc2-4ab4-87fe-10a5c6e1359e"
+storage_version_token = "1792672604239089"
+content_type = "application/octet-stream"
