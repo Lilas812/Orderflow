@@ -1,0 +1,19 @@
+{
+  "name": "@workspace/tickstream-poc",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "synthetic": "node --experimental-transform-types --disable-warning=ExperimentalWarning src/poc.ts"
+  },
+  "dependencies": {
+    "@workspace/tickstream-adapter": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "catalog:",
+    "typescript": "~5.9.3",
+    "vitest": "5.0.5"
+  }
+}
