@@ -2,12 +2,19 @@ import Database from "better-sqlite3";
 import { lstatSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { TextDecoder } from "node:util";
-import { canonical, EMPTY_HASH, insist, type Manifest } from "../sqliteCatalog";
+import { canonical, checksum, EMPTY_HASH, insist, type Manifest } from "../sqliteCatalog";
 import { descriptor, type RecordIndex, type SegmentInfo, type StorageState } from "../storageMigration";
 import type { JournalRecord } from "../eventJournal";
 import { arrayHasher, canonicalDigest } from "./canonicalStream";
 import { originalAt, sqlPages } from "./boundedSqlReader";
 import { verifySegment, type VerifiedSpool } from "./boundedSegmentReader";
+import { rawBinding, verifyRawShape, type RawBinding } from "./atomicJournalHarness";
+import { SqliteLedger, type LedgerReceipt, type OwnedLedgerLocation } from "./sqliteLedger";
+
+const TRIAL = Symbol("explicit-p1-c1-trial-reader");
+interface TrialOptions { token: typeof TRIAL; receipt: LedgerReceipt; expected: {
+  scopeId: string; epoch: string; coverage: "FULL_SCOPE_FROM_START" | "UNPROVEN";
+} }
 
 /** MOCK-only planning limits, NOT vendor/CME limits. JS accounting is conservative
  * byte estimation, not a hard process RSS guarantee. SQLite cache is separate. */
@@ -35,7 +42,27 @@ export class ReaderSession {
   private token = "";
   private closed = false;
   private reserved = 0;
-  constructor(readonly filename: string, options: Partial<ReaderBudget> = {}) {
+  private trial: RawBinding | null = null;
+  /** This entry is separate from the production-schema constructor. The caller supplies independent
+   * ledger evidence AND the expected scope, epoch and coverage. Never return an unverified session. */
+  static openPrototype(location: OwnedLedgerLocation, receipt: LedgerReceipt,
+    expected: TrialOptions["expected"], options: Partial<ReaderBudget> = {}): ReaderSession {
+    const ledger = SqliteLedger.open(location, receipt);
+    try {
+      const snapshot = ledger.verify(receipt);
+      insist(snapshot.scopeId === expected.scopeId && snapshot.epoch === expected.epoch &&
+        snapshot.coverage === expected.coverage, "RAW_BINDING", "Requested ledger scope/epoch/coverage differs");
+      insist(snapshot.coverage === "FULL_SCOPE_FROM_START", "COVERAGE_UNPROVEN",
+        "Unproven ledger cannot bind complete original history");
+    } finally { ledger.close(); }
+    const session = new ReaderSession(join(location.directory, "prototype-ledger.sqlite"),
+      options, { token: TRIAL, receipt, expected });
+    try {
+      verifyReaderSession(session); // NO prefix/session published until full P1-A verification.
+      return session;
+    } catch (error) { session.close(); throw error; }
+  }
+  constructor(readonly filename: string, options: Partial<ReaderBudget> = {}, trial?: TrialOptions) {
     this.budget = Object.freeze({ ...MOCK_BUDGET, ...options });
     validateBudget(this.budget);
     const stat = lstatSync(filename);
@@ -48,12 +75,46 @@ export class ReaderSession {
       this.db.pragma("mmap_size=0"); this.db.pragma("temp_store=FILE");
       this.db.exec("BEGIN"); // owned deferred read transaction; first read pins snapshot
       const version = this.db.pragma("user_version", { simple: true });
-      insist((version === 1 || version === 2) &&
-        this.db.pragma("application_id", { simple: true }) === 0x4f464c42, "SCHEMA", "Existing v1/v2 only");
-      this.version = version;
+      const app = this.db.pragma("application_id", { simple: true });
+      if (trial?.token === TRIAL) {
+        insist(version === 1 && app === 0x5031424c, "SCHEMA", "Trial DB application/version mismatch");
+        this.trial = rawBinding(this.db);
+        const binding = this.trial;
+        insist(binding.scopeId === trial.expected.scopeId && binding.epoch === trial.expected.epoch &&
+          binding.coverage === trial.expected.coverage && binding.ledgerRoot === trial.receipt.root &&
+          binding.ledgerMetadataChecksum === trial.receipt.metadataChecksum,
+        "RAW_BINDING", "Unbound original/ledger snapshot");
+        verifyRawShape(this.db, binding.rawVersion);
+        insist(this.db.pragma("quick_check", { simple: true }) === "ok", "RAW_LAYOUT", "SQLite integrity failed");
+        const ledgerRow = this.db.prepare(`SELECT CASE WHEN length(CAST(payload AS BLOB))<=65536 THEN payload END AS payload,
+          CASE WHEN length(checksum)=64 THEN checksum END AS checksum FROM ledger_meta WHERE id=1`)
+          .get() as { payload: string | null; checksum: string | null } | undefined;
+        insist(ledgerRow?.payload && ledgerRow.checksum, "RAW_BINDING", "Missing ledger header");
+        const header = JSON.parse(ledgerRow.payload) as { root: string; scopeId: string;
+          epoch: string; coverage: string };
+        insist(checksum(header) === ledgerRow.checksum && ledgerRow.checksum === trial.receipt.metadataChecksum &&
+          header.root === trial.receipt.root && header.scopeId === binding.scopeId &&
+          header.epoch === binding.epoch && header.coverage === binding.coverage,
+        "RAW_BINDING", "Ledger generation changed");
+        // Physical user_version=1 remains unchanged. version here selects the independently
+        // validated raw layout for the existing P1-A verifier, not the trial DB's schema ID.
+        this.version = binding.rawVersion;
+      } else {
+        insist(!trial && (version === 1 || version === 2) && app === 0x4f464c42,
+          "SCHEMA", "Existing v1/v2 only");
+        this.version = version;
+      }
       this.manifest = this.metadata<Manifest>("meta", "key='manifest'");
       insist(this.manifest.schemaVersion === 1 && /^(0|[1-9]\d*)$/.test(this.manifest.recordCount) &&
         /^[a-f0-9]{64}$/.test(this.manifest.head), "MANIFEST", "Invalid manifest");
+      if (this.trial) {
+        insist(this.manifest.head === this.trial.manifestHead &&
+          this.manifest.recordCount === this.trial.manifestCount, "RAW_BINDING", "Original head/count changed");
+        if (this.version === 2) {
+          const state = this.metadata<StorageState>("r15_meta", "id=1");
+          insist(state.indexRoot === this.trial.indexRoot, "RAW_BINDING", "Index root changed");
+        } else insist(this.trial.indexRoot === null, "RAW_BINDING", "v1 cannot bind v2 index");
+      }
       this.token = this.generation();
     } catch (e) { this.db.close(); throw e; }
   }
@@ -72,8 +133,11 @@ export class ReaderSession {
   private generation(): string {
     const m = this.db.prepare("SELECT CASE WHEN length(checksum)=64 THEN checksum ELSE NULL END AS checksum FROM meta WHERE key='manifest'").get();
     const r = this.version === 2 ? this.db.prepare("SELECT CASE WHEN length(checksum)=64 THEN checksum ELSE NULL END AS checksum FROM r15_meta WHERE id=1").get() : null;
+    const b = this.trial ? this.db.prepare("SELECT checksum FROM r166_raw_layout WHERE id=1").get() : null;
+    const l = this.trial ? this.db.prepare("SELECT checksum FROM ledger_meta WHERE id=1").get() : null;
     return canonical([this.db.pragma("data_version", { simple: true }),
-      this.db.pragma("schema_version", { simple: true }), this.db.prepare("SELECT total_changes() AS n").get(), m, r]);
+      this.db.pragma("schema_version", { simple: true }), this.db.pragma("application_id", { simple: true }),
+      this.db.pragma("user_version", { simple: true }), this.db.prepare("SELECT total_changes() AS n").get(), m, r, b, l]);
   }
   reserveWorking(bytes: number): () => void {
     insist(Number.isSafeInteger(bytes) && bytes >= 0 && this.reserved + bytes <= this.budget.workingBytes,
