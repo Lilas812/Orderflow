@@ -462,3 +462,45 @@ mtime_ms = 1792672176326
 storage_uri = "gcs://replit-rams-assets-pike/rams/assets/repl:396298eb-318f-4ad8-9c4e-13a5b19e25a9/1976a0c9-fe1c-4da2-9c91-4371865c8f13/90eff306-5fc2-4ab4-87fe-10a5c6e1359e"
 storage_version_token = "1792672604239089"
 content_type = "application/octet-stream"
+
+[[outputs]]
+id = "QknR2CPG7aZDMw_PnZ60I"
+uri = "file://.local/r166-p0-contracts.md"
+type = "text"
+title = "R16.6 P0 契約・実装境界報告"
+description = "指定の11項目順で、保証範囲、Snapshot/API、全体メモリ、P1-A〜P4のファイル別計画・受入条件を整理。実装なし。"
+logical_id = "ad7d3036-c824-4c48-aeea-494cf1ff5495"
+content_hash = "sha256:061663ff1f27ce8f7d821b03a1de41ff0d309173d931f7f228bb98d1426515ef"
+size = 39265
+mtime_ms = 1792676465340
+storage_uri = "gcs://replit-rams-assets-pike/rams/assets/repl:396298eb-318f-4ad8-9c4e-13a5b19e25a9/ad7d3036-c824-4c48-aeea-494cf1ff5495/f2947fbe-15b8-4c85-aff0-ecd6796aa58a"
+storage_version_token = "1792676476774862"
+content_type = "text/markdown"
+
+[[outputs]]
+id = "gEfK6R5vuM6NzcmsL9v4H"
+uri = "file://.local/r166-p0-retention.csv"
+type = "table"
+title = "P0 retention判定表：12ケース"
+description = "現行R16.5の層別判定、未実装のR16.6推奨判断、必要な証拠、停止条件。"
+logical_id = "b54efd23-8473-4d66-9f4e-01bb5c74ab96"
+content_hash = "sha256:c8ec1e93e741fee76b298bdee2760814bb1256c5838abad1f9e1da7a2975e706"
+size = 5663
+mtime_ms = 1792676441248
+storage_uri = "gcs://replit-rams-assets-pike/rams/assets/repl:396298eb-318f-4ad8-9c4e-13a5b19e25a9/b54efd23-8473-4d66-9f4e-01bb5c74ab96/baa3f9c2-ba3b-4415-9b4b-a1f11b4a4900"
+storage_version_token = "1792676478084321"
+content_type = "text/csv"
+
+[[outputs]]
+id = "81Jlr4d9ihtXHb48T7sUN"
+uri = "file://.local/r166-p0-observations.json"
+type = "unspecified"
+title = "P0 純粋関数の観測：9項目"
+description = "期限・sequenceScope・tradeId・Snapshot拒否の小規模観測。DB操作・retention実行・性能計測ではありません。"
+logical_id = "3266a386-9321-4e10-a5f1-3c0704c48b46"
+content_hash = "sha256:bb41098a4890e92c9e456fac4003b751f28d6fead529005b9ca655646ebaa532"
+size = 2303
+mtime_ms = 1792675056669
+storage_uri = "gcs://replit-rams-assets-pike/rams/assets/repl:396298eb-318f-4ad8-9c4e-13a5b19e25a9/3266a386-9321-4e10-a5f1-3c0704c48b46/cb8297f0-9a59-41f5-95a3-e950119bb006"
+storage_version_token = "1792676479394741"
+content_type = "application/octet-stream"
