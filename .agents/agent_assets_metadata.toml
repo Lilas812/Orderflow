@@ -504,3 +504,31 @@ mtime_ms = 1792675056669
 storage_uri = "gcs://replit-rams-assets-pike/rams/assets/repl:396298eb-318f-4ad8-9c4e-13a5b19e25a9/3266a386-9321-4e10-a5f1-3c0704c48b46/cb8297f0-9a59-41f5-95a3-e950119bb006"
 storage_version_token = "1792676479394741"
 content_type = "application/octet-stream"
+
+[[outputs]]
+id = "iGYt93Gctf-VAV1momsjq"
+uri = "file://.local/r166-p1b1/report.md"
+type = "text"
+title = "R16.6 P1-B.1 調査・回帰検証報告"
+description = "全8試行、停止・ACK・イベント保持のコード経路、観測の限界、SHA-256と合格判定を記録。"
+logical_id = "72000bf1-ccba-4658-adde-0f60e330270e"
+content_hash = "sha256:29997e14198720af14903aa3630bf5b33c1a99e6d832e0f9db4a143e352c6c8e"
+size = 9986
+mtime_ms = 1792681120578
+storage_uri = "gcs://replit-rams-assets-pike/rams/assets/repl:396298eb-318f-4ad8-9c4e-13a5b19e25a9/72000bf1-ccba-4658-adde-0f60e330270e/777eb0a7-506a-4534-a417-1d45887f9eea"
+storage_version_token = "1792681176556605"
+content_type = "text/markdown"
+
+[[outputs]]
+id = "xpUmTfFx4tP67qzT7CU7j"
+uri = "file://.local/r166-p1b1/experiments.csv"
+type = "table"
+title = "P1-B.1 全8試行の実測値とコマンド"
+description = "終了コード、実行時間、件数、timeout、CPU、RSS、残存プロセス、実行コマンドの一覧。"
+logical_id = "ecac63ae-3278-49a4-ae44-ed34cbd4e77b"
+content_hash = "sha256:f94dab9680618572d9143d8a530b9f43ed9be5144a05963b0962db25a50b6d0e"
+size = 2185
+mtime_ms = 1792681153486
+storage_uri = "gcs://replit-rams-assets-pike/rams/assets/repl:396298eb-318f-4ad8-9c4e-13a5b19e25a9/ecac63ae-3278-49a4-ae44-ed34cbd4e77b/f42d3e29-f2d0-4d96-af88-a85fde8c9409"
+storage_version_token = "1792681177858332"
+content_type = "text/csv"
