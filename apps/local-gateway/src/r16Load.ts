@@ -56,7 +56,7 @@ async function recoveredCursor(dir:string, remainingMs:number):Promise<string|nu
     child.on("exit",code=>{clearTimeout(timer);clearInterval(monitor);resolve(code===0?cursor:null);});
   });
 }
-export async function measureLoad(spec: LoadSpec, options:{diagnostic?:"timing"|"cpu"|"r162-timing"|"r162-cpu"|"r162-snapshot"|"r162-e-find"|"r162-e-map"|"r163-fixed-find"|"r163-fixed-map"|"r163-trace";diagnosticEventLimit?:number;
+export async function measureLoad(spec: LoadSpec, options:{diagnostic?:"timing"|"cpu"|"r162-timing"|"r162-cpu"|"r162-snapshot"|"r162-e-find"|"r162-e-map"|"r163-fixed-find"|"r163-fixed-map"|"r163-trace"|`r163-c1-${"before"|"after"}-${"fixed"|"normal"}`;diagnosticEventLimit?:number;
   commitPolicy?:CommitPolicy;fixedTrace?:FixedLoadTrace}={}) {
   if(!Number.isSafeInteger(spec.rate) || spec.rate<=0 || spec.rate>50_000 ||
     ![100,1000].includes(spec.durationMs)) throw new Error("Outside approved finite load envelope");

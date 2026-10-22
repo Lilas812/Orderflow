@@ -7,7 +7,8 @@ import {
   type MarketQualityConfig, type MarketQualityState, type MarketResult, type QualityChannel,
 } from "@workspace/core/quality-timeline";
 import { canonical, checksum, EMPTY_HASH, insist, sqliteNs, type SqliteCatalog } from "./sqliteCatalog";
-import { anchorFor, liveIndices, insertIndex, isV2, saveStorageState, storageState, verifyMetadata } from "./storageMigration";
+import { anchorFor, liveIndices, insertIndex, isV2, saveStorageState, storageState, verifyMetadata,
+  readCommitOriginals, usesCommitMetadataRead } from "./storageMigration";
 import { SegmentReader } from "./segmentReader";
 
 export type JournalInput =
@@ -233,7 +234,9 @@ export class EventJournal {
   }
   private commit(scopeId: string, inputs: readonly JournalInput[], beforeCommit?: () => void) {
     return this.catalog.transaction(() => {
-      let state = this.replay(scopeId);
+      const originals = isV2(this.catalog) && usesCommitMetadataRead(this.catalog) ?
+        readCommitOriginals(this.catalog, scopeId, selected => new SegmentReader(this.catalog).records(selected)) : undefined;
+      let state = this.replay(scopeId, originals);
       const manifest = this.catalog.manifest();
       let position = BigInt(manifest.recordCount);
       let head = manifest.head;

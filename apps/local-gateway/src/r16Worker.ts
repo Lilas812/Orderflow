@@ -25,11 +25,14 @@ const diagnostics=["load:timing","load:cpu","load:r162-cpu"].includes(mode)?awai
 const r163=mode==="load:r163-trace"?new (await import("./r163Diagnostics")).R163Probe():null;
 const research=["load:r162-timing","load:r162-snapshot"].includes(mode)?
   new (await import("./r162Diagnostics")).ResearchProbe():r163;
-const fixed=mode.startsWith("load:r163-")?await import("./r163Diagnostics"):null;
+const c1Mode=mode.startsWith("load:r163-c1-");
+const c1=c1Mode?new (await import("./r163Diagnostics")).C1Capture():null;
+const fixed=mode.startsWith("load:r163-")&&(!c1Mode||mode.endsWith("-fixed"))?await import("./r163Diagnostics"):null;
 const batchObserver=fixed?fixed.observeBatches(storage):null;
-const indexComparison=["load:r162-e-find","load:r162-e-map","load:r163-fixed-find","load:r163-fixed-map"].includes(mode)?
+const indexComparison=c1Mode||["load:r162-e-find","load:r162-e-map","load:r163-fixed-find","load:r163-fixed-map"].includes(mode)?
   new (await import("./r162Diagnostics")).IndexComparisonCapture():null;
 if(indexComparison)indexComparison.attach(storage,mode.endsWith("-find")?"find-reference":"map");
+if(c1)c1.attach(storage,mode.includes("-before-"));
 const trace=mode==="load:timing"?new diagnostics!.DiagnosticTrace():research;
 const cpu=["load:cpu","load:r162-cpu"].includes(mode)?new diagnostics!.CpuCapture():null;
 if(trace){trace.attach(storage);pipeline.trace=trace;}
@@ -94,13 +97,15 @@ if(mode==="restore") {
   } else {
     send({kind:"result",...summary(true)}); storage.close(); process.disconnect?.();
   }
-} else if(["load","load:timing","load:cpu","load:coalesced","scheduler-test","load:r162-timing","load:r162-cpu","load:r162-snapshot","load:r162-e-find","load:r162-e-map","load:r163-fixed-find","load:r163-fixed-map","load:r163-trace"].includes(mode)) {
+} else if(c1Mode||["load","load:timing","load:cpu","load:coalesced","scheduler-test","load:r162-timing","load:r162-cpu","load:r162-snapshot","load:r162-e-find","load:r162-e-map","load:r163-fixed-find","load:r163-fixed-map","load:r163-trace"].includes(mode)) {
   let nextId=1, finishing=false;
   const scheduler=new CommitScheduler(pipeline,scope,{
     policy:mode==="load:coalesced" || mode==="scheduler-test" || /^load:r16[23]-/.test(mode)?"coalesced":"immediate",
     onReceived:receipt=>send({kind:"received",id:receipt.id,count:receipt.count,bytes:receipt.bytes,
       transitMs:Number(process.hrtime.bigint()-BigInt(receipt.submittedMonoNs))/1e6}),
-    onFailure:reason=>send({kind:"storage-error",reason,metrics:pipeline.metrics.snapshot(),scheduler:scheduler.snapshot()}),
+    onFailure:reason=>send({kind:"storage-error",
+      reason:c1?.guards.at(-1)?.error??reason,
+      metrics:pipeline.metrics.snapshot(),scheduler:scheduler.snapshot()}),
     onCommitted:receipt=>{
       const transportMs=Number(process.hrtime.bigint()-BigInt(receipt.submittedMonoNs))/1e6;
       for(let i=0;i<receipt.count;i++)transportLatency.add(transportMs);
@@ -143,6 +148,7 @@ if(mode==="restore") {
       if(!scheduler.finish())return;
       const profile=cpu?await cpu.stop(dir):null;
       r163?.endIngestion();
+      c1?.endIngestion();
       trace?.sampleMemory("after_ingestion_before_gc");
       const gc=(globalThis as {gc?:()=>void}).gc;
       if(trace && gc){gc();trace.sampleMemory("after_ingestion_after_diagnostic_gc");}
@@ -157,6 +163,7 @@ if(mode==="restore") {
         snapshotAux={captured:captured.captured,status:captured.status,recoveredStatus:recovered.status};
       }
       if(research)research.phase="summary";
+      if(c1)c1.phase="summary";
       const result=summary(true);
       indexComparison?.sample("after_summary");
       trace?.sampleMemory("after_summary");
@@ -165,17 +172,20 @@ if(mode==="restore") {
         queueDepth:pipeline.metrics.queueDepth,queueBytes:pipeline.metrics.queueBytes};
       const owners=research?.owners(storage);
       if(research)await research.settle();
+      if(c1)await c1.settle();
       send({kind:"result",...result,scheduler:scheduler.snapshot(),...(diagnostics||research||indexComparison?{diagnostics:{trace:trace?.report(),profile,retained,owners,snapshotAux,
         indexComparison:indexComparison?.report(storage),
+        c1:c1?.report(storage),
         fixedBatches:batchObserver?.batches,r163:r163?.detail(),
         snapshotWrites:snapshotAux?.captured?1:0,
         tradeDedupCalls:mode==="load:timing"?(trace as import("./r161Diagnostics").DiagnosticTrace).report().timings["candidate.trade_dedup"]?.count??0:null,
         renderNotifications:"NOT EXERCISED; browser disconnected"}}:{})});
-      scheduler.dispose();restoreBoundary?.();batchObserver?.detach();trace?.detach();indexComparison?.detach();storage.close(); process.disconnect?.();
+      scheduler.dispose();restoreBoundary?.();batchObserver?.detach();trace?.detach();c1?.detach();indexComparison?.detach();storage.close(); process.disconnect?.();
     } else throw new Error("Invalid IPC command");
     } catch(error) {
       scheduler.dispose();
       indexComparison?.detach();
+      c1?.detach();
       restoreBoundary?.();batchObserver?.detach();trace?.detach();
       send({kind:"fatal",reason:String(error),uncommittedOwnedEvents:scheduler.pendingEvents,
         metrics:pipeline.metrics.snapshot(),scheduler:scheduler.snapshot()});

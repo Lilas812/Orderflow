@@ -7,6 +7,10 @@ import { ResearchProbe } from "./r162Diagnostics";
 import type { StorageAdapter } from "./storageAdapter";
 import { Latencies } from "./metrics";
 import { eventAt } from "./r16Fixtures";
+import crypto from "node:crypto";
+import { syncBuiltinESMExports } from "node:module";
+import { PerformanceObserver } from "node:perf_hooks";
+import { selectCommitReadForDiagnostics, storageState, type CommitReadMeasurement } from "@workspace/storage/migration";
 
 /** Disable only this diagnostic scheduler instance's timer. Capacity/EOF flush, clocks, IPC,
  * ownership, validation and the actual pipeline/transactions remain unchanged. */
@@ -63,7 +67,7 @@ export class R163Probe extends ResearchProbe {
   }
   private stackOrigin(stack:string):string {
     for(const [name,pattern]of [
-      ["verifyMetadata",/\bverifyMetadata\b/],["liveIndices",/\bliveIndices\b/],
+      ["verifyMetadata",/\b(?:verifyMetadata|verifiedMetadata)\b/],["liveIndices",/\bliveIndices\b/],
       ["saveStorageState",/\bsaveStorageState\b/],["insertIndex",/\binsertIndex\b/],
       ["snapshot.readCheckpoint",/\breadCheckpoint\b/],["snapshot.validateCheckpoint",/\bvalidateCheckpoint\b/],
       ["snapshot.capture",/\bSnapshotStore\.capture\b/],["snapshot.recover",/\bSnapshotStore\.recover\b/],
@@ -165,6 +169,139 @@ export class R163Probe extends ResearchProbe {
   }
 }
 
+/** Light, identical C-1 observers in before/after. No Map/semantic replay changes.
+ * Counts actual native JSON/SHA calls, actual SQL result arrays and actual row-map wall time.
+ */
+export class C1Capture {
+  phase = "ingest";
+  private owner: string | null = null;
+  private readonly arrays = new WeakMap<object, string>();
+  readonly scans: { phase: string; owner: string; rows: number; ms: number; decode: number; checksum: number }[] = [];
+  readonly reads: Record<string, number> = {};
+  readonly calls: Record<string, { decode: number; checksum: number }> = {};
+  readonly sourceMapParses: Record<string, number> = {};
+  readonly guards: CommitReadMeasurement[] = [];
+  readonly gc: { phase: string; startMs: number; ms: number }[] = [];
+  readonly memory: { phase: string; rss: number; heapUsed: number }[] = [];
+  private ingestStart = 0;
+  private ingestEnd = 0;
+  private undo: (() => void)[] = [];
+  private observer?: PerformanceObserver;
+  private activeScan: typeof this.scans[number] | undefined;
+  attach(storage: StorageAdapter, reference: boolean): void {
+    const capture = this, db = storage.catalog.database, prepare = db.prepare;
+    this.undo.push(selectCommitReadForDiagnostics(storage.catalog, reference ? "reference" : "reuse",
+      m => { if (this.guards.length >= 1024) throw Error("C1 diagnostic bound"); this.guards.push(m); }));
+    db.prepare = function(this: typeof db, ...args: Parameters<typeof prepare>) {
+      const stmt = Reflect.apply(prepare, this, args), sql = String(args[0]);
+      const table = /^SELECT payload,checksum FROM (r15_records|r15_segments|r15_anchors|r15_meta)\b/.exec(sql)?.[1];
+      if (table) {
+        const stack = new Error().stack ?? "";
+        const origin = /\b(?:verifyMetadata|verifiedMetadata)\b/.test(stack) ? "verifyMetadata" :
+          /\bliveIndices\b/.test(stack) ? "liveIndices" : /\bsaveStorageState\b/.test(stack) ? "saveStorageState" : "other";
+        const owner = `${origin}/${table}`;
+        for (const method of ["all", "get"] as const) {
+          const native = stmt[method];
+          Reflect.set(stmt, method, function(this: typeof stmt, ...params: unknown[]) {
+            const result = Reflect.apply(native, this, params), key = `${capture.phase}:${owner}`;
+            capture.reads[key] = (capture.reads[key] ?? 0) + 1;
+            if(capture.memory.length>=8192)throw Error("C1 memory diagnostic bound");
+            capture.memory.push({phase:capture.phase,...process.memoryUsage()});
+            if (Array.isArray(result)) capture.arrays.set(result, owner);
+            return result;
+          });
+        }
+      }
+      return stmt;
+    } as typeof prepare;
+    this.undo.push(() => { db.prepare = prepare; });
+    const map = Array.prototype.map;
+    Array.prototype.map = function(this: unknown[], ...args: unknown[]) {
+      const owner = capture.arrays.get(this), previous = capture.owner, scan = capture.activeScan;
+      const row = owner ? { phase: capture.phase, owner, rows: this.length, ms: 0, decode: 0, checksum: 0 } : undefined;
+      if (row) {
+        if (capture.scans.length >= 4096) throw Error("C1 scan diagnostic bound");
+        capture.owner = owner!; capture.activeScan = row;
+      }
+      const start = performance.now();
+      try { return Reflect.apply(map, this, args); }
+      finally {
+        if (row) {
+          row.ms = performance.now() - start; capture.scans.push(row);
+          capture.owner = previous; capture.activeScan = scan;
+        }
+      }
+    } as typeof map;
+    this.undo.push(() => { Array.prototype.map = map; });
+    const parse = JSON.parse, createHash = crypto.createHash;
+    const count = (kind: "decode" | "checksum") => {
+      const value = capture.calls[capture.phase] ??= { decode: 0, checksum: 0 };
+      value[kind]++; if (capture.activeScan) capture.activeScan[kind]++;
+    };
+    JSON.parse = function(this: unknown, ...args: Parameters<typeof parse>) {
+      // Reading Error.stack for SQL attribution can make tsx decode source maps.
+      // Keep those real calls visible, but separate them from application JSON.
+      if(typeof args[0]==="string"&&/^\s*\{\s*"version"\s*:\s*3\b/.test(args[0]))
+        capture.sourceMapParses[capture.phase]=(capture.sourceMapParses[capture.phase]??0)+1;
+      count("decode"); return Reflect.apply(parse, this, args);
+    } as typeof parse;
+    crypto.createHash = function(this: unknown, ...args: Parameters<typeof createHash>) {
+      const hash = Reflect.apply(createHash, this, args), digest = hash.digest;
+      hash.digest = function(this: typeof hash, ...params: unknown[]) { count("checksum"); return Reflect.apply(digest, this, params); } as typeof digest;
+      return hash;
+    } as typeof createHash;
+    syncBuiltinESMExports();
+    this.undo.push(() => { JSON.parse = parse; crypto.createHash = createHash; syncBuiltinESMExports(); });
+    this.observer = new PerformanceObserver(list => {
+      for (const entry of list.getEntries()) {
+        if (this.gc.length >= 8192) throw Error("C1 GC diagnostic bound");
+        this.gc.push({ phase: this.phase, startMs: entry.startTime, ms: entry.duration });
+      }
+    });
+    this.observer.observe({ entryTypes: ["gc"] });
+    this.ingestStart=performance.now();
+  }
+  endIngestion(): void { this.ingestEnd=performance.now();this.phase = "after_ingest"; }
+  async settle(): Promise<void> {
+    await new Promise<void>(resolve => setImmediate(resolve));
+    for (const e of this.observer?.takeRecords() ?? []) this.gc.push({ phase: this.phase, startMs:e.startTime, ms: e.duration });
+    this.observer?.disconnect();
+  }
+  report(storage: StorageAdapter) {
+    return { scans: this.scans, reads: this.reads, calls: this.calls, sourceMapParses:this.sourceMapParses,
+      guards: this.guards, gc: this.gc,memory:this.memory,
+      ingestGcMs:this.gc.reduce((n,g)=>n+Math.max(0,Math.min(this.ingestEnd||performance.now(),g.startMs+g.ms)-
+        Math.max(this.ingestStart,g.startMs)),0),
+      manifest: storage.catalog.manifest(), roots: storageState(storage.catalog),
+      note: "Observed timing includes identical observer overhead. Row decode/checksum are actual calls inside tagged SQL array maps; all-call totals include non-metadata work. GC is attributed at observation delivery, not exact interval overlap. No descriptor/event cache retained." };
+  }
+  detach(): void { this.observer?.disconnect(); for (const f of this.undo.reverse()) f(); this.undo = []; }
+}
+
+async function c1Main() {
+  const { measureLoad } = await import("./r16Load");
+  for (const n of [100, 400, 1000]) {
+    const fixedTrace = { batches: Array.from({ length: n / 2 }, (_, i) => ({ atMs: i * 2, count: 2 })) };
+    const expectedHash = checksum(Array.from({ length: n }, (_, i) => ({ type: "EVENT", event: eventAt(i, 1000) })));
+    const expectedBatches = Array.from({ length: Math.ceil(n / 128) }, (_, i) => Math.min(128, n - i * 128));
+    for (const boundary of (n === 100 ? ["fixed"] : ["fixed", "normal"]) as ("fixed" | "normal")[]) {
+      for (let repeat = 0; repeat < (n === 100 ? 1 : 3); repeat++) {
+        for (const version of (repeat % 2 ? ["after", "before"] : ["before", "after"]) as ("before" | "after")[]) {
+          const diagnostic = `r163-c1-${version}-${boundary}` as const;
+          const r = await measureLoad({ label: `C1-N${n}-${repeat}`, rate: 1000, durationMs: 1000 },
+            { commitPolicy: "coalesced", fixedTrace, diagnostic });
+          const matched = r.safeCompleted && r.sentEvents === n && r.durableUniqueEvents === n &&
+            r.storage?.auditHash === expectedHash &&
+            (boundary !== "fixed" || JSON.stringify(r.diagnostics?.worker.fixedBatches) === JSON.stringify(expectedBatches));
+          console.log(JSON.stringify({ phase: "R16.3-C1", n, repeat, boundary, version, expectedHash,
+            traceHash: checksum(JSON.stringify(fixedTrace)), expectedBatches, matched, ...r }));
+          if (!matched) throw Error("C1 safety/hash/boundary mismatch; remaining trials NOT RUN");
+        }
+      }
+    }
+  }
+}
+
 async function main() {
   const {measureLoad}=await import("./r16Load");
   const output=process.argv[2];
@@ -189,4 +326,4 @@ async function main() {
   }
 }
 if(process.argv[1]&&import.meta.url===pathToFileURL(process.argv[1]).href)
-  main().catch(error=>{console.error(error);process.exitCode=1;});
+  (process.argv.includes("--c1") ? c1Main() : main()).catch(error=>{console.error(error);process.exitCode=1;});

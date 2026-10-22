@@ -1,0 +1,144 @@
+R16.3の調査報告書を確認しました。
+
+最初の改善案として、C-1「同一write transactionの読み取り段階に限った検証済みmetadataの再利用」を承認します。
+
+以下の条件を守ってC-1だけを実装してください。
+
+### 1. 承認する変更
+
+承認ファイルは以下の7ファイルに限定します。
+
+- packages/storage/src/storageMigration.ts
+- packages/storage/src/eventJournal.ts
+- packages/storage/src/readGeneration.test.ts（新規）
+- apps/local-gateway/src/r163Diagnostics.ts
+- apps/local-gateway/src/r163Diagnostics.test.ts
+- apps/local-gateway/src/r16Worker.ts
+- apps/local-gateway/src/r16Load.ts
+
+新規外部依存やSQLite schema変更は承認しません。
+
+### 2. C-1の実装範囲
+
+- EventJournalのprivate commit処理内だけでVerifiedMetadataViewを生成する。
+- verifyMetadataの全検証を維持する。
+- checksum、ordered root、全索引列、連続位置、retention証明を維持する。
+- 同一connection・同一transaction・同一読み取り世代でのみmetadataを再利用する。
+- 元イベントの読み込み・checksum・descriptor照合は省略しない。
+- 過去状態の意味的replayも引き続き実行する。
+- 最初のINSERTより前にviewを破棄する。
+- INSERT後のsaveStorageStateでは従来どおり新世代の索引を読み直す。
+- commit間・プロセス間でviewを保持しない。
+
+VerifiedMetadataViewという名称を理由に、原本まで検証済みと扱ってはいけません。
+
+### 3. 世代と所有権の検証
+
+次の条件を必須とします。
+
+- connectionとtransactionの同一性を検証する。
+- transaction tokenは使い回さない。
+- view生成後に内部DML・DDL・保持処理・migrationなどの変更があった場合は再利用を拒否する。
+- total_changes、data_version、schema_version、user_version等を利用する場合、それぞれが検出できる変更と検出できない変更を区別する。
+- 特にdata_versionだけで同一connection自身の変更を検出できると仮定しない。
+- viewを外部へ公開しない。
+- awaitを跨いで保持しない。
+- 異常時に未検証metadataを正常なものとして採用しない。
+
+### 4. 読み取り予算
+
+以下の暫定上限をR16.3の有限MOCK検証に限って承認します。
+
+- 同時VerifiedMetadataView：1個
+- 最大descriptor数：16,384件
+- 最大serialized payload：16MiB
+
+上限到達前に事前検査を行い、超過した場合は明示的なエラーと停止要求を出してください。
+
+ただし、これは将来の本番市場データの保存件数上限ではありません。
+
+既存DBや原本を削除・切り詰めることは禁止します。
+
+公開read/replay APIに新しい上限を無断で適用しないでください。
+
+C-1を利用するprivate書き込み経路で上限に達した場合の挙動、既存挙動との差、今後のbounded reader移行に必要な変更点を報告してください。
+
+上限超過時に無制限の旧方式へ黙ってfallbackすることは禁止します。
+
+### 5. 必須テスト
+
+- 旧public replayとの結果一致
+- 同一ID重複とCONFLICT
+- 複数scope・channel
+- Sequence GAP・RESYNCING
+- Snapshotによる再同期
+- SQLite v1→v2
+- 7日保持とretention再開
+- チャンク破損・原本改ざんの検出
+- transaction rollback
+- 保存失敗後の再試行
+- SIGKILL前後の復元
+- metadata世代不一致の拒否
+- connection・transaction token不一致の拒否
+- 16,384件・16MiBの境界テスト
+- F-01 TWA38枚
+- F-03 NO DATA
+- 保存前後のイベント件数・ハッシュ完全一致
+
+### 6. 性能比較
+
+100件の予備試験を行い、その後400件・1,000件のbefore/after比較を各3回以上実行してください。
+
+入力イベント、IPCバッチ、transaction境界を揃えてください。
+
+以下を測定してください。
+
+- metadataの読込回数
+- decode/checksum回数
+- 省略できた重複検証処理の時間
+- 新しい世代ガード・preflightの処理時間
+- transaction合計時間
+- 永続化events/s
+- commit平均・p95・p99遅延
+- CPU・RSS・heapUsed・GC
+- 安全停止・未commit・欠落件数
+- 原本ハッシュとmetadata root
+
+通常の128件／10ms動作の測定と、固定transaction境界の診断を分けてください。
+
+性能低下や安全停止した試行も除外せず報告してください。
+
+### 7. 今回実装しないもの
+
+- C*のcanonical state cache
+- seen Mapコピー方式の変更
+- 過去prefixの完全性検査省略
+- Snapshot方式変更
+- checksum算法変更
+- SQLite schema変更
+- 7日保持方式変更
+- bounded readerの本格実装
+- 新規常駐サービス
+- 実CMEデータ接続
+- R17 Electron実装
+
+### 8. 完了条件
+
+既存1,353件を含む全テスト、pnpm typecheck、pnpm test、pnpm buildを成功させてください。
+
+完了後は以下を日本語で報告してください。
+
+- 変更ファイル
+- 追加テスト件数
+- C-1によって削減した処理量
+- 性能改善前後の実測値
+- 読み取り予算の境界テスト
+- 破損・rollback・SIGKILL時の結果
+- 既存保存APIへの影響
+- 残るボトルネック
+- 1,000 events/sの目標達成状況
+- 今後の改善候補
+
+C-1以外の最適化は実施せず、完了後に停止してください。
+
+R17には進まないでください。

@@ -294,3 +294,31 @@ mtime_ms = 1792627918912
 storage_uri = "gcs://replit-rams-assets-pike/rams/assets/repl:396298eb-318f-4ad8-9c4e-13a5b19e25a9/ece674e0-b53e-457a-88be-c40bd18549bc/89ff723a-0201-4c9d-a7df-54751a5cd7d4"
 storage_version_token = "1792627993746132"
 content_type = "text/markdown"
+
+[[outputs]]
+id = "Q4LRGtrDKLDVcZPTSHjhq"
+uri = "file://.local/r163-c1-results.md"
+type = "text"
+title = "R16.3 C-1 完了報告"
+description = "実装7ファイル、追加30件・全1,383テスト、世代・境界・障害検証、26試行の実測。C-1は有限MOCKで明示有効化。1,000 events/s未達も記載。"
+logical_id = "f7870c61-369a-41c4-915b-0079688be076"
+content_hash = "sha256:fef072b335b0a22611e9ff42615874483237ce5bea8bc2ac9ddc7fcb11b79255"
+size = 17541
+mtime_ms = 1792640694186
+storage_uri = "gcs://replit-rams-assets-pike/rams/assets/repl:396298eb-318f-4ad8-9c4e-13a5b19e25a9/f7870c61-369a-41c4-915b-0079688be076/3ea4c1ca-9677-4c4a-873e-7a4bf1409901"
+storage_version_token = "1792640836659126"
+content_type = "text/markdown"
+
+[[outputs]]
+id = "8dAe-c0uxEThur8yqCmpd"
+uri = "file://.local/r163-c1-runs.csv"
+type = "table"
+title = "C-1 before/after：全26試行の計測CSV"
+description = "41指標列。固定・通常、各3回、低速試行も含む。速度・transaction・decode/checksum・guard・CPU・RSS・heap・GC・原本hash・indexRoot。"
+logical_id = "1c39e232-bd14-4642-b163-3f8fdf2c35da"
+content_hash = "sha256:892f7f006c1cdfd9699d9225de6c4069dee81f95f43d803898945644c5391331"
+size = 14522
+mtime_ms = 1792640417609
+storage_uri = "gcs://replit-rams-assets-pike/rams/assets/repl:396298eb-318f-4ad8-9c4e-13a5b19e25a9/1c39e232-bd14-4642-b163-3f8fdf2c35da/a314651c-99fc-4df7-a648-7877d5f61d4d"
+storage_version_token = "1792640837994327"
+content_type = "text/csv"

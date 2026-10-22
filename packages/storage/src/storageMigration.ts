@@ -1,6 +1,7 @@
 import type { MarketQualityState } from "@workspace/core/quality-timeline";
 import type { JournalRecord, EventJournal } from "./eventJournal";
 import { SnapshotStore } from "./snapshotStore";
+import { randomUUID } from "node:crypto";
 import { canonical, checksum, decode, EMPTY_HASH, insist, type SqliteCatalog } from "./sqliteCatalog";
 
 export interface RecordIndex extends Omit<JournalRecord, "input"> {
@@ -169,6 +170,10 @@ export function verifyIndexColumns(index: readonly RecordIndex[], indexed: reado
   }
 }
 export function verifyMetadata(c: SqliteCatalog, allowPending = false): void {
+  verifiedMetadata(c, allowPending);
+}
+/** Complete metadata verification only. This does NOT certify any original event bytes. */
+function verifiedMetadata(c: SqliteCatalog, allowPending = false) {
   const state = storageState(c), index = indices(c), segs = segments(c), seeds = anchors(c);
   insist(allowPending || !state.pendingRetention, "RETENTION_PENDING", "Resume the committed retention intent before querying");
   insist(state.indexRoot === checksum(index) && state.segmentsRoot === checksum(segs) &&
@@ -190,6 +195,147 @@ export function verifyMetadata(c: SqliteCatalog, allowPending = false): void {
     { position: bigint; scope_id: string; channel: string; event_ns: bigint | null; receive_ns: bigint }[];
   const diagnostic = indexDiagnostics.get(c);
   verifyIndexColumns(index, indexed, diagnostic?.mode ?? "map", diagnostic?.observe);
+  return { index, retired };
+}
+
+export interface CommitReadMeasurement {
+  preflightMs: number; guardMs: number; metadataMs: number; originalReadMs: number;
+  setupMs: number; freezeMs: number; disposeMs: number;
+  descriptors: number; serializedBytes: number; success: boolean;
+  error?: string;
+}
+const commitReadDiagnostics = new WeakMap<SqliteCatalog, {
+  mode: "reuse" | "reference"; observe?: (m: CommitReadMeasurement) => void;
+  fault?: (phase: "verified" | "originals-read") => void;
+}>();
+/** Finite Node diagnostics only; no view, descriptor, token or persisted configuration escapes. */
+export function selectCommitReadForDiagnostics(c: SqliteCatalog, mode: "reuse" | "reference",
+  observe?: (m: CommitReadMeasurement) => void,
+  fault?: (phase: "verified" | "originals-read") => void): () => void {
+  const previous = commitReadDiagnostics.get(c);
+  commitReadDiagnostics.set(c, { mode, observe, fault });
+  return () => { if (previous) commitReadDiagnostics.set(c, previous); else commitReadDiagnostics.delete(c); };
+}
+// Approval of the temporary budget is LIMITED to finite R16.3 MOCK validation.
+// Existing/default writers and old diagnostic observers retain their independent reference path.
+export const usesCommitMetadataRead = (c: SqliteCatalog): boolean => commitReadDiagnostics.get(c)?.mode === "reuse";
+
+// One synchronous read view process-wide; no across-commit cache. The token never leaves this module.
+let activeReadToken: symbol | null = null;
+const MAX_DESCRIPTORS = 16_384n, MAX_DESCRIPTOR_BYTES = 16n * 1024n * 1024n;
+/** Private metadata only; never an original-event certificate or a cross-call cache. */
+interface VerifiedMetadataView {
+  readonly index: readonly RecordIndex[];
+  readonly retired: readonly string[];
+}
+
+/**
+ * Internal private-write helper, NOT a replacement for public read/replay.
+ * The only consumer is EventJournal.private commit, inside its existing native transaction.
+ * A local SAVEPOINT is a transaction-identity sentinel, not a new commit/rollback boundary.
+ * RELEASE must succeed on every check: COMMIT/ROLLBACK followed by BEGIN cannot reuse the token.
+ */
+export function readCommitOriginals(c: SqliteCatalog, scopeId: string,
+  readOriginals: (descriptors: readonly RecordIndex[]) => JournalRecord[]): JournalRecord[] {
+  insist(c.database.inTransaction && !activeReadToken, "READ_TRANSACTION", "One active write-transaction metadata view required");
+  const setupStart = performance.now();
+  const db = c.database, token = Symbol("commit-read"), sentinel = `c1_${randomUUID().replaceAll("-", "")}`;
+  const measurement: CommitReadMeasurement = { preflightMs: 0, guardMs: 0, metadataMs: 0, originalReadMs: 0,
+    setupMs: 0, freezeMs: 0, disposeMs: 0,
+    descriptors: 0, serializedBytes: 0, success: false };
+  const diagnostic = commitReadDiagnostics.get(c), nativeExec = db.exec;
+  const execDescriptor = Object.getOwnPropertyDescriptor(db, "exec");
+  // Statement prototype hooks cover statements prepared BEFORE this read phase as well.
+  // No await/callback publication; all hooks are restored before semantic replay/INSERT.
+  const proto = Object.getPrototypeOf(db.prepare("SELECT 1")) as Record<string, Function>;
+  const originals = new Map<string, PropertyDescriptor>();
+  let mutations = 0, created = false;
+  activeReadToken = token;
+  const exec = (sql: string) => Reflect.apply(nativeExec, db, [sql]);
+  const stamp = (): string => {
+    const changes = db.prepare("SELECT total_changes() AS n").safeIntegers().get() as { n: bigint };
+    return [changes.n.toString(), db.pragma("data_version", { simple: true }),
+      db.pragma("schema_version", { simple: true }), db.pragma("user_version", { simple: true }), mutations].join(":");
+  };
+  let generation = "";
+  const guard = () => {
+    const start = performance.now();
+    try {
+      insist(c.database === db && db.open, "READ_CONNECTION", "Metadata belongs to another/closed connection");
+      insist(activeReadToken === token && db.inTransaction, "READ_TRANSACTION", "Expired transaction token");
+      insist(stamp() === generation, "READ_GENERATION", "DML/DDL/pragma changed the read generation");
+      // data_version excludes this connection's own writes; total_changes includes rolled-back DML
+      // but not DDL. Statement/exec mutation hooks cover DDL, no-op writes and restored pragmas.
+      // Neither is a transaction ID. The unexported sentinel additionally certifies that identity.
+      try { exec(`RELEASE SAVEPOINT ${sentinel}`); exec(`SAVEPOINT ${sentinel}`); }
+      catch { insist(false, "READ_TRANSACTION", "Original native transaction ended; token cannot be reused"); }
+    } finally { measurement.guardMs += performance.now() - start; }
+  };
+  try {
+    exec(`SAVEPOINT ${sentinel}`); created = true;
+    for (const method of ["run", "get", "all", "iterate"]) {
+      const own = Object.getOwnPropertyDescriptor(proto, method)!; originals.set(method, own);
+      const native = own.value;
+      Object.defineProperty(proto, method, { ...own, value: function(this: {
+        database: typeof db; readonly: boolean; source: string;
+      }, ...args: unknown[]) {
+        if (this.database === db && (!this.readonly ||
+          /^\s*(?:BEGIN|COMMIT|END|ROLLBACK|SAVEPOINT|RELEASE)\b/i.test(this.source))) mutations++;
+        return Reflect.apply(native, this, args);
+      } });
+    }
+    db.exec = function(this: typeof db, ...args: Parameters<typeof nativeExec>) {
+      if (this === db) mutations++;
+      return Reflect.apply(nativeExec, this, args);
+    } as typeof db.exec;
+    generation = stamp();
+    measurement.setupMs = performance.now() - setupStart;
+    const before = performance.now();
+    // Preflight BEFORE .all()/decode/allocation. Counts are BigInt, byte length is UTF-8 BLOB length.
+    try {
+    const count = db.prepare("SELECT COUNT(*) AS n FROM r15_records").safeIntegers().get() as { n: bigint };
+    insist(count.n <= MAX_DESCRIPTORS, "READ_BUDGET", `STOP_REQUIRED: ${count.n} descriptors exceed finite MOCK read budget`);
+    const bytes = db.prepare("SELECT COALESCE(SUM(length(CAST(payload AS BLOB))),0) AS n FROM r15_records")
+      .safeIntegers().get() as { n: bigint };
+    insist(bytes.n <= MAX_DESCRIPTOR_BYTES, "READ_BUDGET", `STOP_REQUIRED: ${bytes.n} serialized bytes exceed finite MOCK read budget`);
+    measurement.descriptors = Number(count.n); measurement.serializedBytes = Number(bytes.n);
+    } finally { measurement.preflightMs = performance.now() - before; }
+    guard();
+    const verifyStart = performance.now();
+    const view: VerifiedMetadataView = verifiedMetadata(c), { index, retired } = view;
+    measurement.metadataMs = performance.now() - verifyStart;
+    // All descriptor fields are primitives. No writable descriptor is exposed to the consumer.
+    const freezeStart = performance.now();
+    for (const d of index) Object.freeze(d);
+    Object.freeze(index);
+    measurement.freezeMs = performance.now() - freezeStart;
+    diagnostic?.fault?.("verified");
+    guard();
+    const retiredPositions = new Set(retired);
+    const selected = Object.freeze(index.filter(d => d.scopeId === scopeId && !retiredPositions.has(d.position)));
+    const readStart = performance.now(), records = readOriginals(selected);
+    measurement.originalReadMs = performance.now() - readStart;
+    insist(Array.isArray(records), "READ_ASYNC", "Original reader must complete synchronously");
+    diagnostic?.fault?.("originals-read");
+    guard();
+    // Dispose before returning to replay, and necessarily before any INSERT.
+    exec(`RELEASE SAVEPOINT ${sentinel}`); created = false;
+    measurement.success = true;
+    return records;
+  } catch (error) {
+    measurement.error = String(error);
+    throw error;
+  } finally {
+    const disposeStart = performance.now();
+    if (created && db.open && db.inTransaction) {
+      try { exec(`RELEASE SAVEPOINT ${sentinel}`); } catch { /* preserve original rejection */ }
+    }
+    for (const [key, descriptor] of originals) Object.defineProperty(proto, key, descriptor);
+    if (execDescriptor) Object.defineProperty(db, "exec", execDescriptor); else Reflect.deleteProperty(db, "exec");
+    activeReadToken = null;
+    measurement.disposeMs = performance.now() - disposeStart;
+    diagnostic?.observe?.(measurement);
+  }
 }
 export function compactState(state: MarketQualityState, cutoffNs: string, keep?: ReadonlySet<string>): MarketQualityState {
   const cutoff = BigInt(cutoffNs);
