@@ -1,0 +1,24 @@
+{
+  "name": "@workspace/tickstream-storage",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/appendStore.ts",
+    "./recovery": "./src/recovery.ts",
+    "./manifest": "./src/manifest.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "build": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@workspace/tickstream-adapter": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "25.9.6",
+    "typescript": "~5.9.3",
+    "vitest": "5.0.5"
+  }
+}

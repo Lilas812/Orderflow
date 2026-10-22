@@ -206,7 +206,7 @@ describe("existing safety contracts and no live measurements", () => {
     expect(source).not.toMatch(/process\s*[.[]|import\s*\(|new\s+(WebSocket|URL)|fetch\s*\(|console\s*\./);
     const manifest = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
     expect(manifest.scripts).not.toHaveProperty("smoke:live");
-    expect(Object.keys(manifest.dependencies).sort()).toEqual(["@workspace/tickstream-adapter", "ws"]);
+    expect(Object.keys(manifest.dependencies).sort()).toEqual(["@workspace/tickstream-adapter", "@workspace/tickstream-storage", "ws"]);
     const runner = readFileSync(new URL("./poc.ts", import.meta.url), "utf8");
     expect(runner).not.toContain("liveConfig");
   });

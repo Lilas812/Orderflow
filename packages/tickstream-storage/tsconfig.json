@@ -1,0 +1,11 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "incremental": false,
+    "strict": true,
+    "types": ["node"],
+    "allowImportingTsExtensions": true
+  },
+  "include": ["src"]
+}

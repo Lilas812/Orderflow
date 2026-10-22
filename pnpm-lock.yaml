@@ -196,6 +196,9 @@ importers:
       '@workspace/tickstream-adapter':
         specifier: workspace:*
         version: link:../../packages/tickstream-adapter
+      '@workspace/tickstream-storage':
+        specifier: workspace:*
+        version: link:../../packages/tickstream-storage
       ws:
         specifier: 8.22.0
         version: 8.22.0
@@ -602,6 +605,22 @@ importers:
         specifier: workspace:*
         version: link:../core
     devDependencies:
+      typescript:
+        specifier: ~5.9.3
+        version: 5.9.3
+      vitest:
+        specifier: 5.0.5
+        version: 5.0.5(@types/node@25.9.6)(vite@7.3.6(@types/node@25.9.6)(jiti@2.7.0)(lightningcss@1.32.0)(tsx@4.23.13)(yaml@2.9.0))
+
+  packages/tickstream-storage:
+    dependencies:
+      '@workspace/tickstream-adapter':
+        specifier: workspace:*
+        version: link:../tickstream-adapter
+    devDependencies:
+      '@types/node':
+        specifier: 25.9.6
+        version: 25.9.6
       typescript:
         specifier: ~5.9.3
         version: 5.9.3

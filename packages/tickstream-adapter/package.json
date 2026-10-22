@@ -5,6 +5,7 @@
   "type": "module",
   "exports": {
     ".": "./src/parsePublicSample.ts",
+    "./live-observation": "./src/liveObservation.ts",
     "./envelope": "./src/envelope.ts"
   },
   "scripts": {

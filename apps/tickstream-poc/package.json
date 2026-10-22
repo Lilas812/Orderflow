@@ -11,6 +11,7 @@
   },
   "dependencies": {
     "@workspace/tickstream-adapter": "workspace:*",
+    "@workspace/tickstream-storage": "workspace:*",
     "ws": "8.22.0"
   },
   "devDependencies": {
