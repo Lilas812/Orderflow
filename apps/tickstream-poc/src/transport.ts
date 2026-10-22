@@ -67,7 +67,8 @@ export class FakeClock implements Clock {
 
 /** These ACK/auth events are synthetic test signals, NOT a claimed provider wire schema. */
 export type SocketEvent =
-  | { type: "open" | "subscribed" | "authRejected" | "subscriptionRejected" | "wsPing" | "close" | "error" }
+  | { type: "open" | "subscribed" | "authRejected" | "subscriptionRejected" | "wsPing" | "wsPong" | "close" | "error" }
+  | { type: "protocolError"; reason: "PAYLOAD_TOO_LARGE" | "FRAGMENT_LIMIT" | "INVALID_UTF8" | "FRAGMENT_PROTOCOL" }
   | { type: "text"; bytes: Uint8Array }
   | { type: "fragment"; bytes: Uint8Array; final: boolean };
 export interface Socket {
@@ -208,6 +209,13 @@ export class Transport {
     });
   }
   private handle(event: SocketEvent): void {
+    // Native receiver failures occur before a complete message enters the queue.
+    // Count them separately from parser rejections; do not invent received ticks.
+    if (event.type === "protocolError") {
+      this.diagnostics.errorCount++;
+      this.stop(event.reason, true);
+      return;
+    }
     if (event.type === "close") {
       this.diagnostics.closeCount++;
       if (this.current === "STOPPING") { if (!this.pendingCount && !this.processing) this.finish(); return; }
@@ -232,10 +240,12 @@ export class Transport {
       if (this.current === "SUBSCRIBING") this.move("ACK");
       return;
     }
-    if (event.type === "wsPing") {
+    if (event.type === "wsPing" || event.type === "wsPong") {
       if (["SUBSCRIBING", "RUNNING"].includes(this.current)) {
         this.heartbeat(); this.diagnostics.heartbeatCount++;
-        try { this.socket?.pong("WEBSOCKET"); } catch { this.stop("SOCKET_ERROR", true); }
+        if (event.type === "wsPing") {
+          try { this.socket?.pong("WEBSOCKET"); } catch { this.stop("SOCKET_ERROR", true); }
+        }
       }
       return;
     }

@@ -5,7 +5,8 @@ import { fileURLToPath } from "node:url";
 
 /**
  * Node 24's native TS transformer plus extension resolution for the unchanged
- * workspace TS exports. No tsx, compilation output, network client or env reader.
+ * workspace TS exports. No tsx, compilation output or env reader. Only the
+ * explicit local mode dynamically imports the loopback-only network adapter.
  */
 registerHooks({
   resolve(specifier, context, nextResolve) {
@@ -22,39 +23,47 @@ registerHooks({
 const { syntheticSession, watchdog, unavailableReport } = await import("./session.ts");
 const { Diagnostics, readReport } = await import("./diagnostics.ts");
 const { LIMITS } = await import("./transport.ts");
+const localMode = process.argv[2] === "--local-ws" || process.argv[2] === "--local-child";
+const local = localMode ? await import("./localWsSession.ts") : null;
+type AnyReport = ReturnType<typeof syntheticSession> | import("./localWsSession.ts").LocalReport;
+const unavailable = (reason: Parameters<typeof unavailableReport>[0]): AnyReport =>
+  local ? local.unavailableLocalReport(reason) : unavailableReport(reason);
+const read = (value: unknown): AnyReport | null => local ? local.readLocalReport(value) : readReport(value);
 
 function output(report: unknown): void {
-  process.stdout.write(`${JSON.stringify(readReport(report) ?? unavailableReport("SESSION_FAILURE"))}\n`);
+  process.stdout.write(`${JSON.stringify(read(report) ?? unavailable("SESSION_FAILURE"))}\n`);
 }
 
-if (process.argv[2] === "--synthetic-child" && process.send) {
-  // Synthetic source: no key access, no socket constructor, no network imports.
+if ((process.argv[2] === "--synthetic-child" || process.argv[2] === "--local-child") && process.send && process.argv.length === 3) {
+  // No key access. Synthetic mode has no sockets; local mode is loopback-only.
   // Stay alive until the parent samples RSS and acknowledges the one report.
-  const ackDeadline = setTimeout(() => { process.disconnect?.(); process.exitCode = 1; }, LIMITS.cleanupMs);
-  process.once("message", message => {
-    if (message && typeof message === "object" && (message as { type?: unknown }).type === "REPORT_ACK") {
-      clearTimeout(ackDeadline); process.disconnect?.();
-    }
-  });
   try {
-    const report = syntheticSession();
+    const report = local ? await local.localWsSession() : syntheticSession();
+    const ackDeadline = setTimeout(() => { process.disconnect?.(); process.exitCode = 1; }, LIMITS.cleanupMs);
+    process.once("message", message => {
+      if (message && typeof message === "object" && (message as { type?: unknown }).type === "REPORT_ACK") {
+        clearTimeout(ackDeadline); process.disconnect?.();
+      }
+    });
     process.send(report);
+    if (report.state !== "STOPPED" || report.stopReason !== "COMPLETED") process.exitCode = 1;
   } catch {
-    process.send(unavailableReport("SESSION_FAILURE"));
+    process.send(unavailable("SESSION_FAILURE"), () => process.disconnect?.());
     process.exitCode = 1;
   }
-} else if (process.argv.length !== 2) {
-  output(unavailableReport("SESSION_FAILURE"));
+} else if (!(process.argv.length === 2 || (process.argv.length === 3 && process.argv[2] === "--local-ws"))) {
+  // No URL override, credential argument or hidden external-network switch.
+  output(unavailable("SESSION_FAILURE"));
   process.exitCode = 1;
 } else {
   const started = performance.now();
   const diagnostics = new Diagnostics();
-  let childReport: ReturnType<typeof syntheticSession> | undefined;
+  let childReport: AnyReport | undefined;
   let stopAt: number | null = null;
   let stopReason: Parameters<typeof unavailableReport>[0] | null = null;
   let reportAt: number | null = null;
   // Environment allowlist is empty: no Secrets inherited, inspected or forwarded.
-  const child = fork(fileURLToPath(import.meta.url), ["--synthetic-child"], {
+  const child = fork(fileURLToPath(import.meta.url), [local ? "--local-child" : "--synthetic-child"], {
     env: {}, execArgv: ["--experimental-transform-types", "--disable-warning=ExperimentalWarning", "--max-old-space-size=192"],
     stdio: ["ignore", "ignore", "ignore", "ipc"],
   });
@@ -99,7 +108,7 @@ if (process.argv[2] === "--synthetic-child" && process.send) {
   // Trusted child sends exactly one fixed-schema report, never messages/raw data.
   child.on("message", message => {
     if (childReport || stopReason !== null) return;
-    const report = readReport(message);
+    const report = read(message);
     if (report && JSON.stringify(report).length < 16_384) {
       sample();
       if (stopReason !== null) return;
@@ -112,8 +121,8 @@ if (process.argv[2] === "--synthetic-child" && process.send) {
     if (done) return;
     done = true; clearInterval(interval); process.removeListener("SIGINT", interrupt);
     const memory = diagnostics.report("STOPPED", "COMPLETED", 0).memory;
-    const report = stopReason ? unavailableReport(stopReason) :
-      successful && childReport ? childReport : unavailableReport("SESSION_FAILURE");
+    const report = stopReason ? unavailable(stopReason) :
+      successful && childReport ? childReport : unavailable("SESSION_FAILURE");
     output({ ...report, memory });
     if (report.state !== "STOPPED") process.exitCode = 1;
   };

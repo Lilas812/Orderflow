@@ -6,13 +6,16 @@
   "scripts": {
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "synthetic": "node --experimental-transform-types --disable-warning=ExperimentalWarning src/poc.ts"
+    "synthetic": "node --experimental-transform-types --disable-warning=ExperimentalWarning src/poc.ts",
+    "local:ws": "node --experimental-transform-types --disable-warning=ExperimentalWarning src/poc.ts --local-ws"
   },
   "dependencies": {
-    "@workspace/tickstream-adapter": "workspace:*"
+    "@workspace/tickstream-adapter": "workspace:*",
+    "ws": "8.22.0"
   },
   "devDependencies": {
     "@types/node": "catalog:",
+    "@types/ws": "8.18.2",
     "typescript": "~5.9.3",
     "vitest": "5.0.5"
   }
