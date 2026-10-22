@@ -71,10 +71,19 @@ function newer(a: string | null, b: string | null): string | null {
   return b !== null && BigInt(b) > BigInt(a) ? b : a;
 }
 
-/** No sorting, missing-event synthesis, or automatic unblocking. */
-export function guardEvent(
-  state: SequenceGuard, input: unknown, rule: ContinuityRule = { contiguous: false },
-): GuardResult {
+type Head = NonNullable<ReturnType<SequenceGuard["heads"]["get"]>>;
+export interface _GuardReadPort {
+  readonly heads: Pick<SequenceGuard["heads"], "get">;
+  readonly seen: Pick<SequenceGuard["seen"], "get">;
+}
+export type _GuardDecision = Omit<GuardResult, "state"> & (
+  { readonly change: "KEEP" } | { readonly change: "NEXT"; readonly partition: string;
+    readonly head: Head; readonly insert: {key: string; fingerprint: string} | null });
+
+/** Shared pure decision kernel: never copies or mutates a Map. @internal */
+export function _planGuardEvent(
+  state: _GuardReadPort, input: unknown, rule: ContinuityRule = { contiguous: false },
+): _GuardDecision {
   const event = validateMarketEvent(input);
   const h = event.header;
   const v = verification(h, rule);
@@ -83,8 +92,8 @@ export function guardEvent(
   const key = idKey(h);
   const fingerprint = canonical(event);
   const saved = state.seen.get(key);
-  const result = (outcome: GuardOutcome, apply: boolean, reason: string, next = state): GuardResult =>
-    ({ state: next, outcome, apply, verification: v, reason });
+  const result = (outcome: GuardOutcome, apply: boolean, reason: string): _GuardDecision =>
+    ({ change: "KEEP", outcome, apply, verification: v, reason });
   if (saved === fingerprint) return result("DUPLICATE", false, "Identical event ID and content");
 
   let outcome: GuardOutcome = "ACCEPTED";
@@ -108,35 +117,33 @@ export function guardEvent(
     outcome = "GAP"; reason = `Missing sequence after ${previous.lastSequence}; received ${h.sequence}`;
   }
   const apply = outcome === "ACCEPTED";
-  const heads = new Map(state.heads);
-  heads.set(partition, {
+  const head: Head = {
     lastSequence: apply ? h.sequence : previous?.lastSequence ?? null,
     highWatermark: saved !== undefined ? previous?.highWatermark ?? null :
       newer(previous?.highWatermark ?? null, h.sequence),
     exchangeTimeNs: saved !== undefined ? previous?.exchangeTimeNs ?? null :
       newer(previous?.exchangeTimeNs ?? null, h.exchangeTimeNs),
     blocked: !apply,
-  });
-  const seen = new Map(state.seen);
-  // A conflict must never replace the original fingerprint.
-  if (saved === undefined) seen.set(key, fingerprint);
-  return result(outcome, apply, reason, { heads, seen });
+  };
+  return { change: "NEXT", partition, head,
+    insert: saved === undefined ? { key, fingerprint } : null,
+    outcome, apply, verification: v, reason };
 }
 
 /**
  * Supported alignment contract: header sequence == snapshotCoversSequence.
  * Caller must attest this rule separately; it is NOT assumed for real feeds.
  */
-export function rebaseSequenceGuard(
-  state: SequenceGuard, input: unknown, rule: ContinuityRule, alignmentEvidence: string,
-): GuardResult {
+export function _planRebaseSequenceGuard(
+  state: _GuardReadPort, input: unknown, rule: ContinuityRule, alignmentEvidence: string,
+): _GuardDecision {
   const event = validateMarketEvent(input);
   if (event.kind !== "L2_SNAPSHOT") throw new TypeError("Resync requires an L2 snapshot");
   const snapshot: L2Snapshot = event;
   const h = snapshot.header;
   const v = verification(h, rule);
-  const fail = (reason: string): GuardResult => ({
-    state, outcome: "UNVERIFIABLE", apply: false, verification: v, reason,
+  const fail = (reason: string): _GuardDecision => ({
+    change: "KEEP", outcome: "UNVERIFIABLE", apply: false, verification: v, reason,
   });
   if (!alignmentEvidence.trim() || v !== "CONTIGUOUS") {
     return fail("Resync needs explicit continuity and snapshot alignment evidence");
@@ -149,7 +156,7 @@ export function rebaseSequenceGuard(
   const fingerprint = canonical(snapshot);
   const saved = state.seen.get(key);
   if (saved !== undefined) {
-    return { state, outcome: saved === fingerprint ? "DUPLICATE" : "CONFLICT", apply: false,
+    return { change: "KEEP", outcome: saved === fingerprint ? "DUPLICATE" : "CONFLICT", apply: false,
       verification: v, reason: "Snapshot must be new and must not conflict with an existing ID" };
   }
   const previous = state.heads.get(sequencePartition(h));
@@ -161,14 +168,38 @@ export function rebaseSequenceGuard(
       (h.exchangeTimeNs === null || BigInt(h.exchangeTimeNs) < BigInt(previous.exchangeTimeNs))) {
     return fail("Snapshot precedes previously observed exchange time");
   }
-  const heads = new Map(state.heads);
-  heads.set(sequencePartition(h), {
+  const head: Head = {
     lastSequence: snapshot.snapshotCoversSequence, highWatermark: snapshot.snapshotCoversSequence,
     exchangeTimeNs: h.exchangeTimeNs, blocked: false,
-  });
-  const seen = new Map(state.seen);
-  seen.set(key, fingerprint);
-  return { state: { heads, seen }, outcome: "ACCEPTED", apply: true,
+  };
+  return { change: "NEXT", partition: sequencePartition(h), head, insert: { key, fingerprint },
+    outcome: "ACCEPTED", apply: true,
     verification: v, reason: "Snapshot coverage and declared alignment verified" };
+}
+
+/** Public immutable adapter; retained independently of owned session storage. */
+export function guardEvent(
+  state: SequenceGuard, input: unknown, rule: ContinuityRule = { contiguous: false },
+): GuardResult {
+  const plan = _planGuardEvent(state, input, rule);
+  if (plan.change === "KEEP") return { state, outcome: plan.outcome, apply: plan.apply,
+    reason: plan.reason, verification: plan.verification };
+  const heads = new Map(state.heads); heads.set(plan.partition, plan.head);
+  const seen = new Map(state.seen);
+  if (plan.insert) seen.set(plan.insert.key, plan.insert.fingerprint);
+  return { state: { heads, seen }, outcome: plan.outcome, apply: plan.apply,
+    reason: plan.reason, verification: plan.verification };
+}
+export function rebaseSequenceGuard(
+  state: SequenceGuard, input: unknown, rule: ContinuityRule, alignmentEvidence: string,
+): GuardResult {
+  const plan = _planRebaseSequenceGuard(state, input, rule, alignmentEvidence);
+  if (plan.change === "KEEP") return { state, outcome: plan.outcome, apply: plan.apply,
+    reason: plan.reason, verification: plan.verification };
+  const heads = new Map(state.heads); heads.set(plan.partition, plan.head);
+  const seen = new Map(state.seen);
+  if (plan.insert) seen.set(plan.insert.key, plan.insert.fingerprint);
+  return { state: { heads, seen }, outcome: plan.outcome, apply: plan.apply,
+    reason: plan.reason, verification: plan.verification };
 }
 

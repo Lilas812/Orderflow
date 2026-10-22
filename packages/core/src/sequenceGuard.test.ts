@@ -9,6 +9,12 @@ import type { EventHeader } from "./events";
 const rule: ContinuityRule = { contiguous: true, evidence: F07.assumptions.continuityEvidence };
 const alignment = F07.assumptions.snapshotAlignmentEvidence;
 const initial = F07.events[0];
+it("R165 public immutable guards keep base Native Maps independent",()=>{
+  const base=createSequenceGuard(),next=guardEvent(base,initial,rule);
+  expect(base.seen.size).toBe(0);expect(next.state.seen).not.toBe(base.seen);
+  expect(next.state.seen).toBeInstanceOf(Map);
+  expect(guardEvent(next.state,initial,rule).state).toBe(next.state);
+});
 function update(sequence: string, eventId = `MOCK-U-${sequence}`) {
   return { ...F07.events[2], header: { ...F07.events[2].header, sequence, eventId } };
 }

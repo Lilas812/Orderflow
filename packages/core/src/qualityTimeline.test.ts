@@ -1,13 +1,14 @@
 import { describe, expect, it } from "vitest";
 import { F07_SEQUENCE_GAP as F07, F16_NO_L1 as F16 } from "../../fixtures/src/index";
 import {
-  createMarketQualityState, createQualityTimeline, currentMbpBook, currentQuality,
+  _createQualityReducer, createMarketQualityState, createQualityTimeline, currentMbpBook, currentQuality,
   ingestMarketEvent, ingestMbpBatch, markChannelCondition, readCurrentMbpLevel,
   resynchronizeMbp, transitionQuality,
   type MarketQualityConfig, type MarketQualityState, type QualityChannel, type QualityStatus,
 } from "./qualityTimeline";
 import { readMbpLevel } from "./mbpBook";
 import { validateMarketEvent } from "./events";
+import { guardEvent, rebaseSequenceGuard } from "./sequenceGuard";
 
 const diagnostic = (globalThis as unknown as { console: { info(message: string): void } }).console;
 function config(fixture = F07 as typeof F07 | typeof F16): MarketQualityConfig {
@@ -39,6 +40,14 @@ function gapped() {
   for (const event of F07.events) state = ingestMarketEvent(state, event).state;
   return state;
 }
+it("R165 instance-local reducer keeps immutable public default unchanged",()=>{
+  const reducer=_createQualityReducer({event:guardEvent,rebase:rebaseSequenceGuard});
+  let a=fresh(),b=fresh();
+  for(const event of [...F07.events,F07.recovery]) {
+    const left=ingestMarketEvent(a,event),right=reducer.ingestEvent(b,event);
+    expect(left).toEqual(right);a=left.state;b=right.state;
+  }
+});
 
 describe("R03 immutable quality timeline", () => {
   it("starts with independent NOT_INITIALIZED lanes and no implicit zero quantity", () => {

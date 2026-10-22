@@ -9,6 +9,18 @@ function testGateway(run: (p: EventPipeline, id: string, advance: (ms:number)=>v
   try { const id=s.register(config(),ns(0)); run(new EventPipeline(s,()=>now,limits),id,ms=>{now+=ms;}); }
   finally { s.close(); removeOwnedDirectory(dir); }
 }
+it("R165 retains a committed control attempt even if another fault changes its barrier",()=>testGateway((p,id)=>{
+  p.receive(id,eventAt(0));expect(p.drain()).toBe(true);
+  p.invalidate(id,"L2_MBP",ns(1),"first fault");
+  p.storage.beforePublish=()=>{throw Error("control publish failed");};
+  expect(p.drain()).toBe(false);
+  expect(p.storage.pendingAttempt?.phase).toBe("COMMITTED_NOT_PUBLISHED");
+  p.receive(id,eventAt(2));p.invalidate(id,"L2_MBP",ns(2),"second fault");
+  p.storage.beforePublish=undefined;
+  expect(p.drain()).toBe(true);
+  expect(p.storage.journal.records(id).filter(r=>r.input.type==="CONDITION")).toHaveLength(2);
+  expect(p.metrics.auditRecords).toBe(4);
+}));
 it("commits 1010 immutable deliveries, 1000 applications and 10 duplicates in arrival order", () => testGateway((p,id) => {
   for (const e of deterministicDeliveries()) expect(p.receive(id,e)).toBe(true);
   expect(p.metrics.persistedEvents).toBe(0);

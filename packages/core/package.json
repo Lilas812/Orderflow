@@ -9,6 +9,7 @@
     "./mbp-book": "./src/mbpBook.ts",
     "./sequence-guard": "./src/sequenceGuard.ts",
     "./quality-timeline": "./src/qualityTimeline.ts",
+    "./owned-sequence-session": "./src/ownedSequenceSession.ts",
     "./price-bins": "./src/priceBins.ts",
     "./time-weighted-depth": "./src/timeWeightedDepth.ts",
     "./viewport": "./src/viewport.ts",

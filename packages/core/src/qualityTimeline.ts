@@ -145,7 +145,10 @@ function rejectGuard(
 }
 
 /** A matching, new, covering snapshot is the only L2 recovery path. */
-export function resynchronizeMbp(state: MarketQualityState, input: unknown): MarketResult {
+export interface _GuardOps { event: typeof guardEvent; rebase: typeof rebaseSequenceGuard }
+/** Instance-local operations, never a global mutable selector. @internal */
+export function _createQualityReducer(ops: _GuardOps) {
+function resynchronizeMbp(state: MarketQualityState, input: unknown): MarketResult {
   // Malformed raw input throws before altering the immutable state.
   const event = validateMarketEvent(input);
   if (event.kind !== "L2_SNAPSHOT" || !matches(state, event.header)) {
@@ -161,7 +164,7 @@ export function resynchronizeMbp(state: MarketQualityState, input: unknown): Mar
       !matchingDepth(event.depthScope, state.config.depthScope)) {
     return failed("RESYNC_REJECTED", "Snapshot scope/depth does not match subscription", "UNVERIFIABLE");
   }
-  const sync = rebaseSequenceGuard(state.guard, event,
+  const sync = ops.rebase(state.guard, event,
     state.config.rules.L2_MBP.continuity, state.config.snapshotAlignmentEvidence);
   if (!sync.apply) {
     if (sync.outcome === "DUPLICATE") return result(state, false, sync.outcome, sync.reason);
@@ -181,7 +184,7 @@ export function resynchronizeMbp(state: MarketQualityState, input: unknown): Mar
     true, "ACCEPTED", sync.reason);
 }
 
-export function ingestMarketEvent(state: MarketQualityState, input: unknown): MarketResult {
+function ingestMarketEvent(state: MarketQualityState, input: unknown): MarketResult {
   const event = validateMarketEvent(input);
   requireQuality(event.header.channel !== "MBO", "MBO is outside R03");
   if (!matches(state, event.header)) return result(state, false, "IDENTITY_MISMATCH", "Foreign market identity");
@@ -197,7 +200,7 @@ export function ingestMarketEvent(state: MarketQualityState, input: unknown): Ma
     requireQuality(event.updateBatchId === undefined, "Complete tagged batches require ingestMbpBatch");
     return ingestMbpBatch(state, [event]);
   }
-  const guarded = guardEvent(state.guard, event, rule.continuity);
+  const guarded = ops.event(state.guard, event, rule.continuity);
   if (!guarded.apply) return rejectGuard(state, guarded, channel, event.header.receiveTimeNs);
   if (event.header.quality !== "VALID") {
     return result({ ...state, guard: guarded.state,
@@ -216,7 +219,7 @@ export function ingestMarketEvent(state: MarketQualityState, input: unknown): Ma
 }
 
 /** One complete logical batch, fully validated before guard/book changes are published. */
-export function ingestMbpBatch(state: MarketQualityState, inputs: readonly unknown[]): MarketResult {
+function ingestMbpBatch(state: MarketQualityState, inputs: readonly unknown[]): MarketResult {
   requireQuality(Array.isArray(inputs) && inputs.length > 0, "A complete nonempty batch is required");
   const updates: L2PriceUpdate[] = inputs.map((input) => {
     const event = validateMarketEvent(input);
@@ -237,7 +240,7 @@ export function ingestMbpBatch(state: MarketQualityState, inputs: readonly unkno
   let duplicateCount = 0;
   const accepted: L2PriceUpdate[] = [];
   for (const event of updates) {
-    const checked = guardEvent(guard, event, state.config.rules.L2_MBP.continuity);
+    const checked = ops.event(guard, event, state.config.rules.L2_MBP.continuity);
     guard = checked.state;
     if (checked.outcome === "DUPLICATE") { duplicateCount++; continue; }
     if (!checked.apply) return rejectGuard(state, checked, "L2_MBP", atNs);
@@ -270,6 +273,13 @@ export function ingestMbpBatch(state: MarketQualityState, inputs: readonly unkno
     timeline: transitionQuality(state.timeline, "L2_MBP", "VALID", atNs,
       "Contiguous L2 updates accepted", last.verification) }, true, "ACCEPTED", "Complete batch applied");
 }
+
+return { ingestEvent: ingestMarketEvent, ingestBatch: ingestMbpBatch, resync: resynchronizeMbp };
+}
+const defaultReducer = _createQualityReducer({ event: guardEvent, rebase: rebaseSequenceGuard });
+export const ingestMarketEvent = defaultReducer.ingestEvent;
+export const ingestMbpBatch = defaultReducer.ingestBatch;
+export const resynchronizeMbp = defaultReducer.resync;
 
 export function currentMbpBook(state: MarketQualityState): MbpBook | null {
   const quality = currentQuality(state.timeline, "L2_MBP");

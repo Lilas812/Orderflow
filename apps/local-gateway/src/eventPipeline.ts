@@ -2,7 +2,7 @@ import { validateMarketEvent, type MarketEvent } from "@workspace/core/events";
 import { currentMbpBook, currentQuality, type QualityChannel } from "@workspace/core/quality-timeline";
 import { inputMetadata } from "@workspace/storage/journal";
 import { canonical } from "@workspace/storage/catalog";
-import type { StorageAdapter } from "./storageAdapter";
+import type { StorageAdapter, StorageCommitAttempt } from "./storageAdapter";
 import { Metrics, maxNs, type ModelStamp } from "./metrics";
 import { ReconnectController } from "./reconnectController";
 import type { MarketQualityState } from "@workspace/core/quality-timeline";
@@ -22,6 +22,9 @@ export class EventPipeline {
   private queue: Entry[] = [];
   private bytes = 0; private ordinal = 0;
   private readonly faults = new Map<string,Fault>();
+  private eventAttempt:{attempt:StorageCommitAttempt;group:Entry[]}|null=null;
+  private controlAttempt:{attempt:StorageCommitAttempt;fault:Fault;stamp:string}|null=null;
+  private accountingFailed=false;
   private offered: ModelStamp | null = null;
   private renderClock = -Infinity;
   private rendererReady = true;
@@ -49,16 +52,16 @@ export class EventPipeline {
   }
   quality(scope: string, channel: QualityChannel): string {
     if (this.metrics.storageStatus !== "OK") return "STORAGE ERROR";
-    if(channel==="TRADES" && this.storage.trades.get(scope)?.issues.length) return "INCOMPLETE";
+    const view=this.storage.readScope(scope);
+    if(channel==="TRADES" && view?.tradeIssueCount) return "INCOMPLETE";
     return this.faults.get(this.key(scope,channel))?.status ??
-      (this.storage.states.has(scope) ? currentQuality(this.storage.states.get(scope)!.timeline,channel).status : "NOT_INITIALIZED");
+      (view?.qualities[channel]?.status ?? "NOT_INITIALIZED");
   }
   book(scope: string) {
-    const state = this.storage.states.get(scope);
-    return state && this.quality(scope,"L2_MBP") === "VALID" ? currentMbpBook(state) : null;
+    return this.quality(scope,"L2_MBP") === "VALID" ? this.storage.bookSnapshot(scope) : null;
   }
   invalidate(scopeId: string, channel: QualityChannel, atNs: string, reason: string, status: "GAP" | "RESYNCING" = "GAP"): void {
-    if (!this.storage.states.has(scopeId)) return;
+    if (!this.storage.readScope(scopeId)) return;
     const key = this.key(scopeId,channel), existing = this.faults.get(key);
     if (existing) {
       existing.atNs = maxNs(existing.atNs,atNs)!;
@@ -79,15 +82,15 @@ export class EventPipeline {
       else inputMetadata({ type: "EVENT", event });
       if(event.header.channel==="TRADES" && event.header.exchangeTimeNs===null)
         throw new TypeError("R08 canonical Trade requires known exchange time; never substitute receipt time");
-      const identity = this.storage.states.get(scopeId)?.config.identity;
+      const identity = this.storage.readScope(scopeId)?.identity;
       if (!identity || !Object.entries(identity).every(([k,v]) => event.header[k as keyof typeof event.header] === v))
         throw new TypeError("Scope mismatch");
     } catch {
       m.rejectedEvents++;
       // No arbitrary malformed payload is written as a normalized market event.
-      const state = this.storage.states.get(scopeId);
+      const state = this.storage.readScope(scopeId);
       if (state) for (const ch of ["L1","L2_MBP","TRADES"] as const)
-        this.invalidate(scopeId,ch,state.lastGoodBook.lastHeader?.receiveTimeNs ?? this.storage.journal.scope(scopeId).startNs,"INVALID INPUT");
+        this.invalidate(scopeId,ch,state.lastBookReceiveNs ?? this.storage.journal.scope(scopeId).startNs,"INVALID INPUT");
       return false;
     }
     m.latestExchangeEventTime = maxNs(m.latestExchangeEventTime,event.header.exchangeTimeNs);
@@ -112,36 +115,54 @@ export class EventPipeline {
     } else if (this.paused && utilization <= this.limits.low) { this.paused=false; this.onPause(false); }
   }
   private controls(): boolean {
+    if(this.accountingFailed)return false;
+    if(this.eventAttempt)return true; // Resolve owned event attempt before creating any control write.
+    if(this.controlAttempt) {
+      const pending=this.controlAttempt;
+      try {
+        const commit=pending.attempt.execute();
+        this.metrics.auditRecords++;this.metrics.lastPersistedPosition=commit.lastPosition;
+        this.metrics.storageStatus="OK";pending.fault.recorded=JSON.stringify(pending.fault)===pending.stamp;
+        this.controlAttempt=null;
+      } catch {
+        this.metrics.storageErrorCount++;this.metrics.storageStatus="STORAGE ERROR";return false;
+      }
+    }
     for (const fault of this.faults.values()) if (!fault.recorded && (!this.queue.length || this.queue[0].ordinal > fault.barrier)) {
+      const stamp=JSON.stringify(fault);
       try {
         const commit = this.storage.condition(fault.scopeId,fault.channel,fault.atNs,fault.status,fault.reason);
         this.metrics.auditRecords++;
         this.metrics.lastPersistedPosition = commit.lastPosition;
         this.metrics.storageStatus="OK";
-        fault.recorded=true;
+        fault.recorded=JSON.stringify(fault)===stamp;
       } catch {
+        if(this.storage.pendingAttempt)this.controlAttempt??={attempt:this.storage.pendingAttempt,fault,stamp};
         this.metrics.storageErrorCount++; this.metrics.storageStatus="STORAGE ERROR"; return false;
       }
     }
     return true;
   }
   flush(): boolean {
+    if(this.accountingFailed)return false;
     if (!this.controls()) return false;
     if (!this.queue.length) return true;
-    const first = this.queue[0], group: Entry[] = [];
+    const first = this.queue[0], group: Entry[] = this.eventAttempt?.group??[];
     const barrier = Math.min(...[...this.faults.values()].filter(f => !f.recorded).map(f => f.barrier));
-    for (const e of this.queue) {
+    if(!this.eventAttempt)for (const e of this.queue) {
       if (e.scopeId !== first.scopeId || group.length >= this.limits.batch || (group.length && e.ordinal > barrier)) break;
       group.push(e);
     }
     const begin = this.clock();
     let commit: ReturnType<StorageAdapter["commit"]>;
-    try { commit = this.storage.commit(first.scopeId, group.map(e => ({ type: "EVENT", event: e.event }))); }
+    try { commit = this.eventAttempt?this.eventAttempt.attempt.execute():
+      this.storage.commit(first.scopeId, group.map(e => ({ type: "EVENT", event: e.event }))); }
     catch {
+      if(this.storage.pendingAttempt)this.eventAttempt??={attempt:this.storage.pendingAttempt,group};
       this.metrics.storageStatus="STORAGE ERROR"; this.metrics.storageErrorCount++;
       return false; // Keep ownership; candidates were not published.
     }
-    {
+    try {
       const end = this.clock(), startPosition = BigInt(commit.lastPosition)-BigInt(group.length)+1n;
       const m = this.metrics;
       m.storageStatus="OK"; m.commitDuration.add(end-begin); m.storageFlush.add(Math.max(0,end-group[0].mono)); m.auditRecords+=group.length;
@@ -165,8 +186,12 @@ export class EventPipeline {
       }
       m.lastPersistedPosition=commit.lastPosition;
       this.queue.splice(0,group.length); this.bytes-=group.reduce((n,e)=>n+e.bytes,0);
+      this.eventAttempt=null;
       m.depth(this.queue.length,this.bytes,this.queue[0]?.mono??null); this.watermark();
       return this.controls();
+    } catch {
+      this.accountingFailed=true;this.metrics.storageStatus="STORAGE ERROR";
+      return false; // Durable/published: never repeat accounting or INSERT after a partial settlement.
     }
   }
   drain(): boolean {
@@ -176,10 +201,10 @@ export class EventPipeline {
   setRendererReady(ready: boolean): void { this.rendererReady=ready; if (!ready) this.offered=null; }
   /** Invoke existing derivation functions on committed state only; no arithmetic or coverage inference here. */
   derived<T>(scope: string, derive: (state: MarketQualityState, trades: TradeStore | undefined) => T): T | null {
-    const state=this.storage.states.get(scope);
+    const state=this.storage.stateSnapshot(scope);
     if(!state || this.metrics.storageStatus!=="OK") return null;
     const start=this.clock();
-    try { return derive(state,this.storage.trades.get(scope)); }
+    try { return derive(state,this.storage.tradeSnapshot(scope)); }
     finally { this.metrics.derivedProcessing.add(Math.max(0,this.clock()-start)); }
   }
   renderTick(): ModelStamp | null {

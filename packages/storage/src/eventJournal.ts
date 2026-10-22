@@ -10,6 +10,8 @@ import { canonical, checksum, EMPTY_HASH, insist, sqliteNs, type SqliteCatalog }
 import { anchorFor, liveIndices, insertIndex, isV2, saveStorageState, storageState, verifyMetadata,
   readCommitOriginals, usesCommitMetadataRead } from "./storageMigration";
 import { SegmentReader } from "./segmentReader";
+import { beginOwnedSequenceSessionFromNative, _beginImmutableSequenceSession, type OwnedMarketSession,
+  type MarketDecision, type SeenObservation } from "@workspace/core/owned-sequence-session";
 
 export type JournalInput =
   | { type: "EVENT"; event: MarketEvent }
@@ -78,19 +80,23 @@ export function inputMetadata(input: JournalInput): {
 }
 
 /** Reuse R02/R03; do not implement another MBP, sequence, or aggregation engine. */
-export function applyJournalInput(state: MarketQualityState, input: JournalInput): MarketResult {
+function dispatchJournalInput(
+  config: MarketQualityConfig, input: JournalInput,
+  ops: { event(input: unknown): MarketDecision; batch(inputs: readonly unknown[]): MarketDecision;
+    condition: OwnedMarketSession["condition"] },
+): MarketDecision {
   inputMetadata(input);
   for (const event of eventsIn(input)) {
-    insist(Object.entries(state.config.identity).every(([k, v]) =>
+    insist(Object.entries(config.identity).every(([k, v]) =>
       event.header[k as keyof typeof event.header] === v), "SCOPE_MISMATCH", "Foreign source/contract/session");
   }
-  if (input.type === "BATCH") return ingestMbpBatch(state, input.events);
+  if (input.type === "BATCH") return ops.batch(input.events);
   if (input.type === "EVENT") {
-    const result = ingestMarketEvent(state, input.event);
+    const result = ops.event(input.event);
     if (input.event.kind === "TRADE_CORRECTION" || input.event.kind === "TRADE_CANCEL") {
+      ops.condition("TRADES", "GAP", input.event.header.receiveTimeNs,
+          "UNSUPPORTED_REVISION: application deferred until vendor specification is verified");
       return {
-        state: markChannelCondition(result.state, "TRADES", "GAP", input.event.header.receiveTimeNs,
-          "UNSUPPORTED_REVISION: application deferred until vendor specification is verified"),
         applied: false, outcome: "UNSUPPORTED_REVISION", reason: "Audit only; no correction/cancel application",
       };
     }
@@ -100,16 +106,60 @@ export function applyJournalInput(state: MarketQualityState, input: JournalInput
     const q = input.interval;
     // An interval is preserved verbatim, but VALID metadata is not a resync snapshot.
     const invalid = ["GAP", "STALE", "CLOSED", "OUTSIDE_DEPTH"].includes(q.status);
+    if (invalid) ops.condition(q.channel,
+      q.status as "GAP" | "STALE" | "CLOSED" | "OUTSIDE_DEPTH", input.observedAtNs, q.reason);
     return {
-      state: invalid ? markChannelCondition(state, q.channel,
-        q.status as "GAP" | "STALE" | "CLOSED" | "OUTSIDE_DEPTH", input.observedAtNs, q.reason) : state,
       applied: false, outcome: "QUALITY_AUDIT", reason: "Original quality interval preserved; no automatic validity extension",
     };
   }
+  ops.condition(input.channel, input.status, input.atNs, input.reason);
   return {
-    state: markChannelCondition(state, input.channel, input.status, input.atNs, input.reason),
     applied: false, outcome: "CONDITION_RECORDED", reason: input.reason,
   };
+}
+export function applyJournalInput(state: MarketQualityState, input: JournalInput): MarketResult {
+  let next = state;
+  const decision = dispatchJournalInput(state.config,input,{
+    event(input) { const r=ingestMarketEvent(next,input); next=r.state; return r; },
+    batch(inputs) { const r=ingestMbpBatch(next,inputs); next=r.state; return r; },
+    condition(...args) { next=markChannelCondition(next,...args); },
+  });
+  return {state:next,...decision};
+}
+export function applyOwnedJournalInput(session: OwnedMarketSession, input: JournalInput): MarketDecision {
+  return dispatchJournalInput(session.config,input,{
+    event:session.ingestEvent,batch:session.ingestBatch,condition:session.condition,
+  });
+}
+export interface JournalCommitReceipt { readonly committed:true;readonly lastPosition:string;readonly checksum:string }
+export interface JournalAttemptEvidence {
+  readonly scopeId:string;readonly inputCount:number;readonly inputHash:string;
+  readonly before:{readonly lastPosition:string;readonly checksum:string};
+  readonly expected:{readonly lastPosition:string;readonly checksum:string}|null;
+}
+export interface FiniteJournalSeenSelection {
+  readonly mode:"immutable"|"owned";readonly scopeIds:readonly string[];readonly traceHash:string;
+  readonly expectedAuditInputs:number;readonly c1Mode:"reference";
+  readonly observe?: (m:SeenObservation)=>void;
+}
+const selections=new WeakMap<EventJournal,FiniteJournalSeenSelection>();
+const activeWrites=new WeakSet<EventJournal>();
+/** Only explicit, bounded MOCK diagnostics may change the private write path. */
+export function selectJournalSeenForFiniteMock(journal:EventJournal, selection:FiniteJournalSeenSelection):()=>void {
+  insist(!activeWrites.has(journal) && !selections.has(journal),"ACTIVE_SELECTION","Unsafe mode change");
+  insist(["immutable","owned"].includes(selection.mode) && selection.c1Mode==="reference" &&
+    /^[a-f0-9]{64}$/.test(selection.traceHash) && Number.isSafeInteger(selection.expectedAuditInputs) &&
+    selection.expectedAuditInputs>0 && selection.expectedAuditInputs<=2048 &&
+    selection.scopeIds.length>0 && selection.scopeIds.length<=32,"FINITE_ONLY","Invalid finite selection");
+  for(const id of selection.scopeIds)journal.scope(id);
+  insist(journal.records().length<=selection.expectedAuditInputs,"FINITE_ONLY","History exceeds finite budget");
+  insist(!usesCommitMetadataRead(journal.catalog),"C1_REFERENCE","C-1 must remain reference");
+  selections.set(journal,{...selection,scopeIds:[...selection.scopeIds]});
+  return ()=>{insist(!activeWrites.has(journal),"ACTIVE_SELECTION","Active write");selections.delete(journal);};
+}
+function deepFreeze<T>(value:T):T {
+  if(value && typeof value==="object") {for(const child of Object.values(value))deepFreeze(child);Object.freeze(value);}
+  return value;
 }
 
 function recordBody(record: JournalRecord): Omit<JournalRecord, "checksum"> {
@@ -208,7 +258,7 @@ export class EventJournal {
   stage(scopeId: string, inputs: readonly JournalInput[]) {
     this.scope(scopeId);
     insist(inputs.length > 0, "EMPTY_TRANSACTION", "At least one input required");
-    const pending = JSON.parse(canonical(inputs)) as JournalInput[];
+    const pending = deepFreeze(JSON.parse(canonical(inputs)) as JournalInput[]);
     for (const input of pending) inputMetadata(input);
     if (isV2(this.catalog)) {
       const cutoff = storageState(this.catalog).cutoffNs;
@@ -218,12 +268,14 @@ export class EventJournal {
       }
     }
     let committed = false;
+    let evidence:JournalAttemptEvidence|null=null;
     return {
       receivedCount: pending.reduce((n, i) => n + eventsIn(i).length, 0),
       get committed() { return committed; },
+      get attemptEvidence() { return evidence; },
       commit: (beforeCommit?: () => void) => {
         insist(!committed, "ALREADY_COMMITTED", "Pending transaction already committed");
-        const result = this.commit(scopeId, pending, beforeCommit);
+        const result = this.commit(scopeId, pending, beforeCommit,e=>{evidence=deepFreeze(e);});
         committed = true;
         return result;
       },
@@ -232,17 +284,42 @@ export class EventJournal {
   append(scopeId: string, events: readonly MarketEvent[]) {
     return this.stage(scopeId, events.map(event => ({ type: "EVENT", event }))).commit();
   }
-  private commit(scopeId: string, inputs: readonly JournalInput[], beforeCommit?: () => void) {
-    return this.catalog.transaction(() => {
+  private commit(scopeId: string, inputs: readonly JournalInput[], beforeCommit?: () => void,
+    observeEvidence?:(e:JournalAttemptEvidence)=>void) {
+    insist(!activeWrites.has(this),"ACTIVE_WRITE","Single writer required"); activeWrites.add(this);
+    try { return this.catalog.transaction(() => {
+      const selection=selections.get(this);
+      if(selection) {
+        insist(selection.scopeIds.includes(scopeId) && !usesCommitMetadataRead(this.catalog),"FINITE_ONLY","Unselected scope/C-1");
+        insist(BigInt(this.catalog.manifest().recordCount)+BigInt(inputs.length)<=BigInt(selection.expectedAuditInputs),
+          "FINITE_ONLY","Finite audit budget exceeded");
+      }
+      const replayStarted=performance.now();
       const originals = isV2(this.catalog) && usesCommitMetadataRead(this.catalog) ?
         readCommitOriginals(this.catalog, scopeId, selected => new SegmentReader(this.catalog).records(selected)) : undefined;
-      let state = this.replay(scopeId, originals);
+      let state:MarketQualityState|undefined;
+      let owner:OwnedMarketSession|undefined;
+      if(selection) {
+        const scope=this.scope(scopeId), anchor=anchorFor(this.catalog,scopeId);
+        const base=anchor?.state??createMarketQualityState(scope.config,scope.startNs);
+        owner=selection.mode==="owned"?beginOwnedSequenceSessionFromNative(base,selection.observe):
+          _beginImmutableSequenceSession(base,selection.observe);
+        for(const r of originals??this.records(scopeId)) {
+          if(BigInt(r.position)<=BigInt(anchor?.auditPosition??"0"))continue;
+          insist(r.scopeId===scopeId,"SCOPE_MISMATCH","Mixed journal scopes");
+          const result=applyOwnedJournalInput(owner,r.input);
+          insist(result.applied===r.applied && result.outcome===r.outcome && result.reason===r.reason,
+            "APPLICATION_MISMATCH","Stored application decision differs from R02/R03");
+        }
+      } else state = this.replay(scopeId, originals);
+      selection?.observe?.({phase:"replay",copies:0,copiedEntries:0,elapsedMs:performance.now()-replayStarted});
       const manifest = this.catalog.manifest();
+      const before={lastPosition:manifest.recordCount,checksum:manifest.head};
       let position = BigInt(manifest.recordCount);
       let head = manifest.head;
       for (const input of inputs) {
         const metadata = inputMetadata(input);
-        const result = applyJournalInput(state, input);
+        const result = owner?applyOwnedJournalInput(owner,input):applyJournalInput(state!, input);
         const record: JournalRecord = {
           position: (++position).toString(), scopeId, ...metadata, input,
           applied: result.applied, outcome: result.outcome, reason: result.reason,
@@ -255,13 +332,16 @@ export class EventJournal {
           canonical(input), record.applied ? 1 : 0, record.outcome, record.reason,
           record.previousHash, record.checksum);
         if (isV2(this.catalog)) insertIndex(this.catalog, record);
-        state = result.state;
+        if("state" in result)state=result.state as MarketQualityState;
       }
       this.catalog.setManifest({ ...manifest, recordCount: position.toString(), head });
       if (isV2(this.catalog)) saveStorageState(this.catalog, storageState(this.catalog));
+      owner?.seal();
+      observeEvidence?.({scopeId,inputCount:inputs.length,inputHash:checksum(inputs),before,
+        expected:{lastPosition:position.toString(),checksum:head}});
       beforeCommit?.(); // diagnostics fault injection; exceptions roll back everything
       return { committed: true as const, lastPosition: position.toString(), checksum: head };
-    });
+    }); } finally {activeWrites.delete(this);}
   }
   stats(scopeId?: string) {
     const records = this.records(scopeId);

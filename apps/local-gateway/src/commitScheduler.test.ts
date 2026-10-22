@@ -12,6 +12,25 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
 afterEach(()=>vi.useRealTimers());
+it.each(["immutable","owned"] as const)("R165 %s ACK is withheld across publish retry without re-enqueue",mode=>{
+  const dir=ownedDirectory(),storage=new StorageAdapter(dir,{finiteSeen:{mode,eventLimit:100,
+    traceHash:checksum("ack boundary"),c1Mode:"reference",boundary:"fixed"}});
+  let scheduler:CommitScheduler|undefined;
+  try {
+    const id=storage.register(config(),ns(0)),pipeline=new EventPipeline(storage),acks:number[]=[],receipts:number[]=[];
+    scheduler=new CommitScheduler(pipeline,id,{policy:"coalesced",
+      onReceived:r=>receipts.push(r.id),onCommitted:r=>acks.push(r.id)});
+    storage.beforePublish=()=>{throw Error("publish");};
+    scheduler.accept(ipcBatch(1,[eventAt(0)]));
+    expect(scheduler.finish()).toBe(false);
+    const hash=checksum(storage.journal.records());
+    expect(receipts).toEqual([1]);expect(acks).toEqual([]);
+    storage.beforePublish=undefined;expect(scheduler.retry()).toBe(true);
+    expect(acks).toEqual([1]);expect(receipts).toEqual([1]);
+    expect(checksum(storage.journal.records())).toBe(hash);
+    expect(pipeline.metrics.receivedEvents).toBe(1);
+  } finally {scheduler?.dispose();storage.close();removeOwnedDirectory(dir);}
+});
 function fake() {
   let now=0,fail=false;
   const staged:MarketEvent[]=[],stored:MarketEvent[]=[],transactions:number[]=[],receipts:number[]=[],commits:number[]=[];

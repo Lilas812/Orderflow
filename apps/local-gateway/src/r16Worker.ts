@@ -9,15 +9,43 @@ import { config, deterministicDeliveries, eventAt, ns, requireOwnedDirectory } f
 import type { MarketEvent } from "@workspace/core/events";
 import { Latencies } from "./metrics";
 import { CommitScheduler } from "./commitScheduler";
+import { PerformanceObserver } from "node:perf_hooks";
+import { selectCommitReadForDiagnostics, storageState } from "@workspace/storage/migration";
+import type { FiniteSeenRun } from "./storageAdapter";
 
 const [mode,dir]=process.argv.slice(2);
+const seenLoad=mode==="load:r165-fixed-immutable"||mode==="load:r165-fixed-owned";
+const seenCrash=/^r165-crash-(owned|immutable)-(before|transaction|window|publish)$/.test(mode);
+let finite:FiniteSeenRun|undefined;
+if(seenLoad) {
+  const encoded=process.argv[4]??"";
+  if(Buffer.byteLength(encoded)>64*1024)throw Error("Startup control too large");
+  const payload=JSON.parse(encoded) as {run:FiniteSeenRun;trace:{batches:{atMs:number;count:number}[]}};
+  if(!payload.trace || !Array.isArray(payload.trace.batches) || payload.trace.batches.length>2048 ||
+    payload.trace.batches.some(b=>!Number.isFinite(b.atMs)||b.atMs<0||b.atMs>=1000||![2,4].includes(b.count)) ||
+    payload.trace.batches.reduce((n,b)=>n+b.count,0)!==payload.run.eventLimit ||
+    checksum(payload.trace)!==payload.run.traceHash ||
+    payload.run.mode!==(mode.endsWith("-owned")?"owned":"immutable"))throw Error("Unverified fixed MOCK startup");
+  finite=payload.run;
+} else if(seenCrash)finite={mode:mode.includes("-owned-")?"owned":"immutable",eventLimit:100,
+  traceHash:checksum("R165 CRASH TEST"),c1Mode:"reference",boundary:"fixed"};
 requireOwnedDirectory(dir);
 if(mode==="cursor") {
   const c=new SqliteCatalog(join(dir,"events.r16.sqlite"));
   process.send?.({kind:"cursor",manifest:c.manifest()});
   c.close();process.disconnect?.();
 } else {
-const storage=new StorageAdapter(dir), scope=storage.register(config(),ns(0));
+const gc={count:0,ms:0,kinds:{} as Record<string,number>};
+const gcObserver=seenLoad?new PerformanceObserver(list=>{
+  for(const entry of list.getEntries()) {
+    gc.count++;gc.ms+=entry.duration;
+    const kind=String((entry as unknown as {detail:{kind:number}}).detail.kind);
+    gc.kinds[kind]=(gc.kinds[kind]??0)+1;
+  }
+}):null;
+gcObserver?.observe({entryTypes:["gc"]});
+const storage=new StorageAdapter(dir,finite?{finiteSeen:finite}:{}), scope=storage.register(config(),ns(0));
+if(finite)selectCommitReadForDiagnostics(storage.catalog,"reference");
 const pipeline=new EventPipeline(storage);
 const transportLatency=new Latencies();
 const initialCpu=process.cpuUsage();
@@ -77,10 +105,27 @@ function summary(withChunk: boolean) {
     transportToCommitLatencyMs:transportLatency.report(),
     disk:sizes(dir), cpu:process.cpuUsage(initialCpu), memory:process.memoryUsage(), resourceUsage:process.resourceUsage(),
     sqlite:storage.catalog.database.prepare("SELECT sqlite_version() AS version").get(),
+    ...(finite?{seen:{mode:finite.mode,c1Mode:"reference",copies:storage.seenObservations,
+      transactions:storage.commitObservations,gc,heapUsed:process.memoryUsage().heapUsed,
+      stateHash:checksum(restored),journalHead:storage.catalog.manifest().head,
+      indexRoot:(awaitlessStorageState()).indexRoot,inputHash:checksum(records.map(r=>r.input))}}:{}),
   };
 }
+function awaitlessStorageState() {
+  // Read only, existing v2 storage proof; no new checksum or schema.
+  return storageState(storage.catalog);
+}
 function send(value: object) { process.send?.(value); }
-if(mode==="restore") {
+if(seenCrash) {
+  pipeline.receive(scope,eventAt(0));if(!pipeline.drain())throw Error("Crash seed failed");
+  pipeline.receive(scope,eventAt(1));
+  if(mode.endsWith("-before"))process.kill(process.pid,"SIGKILL");
+  if(mode.endsWith("-transaction"))storage.beforeCommit=()=>process.kill(process.pid,"SIGKILL");
+  if(mode.endsWith("-publish"))storage.beforePublish=()=>process.kill(process.pid,"SIGKILL");
+  if(mode.endsWith("-window"))storage.beforeCommit=()=>send({kind:"commit-window"});
+  pipeline.drain();
+  if(mode.endsWith("-window"))setInterval(()=>{},1000);
+} else if(mode==="restore") {
   send({kind:"result",...summary(false)}); storage.close(); process.disconnect?.();
 } else if(mode==="fixture" || mode==="crash") {
   const deliveries=deterministicDeliveries();
@@ -97,10 +142,10 @@ if(mode==="restore") {
   } else {
     send({kind:"result",...summary(true)}); storage.close(); process.disconnect?.();
   }
-} else if(c1Mode||["load","load:timing","load:cpu","load:coalesced","scheduler-test","load:r162-timing","load:r162-cpu","load:r162-snapshot","load:r162-e-find","load:r162-e-map","load:r163-fixed-find","load:r163-fixed-map","load:r163-trace"].includes(mode)) {
+} else if(seenLoad||c1Mode||["load","load:timing","load:cpu","load:coalesced","scheduler-test","load:r162-timing","load:r162-cpu","load:r162-snapshot","load:r162-e-find","load:r162-e-map","load:r163-fixed-find","load:r163-fixed-map","load:r163-trace"].includes(mode)) {
   let nextId=1, finishing=false;
   const scheduler=new CommitScheduler(pipeline,scope,{
-    policy:mode==="load:coalesced" || mode==="scheduler-test" || /^load:r16[23]-/.test(mode)?"coalesced":"immediate",
+    policy:mode==="load:coalesced" || mode==="scheduler-test" || /^load:r16[235]-/.test(mode)?"coalesced":"immediate",
     onReceived:receipt=>send({kind:"received",id:receipt.id,count:receipt.count,bytes:receipt.bytes,
       transitMs:Number(process.hrtime.bigint()-BigInt(receipt.submittedMonoNs))/1e6}),
     onFailure:reason=>send({kind:"storage-error",
@@ -120,6 +165,9 @@ if(mode==="restore") {
     },
   });
   const restoreBoundary=fixed?.fixedBoundary(scheduler);
+  // Only the finite comparison disables timer requests; whole IPC frames still use capacity/end flush.
+  const internals=scheduler as unknown as {arm():void};
+  if(seenLoad)internals.arm=()=>{};
   process.on("message", async raw=>{
     try {
     const message=raw as {kind:string;id:number;events:MarketEvent[];bytes:number;submittedMonoNs:string};
@@ -146,6 +194,7 @@ if(mode==="restore") {
     } else if(message.kind==="finish") {
       finishing=true;
       if(!scheduler.finish())return;
+      if(seenLoad){await new Promise<void>(resolve=>setImmediate(resolve));gcObserver?.disconnect();}
       const profile=cpu?await cpu.stop(dir):null;
       r163?.endIngestion();
       c1?.endIngestion();
@@ -173,7 +222,7 @@ if(mode==="restore") {
       const owners=research?.owners(storage);
       if(research)await research.settle();
       if(c1)await c1.settle();
-      send({kind:"result",...result,scheduler:scheduler.snapshot(),...(diagnostics||research||indexComparison?{diagnostics:{trace:trace?.report(),profile,retained,owners,snapshotAux,
+      send({kind:"result",...result,scheduler:scheduler.snapshot(),...(seenLoad?{diagnostics:{seen:result.seen}}:{}),...(diagnostics||research||indexComparison?{diagnostics:{trace:trace?.report(),profile,retained,owners,snapshotAux,
         indexComparison:indexComparison?.report(storage),
         c1:c1?.report(storage),
         fixedBatches:batchObserver?.batches,r163:r163?.detail(),

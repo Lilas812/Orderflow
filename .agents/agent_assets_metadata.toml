@@ -378,3 +378,45 @@ mtime_ms = 1792660770419
 storage_uri = "gcs://replit-rams-assets-pike/rams/assets/repl:396298eb-318f-4ad8-9c4e-13a5b19e25a9/96a33066-1c10-4986-91bf-8465a0fdd68c/f8fcb705-1a95-404d-bcf5-0c46830d90f4"
 storage_version_token = "1792667383242476"
 content_type = "text/markdown"
+
+[[outputs]]
+id = "rDRqTvCgozVSKwj-ppH_Y"
+uri = "file://.local/r165-results.md"
+type = "text"
+title = "R16.5 最終報告書"
+description = "承認範囲の変更、回帰1,577件、全反復の性能・遅延・メモリ・CPU・GCと残る制限。"
+logical_id = "e4cd9512-cb5f-43ee-8922-583bf75d8e30"
+content_hash = "sha256:d19ce5b9eb3d86b8b9dea1027bf4144b7e61c6a5e6d3f28c4476ffab6b8db340"
+size = 17301
+mtime_ms = 1792670994510
+storage_uri = "gcs://replit-rams-assets-pike/rams/assets/repl:396298eb-318f-4ad8-9c4e-13a5b19e25a9/e4cd9512-cb5f-43ee-8922-583bf75d8e30/02d0d9c6-2106-41ee-97e5-6a39aa675890"
+storage_version_token = "1792671036397090"
+content_type = "text/markdown"
+
+[[outputs]]
+id = "DLXAMgiaWKkILf0XzRMPo"
+uri = "file://.local/r165-runs.csv"
+type = "table"
+title = "R16.5 全40試行の測定値 CSV"
+description = "正式20試行と修正前の参考20試行を系列別に保存。全hash、RSS、CPU、GC、transaction、ACK遅延を収録。"
+logical_id = "91feaa3b-0fdf-4b68-8173-aedb56328673"
+content_hash = "sha256:2f27a5af349d7ee833f664acb760dfa424819d7e24f899639355b55c36935efc"
+size = 42419
+mtime_ms = 1792670908602
+storage_uri = "gcs://replit-rams-assets-pike/rams/assets/repl:396298eb-318f-4ad8-9c4e-13a5b19e25a9/91feaa3b-0fdf-4b68-8173-aedb56328673/e881ddd4-987f-4c7f-b83e-93a09a1f5d75"
+storage_version_token = "1792671037692233"
+content_type = "text/csv"
+
+[[outputs]]
+id = "PY5KTUGZDuvIZvfqzzriB"
+uri = "file://.local/r165-all-runs.json"
+type = "unspecified"
+title = "R16.5 詳細測定結果 JSON"
+description = "各試行の原測定値、件数、保存・復元hash、安全停止情報。参考系列を正式結果と分離。"
+logical_id = "a6f47a50-c125-41ea-861f-50c8829d9598"
+content_hash = "sha256:2e772fe54beb6d42c015210c6773e38e4ecdd4d9cab303917579790c8836c64f"
+size = 1721927
+mtime_ms = 1792670908610
+storage_uri = "gcs://replit-rams-assets-pike/rams/assets/repl:396298eb-318f-4ad8-9c4e-13a5b19e25a9/a6f47a50-c125-41ea-861f-50c8829d9598/89beef4d-b7bf-4e22-a05b-d158dc628a5d"
+storage_version_token = "1792671039004673"
+content_type = "application/octet-stream"

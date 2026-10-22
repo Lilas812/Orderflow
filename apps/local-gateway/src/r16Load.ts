@@ -6,6 +6,7 @@ import { IpcCredits, ipcBatch } from "./mockTransport";
 import { eventAt, ownedDirectory, removeOwnedDirectory } from "./r16Fixtures";
 import { Latencies } from "./metrics";
 import type { CommitPolicy } from "./commitScheduler";
+import { checksum } from "@workspace/storage/catalog";
 
 export interface LoadSpec { label:string;rate:number;durationMs:number }
 export interface FixedLoadTrace { readonly batches: readonly {atMs:number;count:number}[] }
@@ -28,8 +29,10 @@ export function validateFixedTrace(trace:FixedLoadTrace,durationMs:number): numb
   return total;
 }
 export const LOAD_LIMITS=Object.freeze({workerRss:512*1024*1024,totalRss:768*1024*1024,hardMs:30_000,heapMiB:256});
-export function worker(mode: string, dir: string): ChildProcess {
-  return fork(new URL("./r16Worker.ts",import.meta.url),[mode,dir],{
+export function worker(mode: string, dir: string, finite?:object): ChildProcess {
+  const encoded=finite?JSON.stringify(finite):"";
+  if(Buffer.byteLength(encoded)>64*1024)throw Error("Finite startup control exceeds 64KiB");
+  return fork(new URL("./r16Worker.ts",import.meta.url),[mode,dir,encoded],{
     execArgv:["--max-old-space-size=256",...(["load:timing","load:r162-timing","load:r162-snapshot","load:r163-trace"].includes(mode)?["--expose-gc"]:[]),"--import","tsx"],stdio:["ignore","pipe","pipe","ipc"],
   });
 }
@@ -56,7 +59,7 @@ async function recoveredCursor(dir:string, remainingMs:number):Promise<string|nu
     child.on("exit",code=>{clearTimeout(timer);clearInterval(monitor);resolve(code===0?cursor:null);});
   });
 }
-export async function measureLoad(spec: LoadSpec, options:{diagnostic?:"timing"|"cpu"|"r162-timing"|"r162-cpu"|"r162-snapshot"|"r162-e-find"|"r162-e-map"|"r163-fixed-find"|"r163-fixed-map"|"r163-trace"|`r163-c1-${"before"|"after"}-${"fixed"|"normal"}`;diagnosticEventLimit?:number;
+export async function measureLoad(spec: LoadSpec, options:{diagnostic?:"timing"|"cpu"|"r162-timing"|"r162-cpu"|"r162-snapshot"|"r162-e-find"|"r162-e-map"|"r163-fixed-find"|"r163-fixed-map"|"r163-trace"|"r165-fixed-immutable"|"r165-fixed-owned"|`r163-c1-${"before"|"after"}-${"fixed"|"normal"}`;diagnosticEventLimit?:number;
   commitPolicy?:CommitPolicy;fixedTrace?:FixedLoadTrace}={}) {
   if(!Number.isSafeInteger(spec.rate) || spec.rate<=0 || spec.rate>50_000 ||
     ![100,1000].includes(spec.durationMs)) throw new Error("Outside approved finite load envelope");
@@ -64,9 +67,13 @@ export async function measureLoad(spec: LoadSpec, options:{diagnostic?:"timing"|
     !Number.isSafeInteger(options.diagnosticEventLimit) || options.diagnosticEventLimit<1 || options.diagnosticEventLimit>512))
     throw new Error("Only explicitly capped diagnostic runs may limit inputs (1..512)");
   if(options.commitPolicy && !["immediate","coalesced"].includes(options.commitPolicy))throw Error("Unknown commit policy");
-  if(options.diagnostic && !/^r16[23]-/.test(options.diagnostic) && options.commitPolicy==="coalesced")
+  if(options.diagnostic && !/^r16[235]-/.test(options.diagnostic) && options.commitPolicy==="coalesced")
     throw Error("R16.1 CPU/timing diagnostics remain separate baseline modes");
   const fixedCount=options.fixedTrace?validateFixedTrace(options.fixedTrace,spec.durationMs):null;
+  const seenMode=options.diagnostic?.startsWith("r165-");
+  const commitConfirmation=new Latencies(),submitted=new Map<number,{atNs:bigint;count:number}>();
+  if(seenMode && (!fixedCount || ![100,400,1000,2000].includes(fixedCount) || options.commitPolicy!=="coalesced"))
+    throw Error("R16.5 requires approved fixed input and coalesced policy");
   if(fixedCount!==null && fixedCount>spec.rate*spec.durationMs/1000)throw Error("Fixed trace cannot exceed nominal offering");
   // A private, bounded metadata copy prevents either policy from modifying the comparison input.
   const fixed=options.fixedTrace?.batches.map(b=>({...b}));
@@ -76,7 +83,9 @@ export async function measureLoad(spec: LoadSpec, options:{diagnostic?:"timing"|
   const parentTrace=options.diagnostic==="timing"?new diagnostic!.DiagnosticTrace():null;
   const parentCpu=options.diagnostic==="cpu"?new diagnostic!.CpuCapture():null;
   if(parentCpu)await parentCpu.start();
-  const child=worker(options.diagnostic?`load:${options.diagnostic}`:options.commitPolicy==="coalesced"?"load:coalesced":"load",dir), credit=new IpcCredits();
+  const child=worker(options.diagnostic?`load:${options.diagnostic}`:options.commitPolicy==="coalesced"?"load:coalesced":"load",dir,
+    seenMode?{run:{mode:options.diagnostic!.endsWith("-owned")?"owned":"immutable",eventLimit:fixedCount,
+      traceHash:checksum(options.fixedTrace),c1Mode:"reference",boundary:"fixed"},trace:options.fixedTrace}:undefined), credit=new IpcCredits();
   const started=performance.now(), initialCpu=process.cpuUsage(), requested=spec.rate*spec.durationMs/1000;
   let sourceStart:number|null=null,lastSend:number|null=null,firstReceived:number|null=null,lastReceived:number|null=null;
   let lastCommit:number|null=null,received=0,sent=0,id=0,finish=false,writeReady=true,fixedIndex=0;
@@ -115,6 +124,10 @@ export async function measureLoad(spec: LoadSpec, options:{diagnostic?:"timing"|
         const next=id+1, encode=()=>ipcBatch(next,events,process.hrtime.bigint().toString());
         const message=parentTrace?parentTrace.measure("parent.json_serialization_and_bytes",encode):encode(),bytes=message.bytes;
         if(!credit.reserve(next,count,bytes)) return;
+        if(seenMode) {
+          if(submitted.size>=2048){stop("ACK timing metadata exceeded finite IPC credits");return;}
+          submitted.set(next,{atNs:BigInt(message.submittedMonoNs),count});
+        }
         id=next; sent+=count; lastSend=performance.now();
         if(planned){sendDelay.add(Math.max(0,lastSend-sourceStart-planned.atMs));fixedIndex++;}
         const sendStarted=performance.now();
@@ -144,6 +157,13 @@ export async function measureLoad(spec: LoadSpec, options:{diagnostic?:"timing"|
           if(typeof message.transitMs==="number")parentTrace?.add("parent.send_to_received_handler",message.transitMs);
           firstReceived??=performance.now(); lastReceived=performance.now();
         } else if(message.kind==="committed") {
+          if(seenMode) {
+            const item=submitted.get(message.id);
+            if(!item)throw Error("Missing owned ACK timing metadata");
+            const elapsed=Number(process.hrtime.bigint()-item.atNs)/1e6;
+            for(let i=0;i<item.count;i++)commitConfirmation.add(elapsed);
+            submitted.delete(message.id);
+          }
           if(typeof message.ackMonoNs==="string")parentTrace?.add("parent.commit_ack_return_transit",Number(process.hrtime.bigint()-BigInt(message.ackMonoNs))/1e6);
           credit.committed(message.id); lastCommit=performance.now();lastMetrics=message.metrics;lastCpu=message.cpu;
         }
@@ -196,6 +216,8 @@ export async function measureLoad(spec: LoadSpec, options:{diagnostic?:"timing"|
         localPeakQueuedEvents:final?Math.max(final.metrics.peakQueueDepth,final.scheduler.peakPendingEvents):null,
         cpuParent:cpu,cpuWorker:workerCpu,totalCpuPercentOfOneCore:cpuPercent,
         cpuMeasurement:final?"RUN + FINALIZATION; worker initialization excluded":"LAST COMMIT ACK: LOWER BOUND; worker initialization excluded",
+        ...(seenMode?{commitConfirmationMs:commitConfirmation.report(),
+          commitConfirmationPendingFrames:submitted.size}:{}),
         kernelWorkerMaxRss:final?.resourceUsage?.maxRSS ? final.resourceUsage.maxRSS*1024:null,
         metrics,storage:final?{disk:final.disk,rawReadMs:final.rawReadMs,rangeQueryMs:final.rangeQueryMs,
           restoreMs:final.restoreMs,chunkWriteMs:final.chunkWriteMs,chunkBytes:final.chunkBytes,
@@ -207,7 +229,8 @@ export async function measureLoad(spec: LoadSpec, options:{diagnostic?:"timing"|
         limits:LOAD_LIMITS,note:"MOCK only; timings include IPC/backpressure. GPU not measured. Peak RSS sampled every 10ms.",
         diagnostics:options.diagnostic?{kind:options.diagnostic,parent:parentTrace?.report(),parentProfile,
           worker:final?.diagnostics??null,directory:dir,eventLimit:options.diagnosticEventLimit??null,
-          overhead:"NOT FOR BASELINE PERFORMANCE COMPARISON"}:null,
+          overhead:seenMode?"MATCHED FINITE OBSERVERS IN BOTH MODES; INSTRUMENTED SQLITE COMPARISON":
+            "NOT FOR BASELINE PERFORMANCE COMPARISON"}:null,
       };
       if(!options.diagnostic)removeOwnedDirectory(dir);
       resolve(report);
