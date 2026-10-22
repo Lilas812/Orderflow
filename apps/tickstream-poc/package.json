@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "typecheck": "tsc --noEmit",
+    "gate:b1": "node --experimental-transform-types --disable-warning=ExperimentalWarning src/gateBProcess.ts",
     "test": "vitest run",
     "synthetic": "node --experimental-transform-types --disable-warning=ExperimentalWarning src/poc.ts",
     "local:ws": "node --experimental-transform-types --disable-warning=ExperimentalWarning src/poc.ts --local-ws"
