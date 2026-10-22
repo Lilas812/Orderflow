@@ -322,3 +322,45 @@ mtime_ms = 1792640417609
 storage_uri = "gcs://replit-rams-assets-pike/rams/assets/repl:396298eb-318f-4ad8-9c4e-13a5b19e25a9/1c39e232-bd14-4642-b163-3f8fdf2c35da/a314651c-99fc-4df7-a648-7877d5f61d4d"
 storage_version_token = "1792640837994327"
 content_type = "text/csv"
+
+[[outputs]]
+id = "H2PQlS7GVCNxIbPdiGmAI"
+uri = "file://.local/r164-results.md"
+type = "text"
+title = "R16.4 検証報告"
+description = "所有権・A/B/C実測・全テスト・残る制限をまとめた日本語報告。"
+logical_id = "034f238a-30d4-40cf-b600-f929bfe5b6a8"
+content_hash = "sha256:6c4e3148e0135e3cc289289769cd987d618d4955d333b9e97a265bc01e089f81"
+size = 12766
+mtime_ms = 1792643252765
+storage_uri = "gcs://replit-rams-assets-pike/rams/assets/repl:396298eb-318f-4ad8-9c4e-13a5b19e25a9/034f238a-30d4-40cf-b600-f929bfe5b6a8/3a4a08d0-2551-4350-a725-dbf4bcc40210"
+storage_version_token = "1792643292651180"
+content_type = "text/markdown"
+
+[[outputs]]
+id = "hQKTj4iWjFi2HwdjPK4MG"
+uri = "file://.local/r164-runs.csv"
+type = "table"
+title = "R16.4 全36試験の実測値"
+description = "各試験のコピー数、時間、遅延、CPU、RSS、heap、GC、入力・状態ハッシュ。"
+logical_id = "c277bf32-2ff0-4e58-ace7-7fd2c9432b72"
+content_hash = "sha256:b3bf7591f1c9764e726ce607939ac82055ae4d5f9d8ea59abb1322b45de38d39"
+size = 16095
+mtime_ms = 1792643103785
+storage_uri = "gcs://replit-rams-assets-pike/rams/assets/repl:396298eb-318f-4ad8-9c4e-13a5b19e25a9/c277bf32-2ff0-4e58-ace7-7fd2c9432b72/79a7e804-c819-47b7-a838-36d195a72917"
+storage_version_token = "1792643293955482"
+content_type = "text/csv"
+
+[[outputs]]
+id = "-whp_Kg57TL1FT9NzRgZH"
+uri = "file://.local/r164-integration-design.md"
+type = "text"
+title = "将来のEventJournal統合設計（未実装）"
+description = "commit/publish・rollback・SIGKILL・Snapshot/retention・bounded reader/durable dedupの設計と承認範囲。"
+logical_id = "180ac6af-26a0-43dd-8df2-7ab7cd66db7a"
+content_hash = "sha256:a463765fcbbf7476563444415dfc5ec45087c8503204ffbc438952a92bda83e9"
+size = 11111
+mtime_ms = 1792643021713
+storage_uri = "gcs://replit-rams-assets-pike/rams/assets/repl:396298eb-318f-4ad8-9c4e-13a5b19e25a9/180ac6af-26a0-43dd-8df2-7ab7cd66db7a/389374c2-a4e0-44e9-b2dd-0778bb5da2fe"
+storage_version_token = "1792643295290268"
+content_type = "text/markdown"
