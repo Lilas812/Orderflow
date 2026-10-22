@@ -280,3 +280,17 @@ mtime_ms = 1792617046454
 storage_uri = "gcs://replit-rams-assets-pike/rams/assets/repl:396298eb-318f-4ad8-9c4e-13a5b19e25a9/14140988-47d0-4946-94ce-b4fc12db09ea/57761615-52eb-4a67-ac51-69c771c33170"
 storage_version_token = "1792617093517707"
 content_type = "text/markdown"
+
+[[outputs]]
+id = "emOmuXZGupK5VGqvTm-yd"
+uri = "file://.local/r163-investigation.md"
+type = "text"
+title = "R16.3 調査報告・追加承認用設計"
+description = "A/B/Cの実測と計算量、C*の所有権・状態遷移、推奨C-1の7ファイル・世代ガード・上限案、回帰計画。保存アルゴリズムは未変更、全1,353テスト成功。"
+logical_id = "ece674e0-b53e-457a-88be-c40bd18549bc"
+content_hash = "sha256:203273cad048c05364388fb051f607426748a8789450e3aa78c23a80e35c6299"
+size = 23924
+mtime_ms = 1792627918912
+storage_uri = "gcs://replit-rams-assets-pike/rams/assets/repl:396298eb-318f-4ad8-9c4e-13a5b19e25a9/ece674e0-b53e-457a-88be-c40bd18549bc/89ff723a-0201-4c9d-a7df-54751a5cd7d4"
+storage_version_token = "1792627993746132"
+content_type = "text/markdown"

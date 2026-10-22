@@ -30,7 +30,7 @@ export function validateFixedTrace(trace:FixedLoadTrace,durationMs:number): numb
 export const LOAD_LIMITS=Object.freeze({workerRss:512*1024*1024,totalRss:768*1024*1024,hardMs:30_000,heapMiB:256});
 export function worker(mode: string, dir: string): ChildProcess {
   return fork(new URL("./r16Worker.ts",import.meta.url),[mode,dir],{
-    execArgv:["--max-old-space-size=256",...(["load:timing","load:r162-timing","load:r162-snapshot"].includes(mode)?["--expose-gc"]:[]),"--import","tsx"],stdio:["ignore","pipe","pipe","ipc"],
+    execArgv:["--max-old-space-size=256",...(["load:timing","load:r162-timing","load:r162-snapshot","load:r163-trace"].includes(mode)?["--expose-gc"]:[]),"--import","tsx"],stdio:["ignore","pipe","pipe","ipc"],
   });
 }
 export function processRss(pid: number): number {
@@ -56,7 +56,7 @@ async function recoveredCursor(dir:string, remainingMs:number):Promise<string|nu
     child.on("exit",code=>{clearTimeout(timer);clearInterval(monitor);resolve(code===0?cursor:null);});
   });
 }
-export async function measureLoad(spec: LoadSpec, options:{diagnostic?:"timing"|"cpu"|"r162-timing"|"r162-cpu"|"r162-snapshot"|"r162-e-find"|"r162-e-map";diagnosticEventLimit?:number;
+export async function measureLoad(spec: LoadSpec, options:{diagnostic?:"timing"|"cpu"|"r162-timing"|"r162-cpu"|"r162-snapshot"|"r162-e-find"|"r162-e-map"|"r163-fixed-find"|"r163-fixed-map"|"r163-trace";diagnosticEventLimit?:number;
   commitPolicy?:CommitPolicy;fixedTrace?:FixedLoadTrace}={}) {
   if(!Number.isSafeInteger(spec.rate) || spec.rate<=0 || spec.rate>50_000 ||
     ![100,1000].includes(spec.durationMs)) throw new Error("Outside approved finite load envelope");
@@ -64,7 +64,7 @@ export async function measureLoad(spec: LoadSpec, options:{diagnostic?:"timing"|
     !Number.isSafeInteger(options.diagnosticEventLimit) || options.diagnosticEventLimit<1 || options.diagnosticEventLimit>512))
     throw new Error("Only explicitly capped diagnostic runs may limit inputs (1..512)");
   if(options.commitPolicy && !["immediate","coalesced"].includes(options.commitPolicy))throw Error("Unknown commit policy");
-  if(options.diagnostic && !options.diagnostic.startsWith("r162-") && options.commitPolicy==="coalesced")
+  if(options.diagnostic && !/^r16[23]-/.test(options.diagnostic) && options.commitPolicy==="coalesced")
     throw Error("R16.1 CPU/timing diagnostics remain separate baseline modes");
   const fixedCount=options.fixedTrace?validateFixedTrace(options.fixedTrace,spec.durationMs):null;
   if(fixedCount!==null && fixedCount>spec.rate*spec.durationMs/1000)throw Error("Fixed trace cannot exceed nominal offering");
