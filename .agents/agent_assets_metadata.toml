@@ -364,3 +364,17 @@ mtime_ms = 1792643021713
 storage_uri = "gcs://replit-rams-assets-pike/rams/assets/repl:396298eb-318f-4ad8-9c4e-13a5b19e25a9/180ac6af-26a0-43dd-8df2-7ab7cd66db7a/389374c2-a4e0-44e9-b2dd-0778bb5da2fe"
 storage_version_token = "1792643295290268"
 content_type = "text/markdown"
+
+[[outputs]]
+id = "WidnbX3zkz9tVKmp8cEzS"
+uri = "file://.local/r165-integration-design.md"
+type = "text"
+title = "R16.5 B方式・製品統合最終設計案"
+description = "具体的なTypeScript API、18ファイルの変更予定、所有権・部分rollback・commit/publish・serialization・実SQLite試験計画。製品実装は未着手。"
+logical_id = "96a33066-1c10-4986-91bf-8465a0fdd68c"
+content_hash = "sha256:278191315931111eebb548cc3e766b762b7271f0595fe3ccd3d273b8abc6bc0f"
+size = 41474
+mtime_ms = 1792650609432
+storage_uri = "gcs://replit-rams-assets-pike/rams/assets/repl:396298eb-318f-4ad8-9c4e-13a5b19e25a9/96a33066-1c10-4986-91bf-8465a0fdd68c/daec132c-6147-43ab-b373-63ef8fe44fad"
+storage_version_token = "1792650655655325"
+content_type = "text/markdown"

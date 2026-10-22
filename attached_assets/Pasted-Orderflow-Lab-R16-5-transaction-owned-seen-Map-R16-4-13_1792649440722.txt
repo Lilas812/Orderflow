@@ -1,0 +1,287 @@
+Orderflow Lab — R16.5 transaction-owned seen Mapの製品統合設計
+
+R16.4の独立プロトタイプ検証が完了しました。
+
+既存1383件＋追加139件、累計1522件のテストが成功しています。
+
+B方式では、追加1000イベントのseen Mapコピー対象entry数が599,500→4,384へ削減され、プロトタイプhot wall中央値は159.267→79.496msでした。
+
+ただし、この結果はSQLite、WAL、fsync、IPCを含まない独立試験です。
+
+次はB方式を実際の保存処理へ安全に限定統合するため、製品API・所有権・状態遷移・serialization・障害復旧の最終設計を行ってください。
+
+今回は設計承認までです。既存core・storage・gatewayの製品アルゴリズムは、追加承認を得るまで変更しないでください。
+
+1. 今回の基本方針
+
+採用候補はB：transaction-owned scratch Map方式とします。
+
+C方式のoverlay/COWは現段階では採用しません。
+
+目標は、既存のimmutableなguardEventと同じ意味的結果を維持したまま、private transaction内のseen Mapコピーをイベントごとからtransaction単位へ減らすことです。
+
+R16.4のVM・Proxy・compilerを利用した実験実装を、そのまま製品に移植しないでください。
+
+既存coreをNode固有のfs、vm、compilerに依存させないでください。
+
+2. 製品APIの詳細設計
+
+以下の変更候補を実際のソースコードと照合してください。
+
+* packages/core/src/sequenceGuard.ts
+* packages/core/src/qualityTimeline.ts
+* packages/core/src/ownedSequenceSession.ts（新規候補）
+* packages/storage/src/eventJournal.ts
+* packages/storage/src/ownedReplay.test.ts（新規候補）
+* apps/local-gateway/src/storageAdapter.ts
+* 必要な既存テスト・有限診断ファイル
+
+各ファイルについて以下を提示してください。
+
+* 追加または変更する関数名
+* TypeScriptの具体的な型・シグネチャ
+* 公開APIかprivate APIか
+* 呼び出し元と呼び出し先
+* 旧コードとの互換性
+* 失敗時の挙動
+* 切り戻し方法
+
+実際に必要な変更ファイルを漏れなく列挙してください。
+
+3. decision kernelの共通化
+
+既存guardEventとB方式が、異なる重複判定ロジックを持つ設計は禁止します。
+
+次の判定を共通化する方法を提示してください。
+
+* idKeyの構築
+* canonical fingerprint
+* DUPLICATE
+* CONFLICT
+* sequence順序判定
+* highWatermark
+* GAP
+* RESYNCING
+* Snapshot再同期
+
+既存immutable guardEventを独立した正確性の比較基準として残してください。
+
+単に既存実装を丸ごと複製し、将来2系統の判定ロジックが分岐する設計は避けてください。
+
+4. private ownerとscratch Map
+
+transaction開始時にbase seenを1回だけコピーし、private ownerが更新する設計を具体化してください。
+
+以下を保証してください。
+
+* 旧stateのNative Mapを変更しない。
+* scratch Mapを公開stateへ直接渡さない。
+* 同時candidateがmutable Mapを共有しない。
+* writerの権限をcommit前に適切にsealできる。
+* publish後に旧ownerが再び変更できない。
+* 読者が保持する旧stateの内容が変わらない。
+* runtimeでの所有権保護をTypeScriptのReadonlyMapだけに依存しない。
+
+owner、session、candidate、sealed stateの型と寿命を明示してください。
+
+5. 入力途中の部分rollback
+
+特に次の経路を重点設計してください。
+
+1. guardEventが一時的にIDをseenへ登録する。
+2. Snapshotのsequence検証は成功する。
+3. 後続の板内容検証が失敗する。
+4. 旧方式が採用しないseen変更だけを取り消す。
+
+applied=falseなら全更新を取り消す、と単純化しないでください。
+
+CONFLICT、GAP、QUALITY_REJECTED、部分重複batch、不正Snapshotについて、既存oracleが最終的に保持するguard stateと一致するようにしてください。
+
+入力開始時、guard呼出し時、quality reducerによる採用時のcheckpoint/token設計を提示してください。
+
+将来、seenに削除や上書き操作が追加された場合に備え、現在のundoがどの前提に依存しているかも明記してください。
+
+6. SQLite commitとpublishの境界
+
+次の状態を区別してください。
+
+* STAGED
+* PRIVATE_CANDIDATE
+* SEALED_CANDIDATE
+* COMMIT_IN_PROGRESS
+* COMMITTED_NOT_PUBLISHED
+* PUBLISHED
+* FAILED_OR_UNKNOWN
+
+これは設計上の状態であり、新しいDB schemaへの追加を意味しません。
+
+必ず以下を守ってください。
+
+* SQLite COMMIT成功前に公開stateを更新しない。
+* commit成功前にcommit ACKを出さない。
+* rollback時は旧stateを維持する。
+* commit後publish前の失敗をrollbackと誤認しない。
+* commit結果が不明な場合は盲目的に再commitしない。
+* 確定済みのpositionとchecksumで状態を再照合する。
+* SIGKILL後は既存保存原本から独立して復元する。
+
+durable receiptを既存APIから構築できるか確認してください。
+
+新しい永続receiptやschemaが必要と判明した場合は、その時点で別途承認を求めてください。
+
+7. Snapshot・checksum互換性
+
+R16.4のprototype facadeを、既存Snapshot encoderやcanonical checksumにそのまま渡すことは禁止します。
+
+以下を具体的に設計してください。
+
+* Native Mapと互換性のあるserialization
+* Map entryの順序
+* canonical fingerprintの完全一致
+* headsの表現
+* quality timelineの表現
+* book stateの表現
+* 既存Snapshot encoderとの互換性
+* R15保持境界との互換性
+* 保存後の完全なchecksum一致
+
+既存fixtureの正解値は一切変更しないでください。
+
+B方式から生成されたstateと旧方式のstateが、保存・再起動後にも同じ結果になることを合格条件にしてください。
+
+8. EventJournalとStorageAdapter
+
+EventJournalとStorageAdapterは、それぞれ別のprivate ownerを持つ設計を維持してください。
+
+今回、未承認のC* canonical state cacheを導入しないでください。
+
+EventJournalでは既存の全履歴読み込み・完全性検証・意味的replayを維持し、その内部のseen Mapコピーだけを削減する方針としてください。
+
+StorageAdapterでは、candidate非公開、commit成功後publish、未commit ownershipを維持してください。
+
+JournalとAdapterが同じmutable scratch Mapを共有する設計は禁止します。
+
+9. 有効化方式
+
+初回統合ではB方式を有限MOCK比較だけで明示的に有効化してください。
+
+通常保存のデフォルトは旧方式とします。
+
+B方式と旧方式の切替は、未commit処理がない安全な境界でのみ行える設計にしてください。
+
+C-1の有効化状態は固定し、B方式の効果とC-1の効果を混ぜないでください。
+
+両方式を同時に最適化する変更は行わないでください。
+
+10. 安全上限
+
+既存のIPC 2,048イベント／8MiB、保存側RSS512MiB、親子合計RSS768MiBの監視条件を維持してください。
+
+独立プロトタイプで使用したseen 4,096件、transaction入力8MiBなどの暫定予算を、無断で一般の市場データ保存制限へ変更しないでください。
+
+将来の統合に必要なbudgetを提案する場合は、対象経路、測定対象、停止時の所有権、既存DBへの影響を説明してください。
+
+期限内のdedup IDを削除したり、fingerprintを短縮したりして制限を回避してはいけません。
+
+11. 実統合時のテスト計画
+
+統合承認後に、実SQLiteを含む次のテストを実施できるよう設計してください。
+
+* 旧immutable guardとの全state一致
+* 同一ID重複
+* 同一ID・別内容CONFLICT
+* sequenceScope差分
+* 部分重複batch
+* 複数scope/channel
+* GAP/RESYNCING
+* 正常・不正Snapshot
+* rollback
+* 同じbaseから複数candidate
+* publish失敗と再試行
+* SQLite書き込み失敗
+* commit前SIGKILL
+* commit途中SIGKILL
+* commit後publish前SIGKILL
+* 別process再起動・復元
+* v1→v2移行DB
+* R15の7日保持・retention再開
+* SQL/chunk破損
+* F-01 TWA38
+* F-03 NO DATA
+* 1,010配信・1,000ユニーク・10重複
+* 元イベントhash、indexRoot、journal headの完全一致
+
+既存1,522件を維持してください。
+
+12. 実統合時の性能比較計画
+
+統合後には、実SQLite保存経路のbefore/after比較を実施します。
+
+* 100件予備
+* 400件
+* 1,000件
+* 安全を確認できた場合のみ2,000件
+
+同じイベント、同じIPC予定、同じtransaction境界、同じC-1設定で比較してください。
+
+各条件は原則3回以上とし、以下を測定してください。
+
+* 実際の永続化events/s
+* seen Mapコピー回数とentry数
+* replay合計時間
+* SQLite transaction合計時間
+* commit確認遅延の平均/p95/p99
+* キュー最大深度
+* worker RSS/heap/GC
+* CPU使用率
+* 保存ハッシュ・状態・品質の一致
+
+独立プロトタイプのhot wall値を、本番の保存性能として流用しないでください。
+
+長時間試験は安全性を確認した後に別途判断してください。
+
+13. 大きな設計課題
+
+B統合が成功しても、次の問題は残ります。
+
+* commitごとの全履歴再生
+* 全原本・索引の繰り返し検証
+* 長期seen状態のメモリ増加
+* 7日分の正確なdedup情報の保持
+* bounded reader
+* durable exact dedup
+* 増分検証とcheckpoint
+
+これらについて、B統合後に取り組むべき構造改善の優先順位を提示してください。
+
+ただし、今回実装しないでください。
+
+小規模な局所改善を無期限に繰り返すのではなく、7日間の実市場データを安全に保存できる構造へ移行するための判断材料を整理してください。
+
+14. 今回の完了条件
+
+今回は製品統合の最終設計のみを実施します。
+
+以下を日本語で報告してください。
+
+1. 変更予定ファイルの確定一覧
+2. 具体的なTypeScript APIシグネチャ
+3. B方式の所有権・state遷移
+4. branch rollbackの実装方法
+5. SQLite commit/publishの安全境界
+6. serializationとSnapshot互換
+7. 新しいschemaの必要性
+8. 新しい依存関係の必要性
+9. 有限比較用フラグの設計
+10. 実SQLite統合テスト計画
+11. 性能測定計画
+12. 残るリスクと切り戻し方法
+13. 承認が必要な変更内容
+
+調査・設計に必要な最小限の資料作成以外は実装しないでください。
+
+私が設計を承認するまでは、sequenceGuard、qualityTimeline、EventJournal、StorageAdapterの製品コードを変更しないでください。
+
+C*、C方式、bounded reader、durable dedup、Electron、R17、実CME接続には進まないでください。
+
+設計報告後に停止してください。
