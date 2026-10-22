@@ -70,7 +70,7 @@ describe("RAM-only ticks states and counters", () => {
     const h = harness({ manualDrain: true }); h.open();
     for (let n = 0; n < 129; n++) h.send(tick);
     expect(h.p.report()).toMatchObject({ stopReason: "QUEUE_COUNT_LIMIT",
-      counters: { received: 129, pending: 128, unprocessed: 1, validTicks: 0 }, accountingMatches: true });
+      counters: { received: 129, pending: 128, unprocessed: 1, validTicks: 0, queueOverflows: 1 }, accountingMatches: true });
   });
   it("independently enforces byte and single-message caps", () => {
     const h = harness({ manualDrain: true }); h.open();
@@ -137,5 +137,17 @@ describe("RAM-only ticks states and counters", () => {
     socket.emit({ type: "text", bytes: encode(tick) });
     expect(p.report()).toMatchObject({ phase: "FAILED", stopReason: "WALL_TIME_LIMIT",
       counters: { unprocessed: 1, validTicks: 0 }, accountingMatches: true });
+  });
+  it.each([
+    ["dnsFailure", "DNS_FAILURE"], ["tlsFailure", "TLS_FAILURE"],
+    ["networkFailure", "NETWORK_FAILURE"], ["handshakeRejected", "HTTP_HANDSHAKE_REJECTED"],
+  ] as const)("stops on %s without reconnect/retry or changing endpoint", (type, reason) => {
+    const h = harness(); h.sockets[0].emit({ type }); h.clock.advance(120000);
+    expect(h.p.report()).toMatchObject({ phase: "FAILED", stopReason: reason, authentication: "NOT_CHECKED",
+      counters: { connectionAttempts: 1, reconnectAttempts: 0, validTicks: 0 } });
+  });
+  it("separates wall including cleanup from the stopped active budget", () => {
+    const h = harness(); h.open(); h.clock.advance(5000); h.p.finish(); h.clock.advance(2000);
+    expect(h.p.report()).toMatchObject({ elapsedWallMs: 7000, activeBudgetElapsedMs: 5000 });
   });
 });

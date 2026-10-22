@@ -96,6 +96,7 @@ export async function superviseGateB(input: {
         result.phase = "FAILED"; result.stopReason = stopReason ?? "CHILD_FAILURE";
       }
       if (!report) result.execution = "PRODUCTION"; // attempted, no fabricated received counters
+      result.elapsedWallMs = Math.max(0, Math.floor(now() - started));
       result.supervisorForcedTermination = forced;
       const maximumChild = Math.max(childPeak, result.memory.childRssPeak ?? 0);
       // Conservative sum of separately sampled process peaks, not a claim of
@@ -125,9 +126,13 @@ function installResolution(): void {
   } });
 }
 async function main(): Promise<void> {
-  const { GATE_B_REVIEW, reviewGateB, emptyGateBReport, readGateBReport, B_REASONS, LIMITS } = await import("./gateBConfig.ts");
-  const childMode = process.argv.length === 3 && process.argv[2] === "--gate-b1-child" && !!process.send;
-  const approved = process.argv.length === 3 && process.argv[2] === "--execute-gate-b1";
+  const { GATE_B_REVIEW, GATE_B_SELECTED_TRIAL, reviewGateB, emptyGateBReport, readGateBReport, B_REASONS, LIMITS } = await import("./gateBConfig.ts");
+  const selected = process.argv.length === 4 && process.argv[2] === "--execute-gate-b1" &&
+    process.argv[3] === "--user-selected-streaming";
+  const selectedChild = process.argv.length === 3 && process.argv[2] === "--gate-b1-child-selected-streaming" && !!process.send;
+  const childMode = process.argv.length === 3 && process.argv[2] === "--gate-b1-child" && !!process.send || selectedChild;
+  const approved = selected || process.argv.length === 3 && process.argv[2] === "--execute-gate-b1";
+  const review = selected || selectedChild ? GATE_B_SELECTED_TRIAL : GATE_B_REVIEW;
   const output = (r: GateBReport) => process.stdout.write(`${JSON.stringify(readGateBReport(r) ?? emptyGateBReport("IPC_INVALID"))}\n`);
   if (childMode) {
     let sent = false, stopReady: ((reason: BReason) => void) | undefined, pendingStop: BReason | undefined;
@@ -141,7 +146,7 @@ async function main(): Promise<void> {
       });
       process.send?.(readGateBReport(r) ?? emptyGateBReport("IPC_INVALID"));
     };
-    const holds = reviewGateB(GATE_B_REVIEW, true);
+    const holds = reviewGateB(review, true);
     if (holds.length) { send(emptyGateBReport("HOLD", holds)); return; } // no key access
     process.on("message", message => {
       if (!message || typeof message !== "object") return;
@@ -155,17 +160,18 @@ async function main(): Promise<void> {
       const secret = process.env.TICKSTREAM_API_KEY; // isolated, authorised worker only
       if (!secret) { send(emptyGateBReport("HOLD", ["KEY_NOT_CONFIGURED"])); return; }
       const { runGateBSession } = await import("./gateBSession.ts");
-      const report = await runGateBSession({ kind: "PRODUCTION", review: GATE_B_REVIEW, explicitExecution: true, secret },
+      const report = await runGateBSession({ kind: "PRODUCTION", review, explicitExecution: true, secret },
         { onStopReady: stop => { stopReady = stop; if (pendingStop) stop(pendingStop); } });
       send(report);
     } catch { send(emptyGateBReport("CHILD_FAILURE")); }
     return;
   }
   const report = await executeGateB({
-    review: GATE_B_REVIEW, explicitExecution: approved,
+    review, explicitExecution: approved,
     readKey: () => process.env.TICKSTREAM_API_KEY, // never called while current review is HOLD
-    startWorker: key => superviseGateB({
-      spawnWorker: () => fork(fileURLToPath(import.meta.url), ["--gate-b1-child"], {
+    startWorker: async key => {
+      const result = await superviseGateB({
+      spawnWorker: () => fork(fileURLToPath(import.meta.url), [selected ? "--gate-b1-child-selected-streaming" : "--gate-b1-child"], {
         env: { TICKSTREAM_API_KEY: key }, // no other Secrets, proxy, NODE_OPTIONS or DEBUG inherited
         execArgv: ["--experimental-transform-types", "--disable-warning=ExperimentalWarning", "--max-old-space-size=192"],
         stdio: ["ignore", "ignore", "ignore", "ipc"],
@@ -178,8 +184,13 @@ async function main(): Promise<void> {
         } catch { return null; }
       },
       parentRss: () => process.memoryUsage().rss,
-    }),
+      });
+      result.endpointBasis = review.authority === "USER_SELECTED_OFFICIAL_STREAMING" ?
+        "USER_SELECTED_OFFICIAL_STREAMING" : "INDEPENDENTLY_CONFIRMED";
+      return result;
+    },
   });
+  if (selected) report.endpointBasis = "USER_SELECTED_OFFICIAL_STREAMING";
   output(report);
   if (report.phase === "FAILED") process.exitCode = 1;
 }

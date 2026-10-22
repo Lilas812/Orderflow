@@ -6,7 +6,8 @@ export const GATE_B_ENDPOINTS = Object.freeze([
 ] as const);
 export interface GateBReview {
   readonly endpoint: typeof GATE_B_ENDPOINTS[number] | null;
-  readonly authority: "UNCONFIRMED" | "PROVIDER_REPLY" | "CONSISTENT_OFFICIAL_DOCUMENTATION";
+  readonly authority: "UNCONFIRMED" | "PROVIDER_REPLY" | "CONSISTENT_OFFICIAL_DOCUMENTATION" |
+    "USER_SELECTED_OFFICIAL_STREAMING";
   readonly evidenceReference: string;
   readonly replitRamReceivePermissionConfirmed: boolean;
 }
@@ -17,6 +18,14 @@ export const GATE_B_REVIEW: GateBReview = Object.freeze({
   evidenceReference: "STREAMING_V1_STREAM_VS_AUTHENTICATION_V1_UNEXPLAINED",
   replitRamReceivePermissionConfirmed: false,
 });
+/** Explicit one-session trial selection. NOT a finding that the documentation
+ * discrepancy is resolved, and never used by the normal/default operation. */
+export const GATE_B_SELECTED_TRIAL: GateBReview = Object.freeze({
+  endpoint: "wss://stream.tick-stream.xyz/v1/stream",
+  authority: "USER_SELECTED_OFFICIAL_STREAMING",
+  evidenceReference: "USER_APPROVED_OFFICIAL_STREAMING_RAM_ONLY_TRIAL",
+  replitRamReceivePermissionConfirmed: true,
+});
 export const HOLD_REASONS = [
   "EXECUTION_NOT_APPROVED", "ENDPOINT_UNCONFIRMED", "REPLIT_PERMISSION_UNCONFIRMED",
   "KEY_NOT_CHECKED", "KEY_NOT_CONFIGURED",
@@ -25,8 +34,11 @@ export type HoldReason = typeof HOLD_REASONS[number];
 export function reviewGateB(review: GateBReview, explicitExecution: boolean): readonly HoldReason[] {
   const reasons: HoldReason[] = [];
   if (!explicitExecution) reasons.push("EXECUTION_NOT_APPROVED");
+  const selectedTrial = review.authority === "USER_SELECTED_OFFICIAL_STREAMING" &&
+    review.endpoint === GATE_B_SELECTED_TRIAL.endpoint &&
+    review.evidenceReference === GATE_B_SELECTED_TRIAL.evidenceReference;
   if (!GATE_B_ENDPOINTS.includes(review.endpoint as typeof GATE_B_ENDPOINTS[number]) ||
-    !["PROVIDER_REPLY", "CONSISTENT_OFFICIAL_DOCUMENTATION"].includes(review.authority) ||
+    (!["PROVIDER_REPLY", "CONSISTENT_OFFICIAL_DOCUMENTATION"].includes(review.authority) && !selectedTrial) ||
     !review.evidenceReference || review.evidenceReference.length > 256) reasons.push("ENDPOINT_UNCONFIRMED");
   if (!review.replitRamReceivePermissionConfirmed) reasons.push("REPLIT_PERMISSION_UNCONFIRMED");
   return Object.freeze(reasons);
@@ -45,6 +57,7 @@ export const B_REASONS = [
   "CONNECTION_LIMIT", "UNKNOWN_CONTROL", "INVALID_UTF8", "INVALID_JSON", "LAG_WARNING",
   "FEED_UNVERIFIED", "MEMORY_THRESHOLD", "MEMORY_NOT_MEASURED", "FORCED_TERMINATION",
   "IPC_INVALID", "CHILD_FAILURE", "CTRL_C",
+  "DNS_FAILURE", "TLS_FAILURE", "NETWORK_FAILURE", "HTTP_HANDSHAKE_REJECTED",
 ] as const;
 export type BReason = typeof B_REASONS[number];
 export const B_COUNTERS = [
@@ -52,6 +65,7 @@ export const B_COUNTERS = [
   "payloadBytes", "queuePeakCount", "queuePeakBytes", "connectionAttempts", "subscriptionAttempts",
   "subscriptionSends", "reconnectAttempts", "heartbeat", "disconnects", "protocolFailures",
   "outOfOrderProviderTimes", "equalProviderTimes",
+  "queueOverflows",
 ] as const;
 export type BCounters = Record<typeof B_COUNTERS[number], number>;
 export type BExecution = "NOT_RUN" | "LOOPBACK_TEST" | "PRODUCTION";
@@ -82,6 +96,9 @@ export interface GateBReport {
   accountingMatches: boolean | null;
   supervisorForcedTermination: boolean;
   rssBoundary: "SAMPLED_MONITOR_NOT_OS_HARD_LIMIT";
+  endpointBasis: "UNCONFIRMED" | "USER_SELECTED_OFFICIAL_STREAMING" | "INDEPENDENTLY_CONFIRMED" | "LOOPBACK_TEST";
+  elapsedWallMs: number | null;
+  activeBudgetElapsedMs: number | null;
   memory: { measurement: "NOT_MEASURED" | "MEASURED"; childRssPeak: number | null; totalRssPeak: number | null };
 }
 export function emptyGateBReport(stopReason: BReason = "HOLD", holds: readonly HoldReason[] = []): GateBReport {
@@ -93,6 +110,7 @@ export function emptyGateBReport(stopReason: BReason = "HOLD", holds: readonly H
     timestampUnit: "s", timestampConfidence: "DOCUMENTED_NOT_OBSERVED", marketMissingEvents: "NOT_MEASURABLE",
     contract: null, providerTradeId: null, providerSequence: "UNAVAILABLE", continuity: "UNKNOWN",
     accountingMatches: null, supervisorForcedTermination: false, rssBoundary: "SAMPLED_MONITOR_NOT_OS_HARD_LIMIT",
+    endpointBasis: "UNCONFIRMED", elapsedWallMs: null, activeBudgetElapsedMs: null,
     memory: { measurement: "NOT_MEASURED", childRssPeak: null, totalRssPeak: null },
   };
 }
@@ -131,6 +149,8 @@ export function readGateBReport(input: unknown): GateBReport | null {
       (r.parserReasons !== null && !parserReasons) || (!!counters !== !!phaseVisits) || (!!counters !== !!parserReasons)) return null;
     if (typeof r.supervisorForcedTermination !== "boolean" ||
       (!counters && !["NOT_RUNNING", "FAILED"].includes(r.phase))) return null;
+    if (!member(r.endpointBasis, ["UNCONFIRMED", "USER_SELECTED_OFFICIAL_STREAMING", "INDEPENDENTLY_CONFIRMED", "LOOPBACK_TEST"]) ||
+      ![r.elapsedWallMs, r.activeBudgetElapsedMs].every(n => n === null || integer(n))) return null;
     if (counters && (counters.parserAccepted !== counters.validTicks + counters.contextRejected ||
       counters.rejected !== counters.parserRejected + counters.contextRejected ||
       Object.values(parserReasons!).reduce((a, b) => a + b, 0) !== counters.parserRejected)) return null;
@@ -144,6 +164,7 @@ export function readGateBReport(input: unknown): GateBReport | null {
       authentication: r.authentication, subscription: r.subscription, counters, phaseVisits, parserReasons,
       schemaCompatibility: r.schemaCompatibility, timestampConfidence: r.timestampConfidence,
       accountingMatches: accounting, supervisorForcedTermination: r.supervisorForcedTermination,
+      endpointBasis: r.endpointBasis, elapsedWallMs: r.elapsedWallMs, activeBudgetElapsedMs: r.activeBudgetElapsedMs,
       memory: { measurement: r.memory.measurement, childRssPeak: r.memory.childRssPeak, totalRssPeak: r.memory.totalRssPeak },
     };
   } catch { return null; }

@@ -8,7 +8,8 @@ import {
 } from "./gateBConfig";
 
 export type BEvent = { type: "open" | "subscriptionSent" | "ping" | "pong" | "close" |
-  "error" | "protocolFailure" | "authRejected" | "entitlementRejected" | "connectionLimit" } |
+  "error" | "protocolFailure" | "authRejected" | "entitlementRejected" | "connectionLimit" |
+  "dnsFailure" | "tlsFailure" | "networkFailure" | "handshakeRejected" } |
   { type: "text"; bytes: Uint8Array };
 export interface BTicksSocket {
   listen(callback: (event: BEvent) => void): void;
@@ -34,6 +35,7 @@ export class GateBTicks {
   private socket: BTicksSocket | undefined;
   private startedAt = 0n;
   private activeAt: bigint | null = null;
+  private stopAt: bigint | null = null;
   private started = false;
   private terminalCallback: (() => void) | undefined;
   constructor(private readonly clock: Clock, private readonly factory: () => BTicksSocket,
@@ -42,7 +44,7 @@ export class GateBTicks {
       (!Number.isInteger(options.finishAfter) || options.finishAfter < 1 || options.finishAfter > LIMITS.messages))) {
       throw new Error("GATE_B_OPTIONS");
     }
-    this.reportValue = { ...emptyGateBReport(), execution, authentication: "UNCONFIRMED",
+    this.reportValue = { ...emptyGateBReport(), execution, authentication: "NOT_CHECKED",
       counters: Object.fromEntries(B_COUNTERS.map(k => [k, 0])) as NonNullable<GateBReport["counters"]>,
       phaseVisits: Object.fromEntries(B_PHASES.map(k => [k, 0])) as NonNullable<GateBReport["phaseVisits"]>,
       parserReasons: Object.fromEntries(REASON_CODES.map(k => [k, 0])) as NonNullable<GateBReport["parserReasons"]> };
@@ -55,6 +57,9 @@ export class GateBTicks {
   report(): GateBReport {
     const r = this.reportValue, c = r.counters!;
     c.pending = this.queue.length;
+    r.elapsedWallMs = this.started ? Number((this.clock.monoNs() - this.startedAt) / 1_000_000n) : null;
+    r.activeBudgetElapsedMs = this.activeAt === null ? null :
+      Number(((this.stopAt ?? this.clock.monoNs()) - this.activeAt) / 1_000_000n);
     r.accountingMatches = c.received === c.validTicks + c.rejected + c.control + c.unprocessed + c.pending;
     return readGateBReport(r)!; // one fixed whitelist for IPC and console
   }
@@ -96,7 +101,7 @@ export class GateBTicks {
     switch (event.type) {
       case "open":
         this.timers.get("handshake")?.(); this.timers.delete("handshake");
-        this.phase("SOCKET_OPEN");
+        this.phase("SOCKET_OPEN"); r.authentication = "UNCONFIRMED";
         if (this.activeAt === null) {
           this.activeAt = this.clock.monoNs();
           this.timer("active", LIMITS.activeMs, () => this.stop("ACTIVE_TIME_LIMIT", false));
@@ -117,6 +122,10 @@ export class GateBTicks {
       case "connectionLimit": this.stop("CONNECTION_LIMIT"); return;
       case "protocolFailure": c.protocolFailures++; this.stop("PROTOCOL_FAILURE"); return;
       case "error": this.stop("SOCKET_ERROR"); return;
+      case "dnsFailure": this.stop("DNS_FAILURE"); return;
+      case "tlsFailure": this.stop("TLS_FAILURE"); return;
+      case "networkFailure": this.stop("NETWORK_FAILURE"); return;
+      case "handshakeRejected": this.stop("HTTP_HANDSHAKE_REJECTED"); return;
       case "close":
         c.disconnects++;
         if (c.reconnectAttempts >= LIMITS.reconnects) { this.stop("RECONNECT_LIMIT"); return; }
@@ -151,7 +160,8 @@ export class GateBTicks {
     }
     if (classification.channel !== "ticks") { c.unprocessed++; this.stop("CHANNEL_MISMATCH"); return; }
     if (this.queue.length >= LIMITS.queueCount || this.queuedBytes + bytes.length > LIMITS.queueBytes) {
-      c.unprocessed++; this.stop(this.queue.length >= LIMITS.queueCount ? "QUEUE_COUNT_LIMIT" : "QUEUE_BYTE_LIMIT"); return;
+      c.unprocessed++; c.queueOverflows++;
+      this.stop(this.queue.length >= LIMITS.queueCount ? "QUEUE_COUNT_LIMIT" : "QUEUE_BYTE_LIMIT"); return;
     }
     this.queue.push({ bytes: Uint8Array.from(bytes), context: {
       origin: r.execution === "PRODUCTION" ? "ACTUAL_PROVIDER_RESPONSE" : "SYNTHETIC_TEST",
@@ -201,6 +211,7 @@ export class GateBTicks {
   finish(reason: BReason = "COMPLETED"): void { this.drain(); if (!this.terminal) this.stop(reason, false); }
   stop(reason: BReason, failed = true): void {
     if (this.terminal || this.reportValue.phase === "STOPPING") return;
+    this.stopAt = this.clock.monoNs();
     this.phase("STOPPING"); this.reportValue.stopReason = reason;
     this.timers.forEach(cancel => cancel()); this.timers.clear();
     try { this.socket?.close(); } catch { this.socket?.terminate(); }

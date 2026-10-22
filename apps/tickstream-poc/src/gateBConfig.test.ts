@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { GATE_B_REVIEW, reviewGateB, emptyGateBReport, readGateBReport, type GateBReview } from "./gateBConfig";
+import { GATE_B_REVIEW, GATE_B_SELECTED_TRIAL, reviewGateB, emptyGateBReport, readGateBReport, type GateBReview } from "./gateBConfig";
 import { executeGateB } from "./gateBProcess";
 import { liveConnectionGate } from "./liveConfig";
 
@@ -12,6 +12,22 @@ describe("new explicit Gate B path; old gate unchanged", () => {
     expect(reviewGateB(GATE_B_REVIEW, true)).toEqual(["ENDPOINT_UNCONFIRMED", "REPLIT_PERMISSION_UNCONFIRMED"]);
     expect(Object.isFrozen(GATE_B_REVIEW)).toBe(true);
     expect(liveConnectionGate({ executeGateB: true }).decision).toBe("BLOCKED");
+  });
+  it("models the user-selected trial without declaring conflicting documentation resolved", () => {
+    expect(Object.isFrozen(GATE_B_SELECTED_TRIAL)).toBe(true);
+    expect(GATE_B_SELECTED_TRIAL.authority).toBe("USER_SELECTED_OFFICIAL_STREAMING");
+    expect(reviewGateB(GATE_B_SELECTED_TRIAL, true)).toEqual([]);
+    expect(reviewGateB(GATE_B_SELECTED_TRIAL, false)).toEqual(["EXECUTION_NOT_APPROVED"]);
+    expect(reviewGateB(GATE_B_REVIEW, true)).toContain("ENDPOINT_UNCONFIRMED");
+    expect(liveConnectionGate(GATE_B_SELECTED_TRIAL).decision).toBe("BLOCKED");
+  });
+  it.each([
+    { endpoint: "wss://stream.tick-stream.xyz/v1" },
+    { endpoint: "wss://stream.tick-stream.xyz/v1/stream?key=ARTIFICIAL" },
+    { evidenceReference: "" },
+    { replitRamReceivePermissionConfirmed: false },
+  ])("does not generalize the user's selection to another URL or permission scope", change => {
+    expect(reviewGateB({ ...GATE_B_SELECTED_TRIAL, ...change } as GateBReview, true).length).toBeGreaterThan(0);
   });
   it.each([
     "ws://stream.tick-stream.xyz/v1/stream", "wss://stream.tick-stream.xyz/v1/stream/",

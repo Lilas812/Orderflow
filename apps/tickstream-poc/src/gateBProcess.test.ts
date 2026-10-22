@@ -121,6 +121,26 @@ describe("isolated Gate B process policy; no credentials or production sockets u
       expect(r.holdReasons).toContain("ENDPOINT_UNCONFIRMED");
     }
   });
+  it("requires both exact trial flags, with no endpoint override or default grant", () => {
+    const path = fileURLToPath(new URL("./gateBProcess.ts", import.meta.url));
+    for (const args of [
+      ["--user-selected-streaming"],
+      ["--execute-gate-b1", "--user-selected-streaming", "--endpoint=wss://external.invalid"],
+      ["--execute-gate-b1", "--user-selected-streaming"],
+    ]) {
+      // Always empty environment: this offline test must never inherit a key.
+      const result = spawnSync(process.execPath,
+        ["--experimental-transform-types", "--disable-warning=ExperimentalWarning", path, ...args],
+        { env: {}, encoding: "utf8", timeout: 5000 });
+      expect(result.status).toBe(0); expect(result.stderr).toBe("");
+      const r = JSON.parse(result.stdout) as GateBReport;
+      expect(r).toMatchObject({ execution: "NOT_RUN", phase: "NOT_RUNNING", counters: null });
+      if (args.length === 2) {
+        expect(r.endpointBasis).toBe("USER_SELECTED_OFFICIAL_STREAMING");
+        expect(r.holdReasons).toEqual(["KEY_NOT_CONFIGURED"]);
+      } else expect(r.holdReasons).toContain("ENDPOINT_UNCONFIRMED");
+    }
+  });
   it("limits the runtime dependency graph and worker environment; no normal-start hook or storage writer", () => {
     const processSource = readFileSync(new URL("./gateBProcess.ts", import.meta.url), "utf8");
     const sessionSource = readFileSync(new URL("./gateBSession.ts", import.meta.url), "utf8");

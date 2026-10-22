@@ -4,7 +4,7 @@ import { createServer } from "node:http";
 import { WebSocketServer } from "ws";
 import type WebSocket from "ws";
 import { FakeClock } from "./transport";
-import { GateBWireSocket, runGateBSession } from "./gateBSession";
+import { GateBWireSocket, nativeFailureEvent, runGateBSession } from "./gateBSession";
 import { GATE_B_REVIEW, LIMITS, type GateBReview } from "./gateBConfig";
 import { WS_OPTIONS } from "./wsClient";
 
@@ -86,14 +86,15 @@ describe("finite native Gate B loopback; no real market data", () => {
     expect(r.phase).toBe("FAILED"); expect(r.stopReason).toBe(reason);
     expect(JSON.stringify(r)).not.toContain("SENTINEL");
   });
-  it.each([401, 403, 302])("handles HTTP %s without redirects, raw URLs or response bodies", async status => {
+  it.each([401, 403, 302, 429])("handles HTTP %s without redirects, raw URLs or response bodies", async status => {
     const server = createServer();
     server.on("upgrade", (_req, socket) => socket.end(`HTTP/1.1 ${status} Rejected\r\nLocation: https://SECRET_SENTINEL.invalid/\r\nContent-Length: 0\r\n\r\n`));
     server.listen(0, "127.0.0.1"); await once(server, "listening");
     cleanups.push(() => new Promise<void>(resolve => server.close(() => resolve())));
     const address = server.address(); if (!address || typeof address === "string") throw Error();
     const r = await runGateBSession({ kind: "LOOPBACK_TEST", endpoint: `ws://127.0.0.1:${address.port}/` });
-    expect(r.stopReason).toBe(status === 401 ? "AUTH_REJECTED" : status === 403 ? "ENTITLEMENT_REJECTED" : "SOCKET_ERROR");
+    expect(r.stopReason).toBe(status === 401 ? "AUTH_REJECTED" : status === 403 ? "ENTITLEMENT_REJECTED" :
+      status === 429 ? "CONNECTION_LIMIT" : "HTTP_HANDSHAKE_REJECTED");
     expect(r.counters!.connectionAttempts).toBe(1); expect(JSON.stringify(r)).not.toContain("SENTINEL");
   });
   it.each(["binary", "invalidUtf8", "oversized"] as const)("rejects native %s framing", async kind => {
@@ -140,4 +141,23 @@ describe("finite native Gate B loopback; no real market data", () => {
       expect(dial).not.toHaveBeenCalled();
     },
   );
+  it.each([
+    ["ENOTFOUND", "dnsFailure"], ["EAI_AGAIN", "dnsFailure"],
+    ["ERR_TLS_CERT_ALTNAME_INVALID", "tlsFailure"], ["SELF_SIGNED_CERT_IN_CHAIN", "tlsFailure"],
+    ["EPROTO", "tlsFailure"], ["ECONNREFUSED", "networkFailure"], ["ECONNRESET", "networkFailure"],
+    ["KEY_SENTINEL", "error"],
+  ])("classifies native %s from a fixed code only, without exposing exceptions", (code, type) => {
+    const event = nativeFailureEvent(Object.assign(Error("KEY_URL_STACK_SENTINEL"), { code }));
+    expect(event).toEqual({ type }); expect(JSON.stringify(event)).not.toContain("SENTINEL");
+  });
+  it("contains native property getters that throw sensitive exceptions", () => {
+    expect(nativeFailureEvent({ get code() { throw Error("KEY_SENTINEL"); } })).toEqual({ type: "error" });
+  });
+  it.each([1008, 4001])("stops on unsupported policy/private close %s without parsing reason or retrying", async code => {
+    const endpoint = await local(socket => socket.once("message", () => socket.close(code, "KEY_URL_SENTINEL")));
+    const r = await runGateBSession({ kind: "LOOPBACK_TEST", endpoint });
+    expect(r).toMatchObject({ phase: "FAILED", stopReason: "PROTOCOL_FAILURE",
+      counters: { connectionAttempts: 1, reconnectAttempts: 0 } });
+    expect(JSON.stringify(r)).not.toContain("SENTINEL");
+  });
 });

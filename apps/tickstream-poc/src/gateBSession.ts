@@ -8,6 +8,23 @@ export type BTarget = { kind: "LOOPBACK_TEST"; endpoint: string } | {
   kind: "PRODUCTION"; review: GateBReview; explicitExecution: boolean; secret: string;
 };
 type Dial = (endpoint: string, options: typeof WS_OPTIONS) => WebSocket;
+/** Never classify from/echo the free-form exception message or URL. */
+export function nativeFailureEvent(error: unknown): BEvent {
+  try {
+    if (protocolReason(error)) return { type: "protocolFailure" };
+    const code = error && typeof error === "object" ? (error as { code?: unknown }).code : null;
+    if (code === "ENOTFOUND" || code === "EAI_AGAIN") return { type: "dnsFailure" };
+    if (typeof code === "string" && (code.startsWith("ERR_TLS_") || code.startsWith("ERR_SSL_") ||
+      ["EPROTO", "DEPTH_ZERO_SELF_SIGNED_CERT", "SELF_SIGNED_CERT_IN_CHAIN", "CERT_HAS_EXPIRED", "CERT_NOT_YET_VALID",
+        "UNABLE_TO_VERIFY_LEAF_SIGNATURE", "UNABLE_TO_GET_ISSUER_CERT", "UNABLE_TO_GET_ISSUER_CERT_LOCALLY"].includes(code))) {
+      return { type: "tlsFailure" };
+    }
+    if (["ECONNREFUSED", "ECONNRESET", "ETIMEDOUT", "ENETUNREACH", "EHOSTUNREACH"].includes(code as string)) {
+      return { type: "networkFailure" };
+    }
+  } catch {}
+  return { type: "error" };
+}
 /** Key-bearing URL lives only in connect()/ws internals. No URL, native error,
  * close reason, HTTP body or socket object crosses the event/report boundary. */
 export class GateBWireSocket implements BTicksSocket {
@@ -57,14 +74,18 @@ export class GateBWireSocket implements BTicksSocket {
         else this.emit({ type: "ping" });
       });
       ws.on("pong", () => this.emit({ type: "pong" }));
-      ws.on("error", error => this.emit({ type: protocolReason(error) ? "protocolFailure" : "error" }));
+      ws.on("error", error => this.emit(nativeFailureEvent(error)));
       ws.on("unexpected-response", (_req, res) => {
         const status = res.statusCode; res.destroy();
-        this.emit({ type: status === 401 ? "authRejected" : status === 403 ? "entitlementRejected" : "error" });
+        this.emit({ type: status === 401 ? "authRejected" : status === 403 ? "entitlementRejected" :
+          status === 429 ? "connectionLimit" : "handshakeRejected" });
         this.terminate();
       });
       ws.on("close", code => {
-        if (!this.closing) this.emit({ type: code === 4029 ? "connectionLimit" : "close" });
+        // Unsupported policy/private close codes must not cause an auth retry.
+        // No inference from the raw close reason, which is never exposed.
+        if (!this.closing) this.emit({ type: code === 4029 ? "connectionLimit" :
+          [1000, 1001, 1006].includes(code) ? "close" : "protocolFailure" });
         this.settle();
       });
     } catch {
@@ -145,6 +166,8 @@ export async function runGateBSession(target: BTarget, options: {
   try {
     await stopped; await Promise.all(sockets.map(socket => socket.closed)); sample();
     const result = pipeline.report();
+    result.endpointBasis = target.kind === "LOOPBACK_TEST" ? "LOOPBACK_TEST" :
+      target.review.authority === "USER_SELECTED_OFFICIAL_STREAMING" ? "USER_SELECTED_OFFICIAL_STREAMING" : "INDEPENDENTLY_CONFIRMED";
     if (memoryReason) { result.phase = "FAILED"; result.stopReason = memoryReason; }
     if (sockets.some(socket => socket.forcedCleanup)) { result.phase = "FAILED"; result.stopReason = "FORCED_TERMINATION"; }
     result.memory = { measurement: memoryFailed ? "NOT_MEASURED" : "MEASURED",
