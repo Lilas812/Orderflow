@@ -57,12 +57,20 @@ function observedIssues(store: TradeStore, start: bigint, end: bigint): TradeBuc
 
 /** Query one exact epoch-aligned bucket, including an empty or missing interval. */
 export function aggregateTradeBucket(store: TradeStore, timeNs: string, tick: number): TradeBucket {
-  const id = tradeTimeBinId(timeNs), start = BigInt(id) * TRADE_BUCKET_NS;
-  const end = start + TRADE_BUCKET_NS, priceId = priceBinId(tick, TRADE_PRICE_WIDTH);
+  const id = tradeTimeBinId(timeNs), priceId = priceBinId(tick, TRADE_PRICE_WIDTH);
   const ticks = priceBinTicks(tick, TRADE_PRICE_WIDTH);
   const trades = store.trades.filter((t) =>
     tradeTimeBinId(t.header.exchangeTimeNs!) === id &&
     priceBinId(t.priceTicks, TRADE_PRICE_WIDTH) === priceId);
+  return summarizeBucket(store, id, priceId, ticks, trades);
+}
+
+/** Shared arithmetic/quality rules; membership is selected by the caller. */
+function summarizeBucket(
+  store: TradeStore, id: string, priceId: number, ticks: readonly number[],
+  trades: TradeStore["trades"],
+): TradeBucket {
+  const start = BigInt(id) * TRADE_BUCKET_NS, end = start + TRADE_BUCKET_NS;
   let B = 0n, S = 0n, U = 0n;
   const issues = observedIssues(store, start, end);
   for (const t of trades) {
@@ -96,20 +104,34 @@ export function aggregateTradeBucket(store: TradeStore, timeNs: string, tick: nu
 
 /** Only observed normal-Trade buckets; no synthetic empty market events. */
 export function aggregateTrades(store: TradeStore): readonly TradeBucket[] {
-  const keys = new Set<string>();
-  const buckets: TradeBucket[] = [];
-  for (const t of store.trades) {
-    const id = tradeTimeBinId(t.header.exchangeTimeNs!);
-    const priceId = priceBinId(t.priceTicks, TRADE_PRICE_WIDTH), key = JSON.stringify([id, priceId]);
-    if (!keys.has(key)) {
-      keys.add(key);
-      buckets.push(aggregateTradeBucket(store, t.header.exchangeTimeNs!, t.priceTicks));
+  // Call-local only: no retained cache or second Store/dedup implementation.
+  const groups = new Map<string, {
+    id: string; priceId: number; tick: number; trades: TradeStore["trades"][number][];
+  }>();
+  try {
+    for (const t of store.trades) {
+      const id = tradeTimeBinId(t.header.exchangeTimeNs!), tick = t.priceTicks;
+      const priceId = priceBinId(tick, TRADE_PRICE_WIDTH), key = JSON.stringify([id, priceId]);
+      let group = groups.get(key);
+      if (!group) {
+        group = { id, priceId, tick, trades: [] };
+        groups.set(key, group);
+      }
+      group.trades.push(t);
     }
+    const buckets = Array.from(groups.values(), g =>
+      summarizeBucket(store, g.id, g.priceId, priceBinTicks(g.tick, TRADE_PRICE_WIDTH), g.trades));
+    // Sort derived output only. Raw deliveries and constituent IDs retain arrival order.
+    buckets.sort((a, b) => BigInt(a.startNs) < BigInt(b.startNs) ? -1 :
+      BigInt(a.startNs) > BigInt(b.startNs) ? 1 : a.priceBinId - b.priceBinId);
+    return Object.freeze(buckets);
+  } catch (error) {
+    // Invalid public Store inputs can have multiple faults. The former traversal
+    // queried the first bucket before reading later keys. Reuse the unchanged
+    // public query's rejection order, only on failure; never a success fallback.
+    for (const t of store.trades) aggregateTradeBucket(store, t.header.exchangeTimeNs!, t.priceTicks);
+    throw error;
   }
-  // Sort derived output only. Raw deliveries and constituent IDs retain arrival order.
-  buckets.sort((a, b) => BigInt(a.startNs) < BigInt(b.startNs) ? -1 :
-    BigInt(a.startNs) > BigInt(b.startNs) ? 1 : a.priceBinId - b.priceBinId);
-  return Object.freeze(buckets);
 }
 
 export interface BubbleFilter {

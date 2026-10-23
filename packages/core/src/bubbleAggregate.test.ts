@@ -4,6 +4,8 @@ import {
 } from "../../fixtures/src/index";
 import { executedVolume, type Trade, type DataQualityInterval } from "./events";
 import { priceToTicks } from "./instrument";
+import { priceBinId } from "./priceBins";
+import { createBubbleFinality, ingestBubbleTrade } from "./bubbleFinality";
 import { createTradeStore, ingestTrade, withTradeQuality, type TradeStore } from "./tradeStore";
 import {
   aggregateTradeBucket, aggregateTrades, DEFAULT_BUBBLE_FILTERS, evaluateBubbleFilter,
@@ -380,4 +382,156 @@ describe("R08 independently switchable inclusive AND filters", () => {
     expect(serialize(store)).toBe(storeBefore);
     expect(store.rawEvents).toHaveLength(3);
   });
+});
+
+describe("28-C1 grouped aggregation compatibility", () => {
+  // The old outer traversal stays test-only. Its public single-bucket queries
+  // provide the oracle; fixed numeric fixtures above remain independent goldens.
+  function reference(store: TradeStore) {
+    const keys = new Set<string>(), buckets = [];
+    for (const t of store.trades) {
+      const id = tradeTimeBinId(t.header.exchangeTimeNs!);
+      const key = JSON.stringify([id, priceBinId(t.priceTicks, 2)]);
+      if (!keys.has(key)) {
+        keys.add(key);
+        buckets.push(aggregateTradeBucket(store, t.header.exchangeTimeNs!, t.priceTicks));
+      }
+    }
+    buckets.sort((a, b) => BigInt(a.startNs) < BigInt(b.startNs) ? -1 :
+      BigInt(a.startNs) > BigInt(b.startNs) ? 1 : a.priceBinId - b.priceBinId);
+    return buckets;
+  }
+  const fullCoverage = [{ ...coverage, endNs: (BigInt(startNs) + 10_000_000_000n).toString() }];
+
+  it.each([F04_TRADES, F05_TRADES, F08_DUPLICATE_TRADES, F09_UNKNOWN_TRADES, F10_TRADE_BOUNDARY])(
+    "matches single-bucket reference for $fixtureId without mixing scopes", fixture => {
+      const store = load(fixture.events, "quality" in fixture ? fixture.quality : [coverage]);
+      expect(aggregateTrades(store)).toEqual(reference(store));
+    });
+
+  it.each(Array.from({ length: 12 }, (_, seed) => seed))(
+    "matches the reference across deterministic order/quality variations %i", seed => {
+      const offsets = [0n, 1_999_999_999n, 2_000_000_000n, 2_000_000_001n, 3_999_999_999n, 4_000_000_000n];
+      const ticks = [-3, -2, -1, 0, 1, 2, 79999, 80000, 80001, 80002];
+      const sides = ["BUY", "SELL", "UNKNOWN"] as const;
+      const events = Array.from({ length: 72 }, (_, i) => trade(`mixed-${i}`,
+        i % 19 === 0 ? Number.MAX_SAFE_INTEGER : i % 11, sides[(i + seed) % 3],
+        (BigInt(startNs) + offsets[(i * 5 + seed) % offsets.length]).toString(),
+        ticks[(i * 7 + seed) % ticks.length]));
+      const ordered = seed % 2 ? [...events].reverse() : [...events.slice(seed), ...events.slice(0, seed)];
+      const quality: readonly DataQualityInterval[] = seed % 4 === 0 ? [] :
+        seed % 4 === 1 ? [{ ...fullCoverage[0], status: "NOT_INITIALIZED" }] :
+        seed % 4 === 2 ? [
+          { ...coverage, endNs: (BigInt(startNs) + 1n).toString(), status: "GAP" },
+          { ...fullCoverage[0], startNs: (BigInt(startNs) + 1n).toString() },
+        ] : fullCoverage;
+      const store = load([...ordered, ordered[0]], quality), before = serialize(store);
+      const actual = aggregateTrades(store);
+      expect(actual).toEqual(reference(store));
+      expect(actual.map(b => evaluateBubbleFilter(b))).toEqual(reference(store).map(b => evaluateBubbleFilter(b)));
+      expect(store.trades).toHaveLength(72);
+      expect(serialize(store)).toBe(before);
+    });
+
+  it("pins inclusive starts, exclusive ends, price bins and within-bucket arrival order", () => {
+    const on = endNs, before = (BigInt(on) - 1n).toString(), after = (BigInt(on) + 1n).toString();
+    const store = load([trade("after", 3, "UNKNOWN", after, 80001),
+      trade("before", 7, "BUY", before, 80001), trade("on", 2, "SELL", on, 80000),
+      trade("other-price", 5, "BUY", on, 80002)], fullCoverage);
+    const result = aggregateTrades(store);
+    expect(result.map(b => [b.startNs, b.minTick, b.tradeIds, b.B, b.S, b.U])).toEqual([
+      [startNs, 80000, ["before"], 7n, 0n, 0n],
+      [endNs, 80000, ["after", "on"], 0n, 2n, 3n],
+      [endNs, 80002, ["other-price"], 5n, 0n, 0n],
+    ]);
+    expect(result[1].quality).toEqual(["INCOMPLETE_CLASSIFICATION"]);
+    expect(result).toEqual(reference(store));
+  });
+
+  it("keeps exact large BUY/SELL/UNKNOWN totals at the same timestamp", () => {
+    const max = Number.MAX_SAFE_INTEGER;
+    const store = load([trade("b1", max), trade("b2", max), trade("s", max, "SELL"),
+      trade("u", max, "UNKNOWN")]);
+    const [b] = aggregateTrades(store);
+    expect([b.B, b.S, b.U, b.V_raw, b.V, b.delta]).toEqual([
+      18_014_398_509_481_982n, 9_007_199_254_740_991n, 9_007_199_254_740_991n,
+      36_028_797_018_963_964n, null, null,
+    ]);
+    expect(b.tradeIds).toEqual(["b1", "b2", "s", "u"]);
+    expect(aggregateTrades(store)).toEqual(reference(store));
+  });
+
+  it("returns only observed buckets and fresh frozen output without mutating the Store", () => {
+    const empty = aggregateTrades(load([]));
+    expect(empty).toEqual([]); expect(Object.isFrozen(empty)).toBe(true);
+    const store = load(F04_TRADES.events), before = serialize(store), trades = store.trades;
+    const a = aggregateTrades(store), b = aggregateTrades(store);
+    expect(a).toEqual(b); expect(a).not.toBe(b);
+    expect(a[0].scope).toBe(store.scope);
+    for (const value of [a, a[0], a[0].tradeIds, a[0].quality]) expect(Object.isFrozen(value)).toBe(true);
+    expect(Reflect.set(a[0].tradeIds, 0, "changed")).toBe(false);
+    expect(store.trades).toBe(trades); expect(serialize(store)).toBe(before);
+  });
+
+  it("reads membership once and adds quantity once per Trade, independent of bucket count", () => {
+    const store = load(Array.from({ length: 24 }, (_, i) =>
+      trade(`once-${i}`, i + 1, i % 2 ? "SELL" : "BUY",
+        (BigInt(startNs) + BigInt(i % 6) * 2_000_000_000n).toString(), 80000 + i * 2)));
+    let times = 0, prices = 0, quantities = 0;
+    const trades = store.trades.map(t => ({
+      ...t,
+      header: { ...t.header, get exchangeTimeNs() { times++; return t.header.exchangeTimeNs; } },
+      get priceTicks() { prices++; return t.priceTicks; },
+      get qty() { quantities++; return t.qty; },
+    }));
+    const result = aggregateTrades({ ...store, trades });
+    expect(result).toHaveLength(24);
+    expect([times, prices, quantities]).toEqual([24, 24, 24]);
+  });
+
+  it("preserves PROVISIONAL / FINAL / REVISED, sealed IDs and retransmission behavior", () => {
+    let state = createBubbleFinality(first.header, fullCoverage);
+    for (const t of F04_TRADES.events) state = ingestBubbleTrade(state, t);
+    expect(state.bubbles[0]).toMatchObject({ status: "PROVISIONAL", finalized: false, revision: 0 });
+    state = ingestBubbleTrade(state, trade("progress", 1, "BUY",
+      (BigInt(startNs) + 5_000_000_000n).toString(), 80004));
+    expect(state.bubbles[0]).toMatchObject({ status: "FINAL", finalized: true, revision: 0 });
+    const late = trade("late-sell", 60, "SELL", (BigInt(endNs) - 1n).toString());
+    state = ingestBubbleTrade(state, late);
+    expect(state.bubbles[0]).toMatchObject({ status: "REVISED", finalized: true, revision: 1,
+      bucket: { B: 23n, S: 64n, V: 87n, delta: -41n } });
+    expect(state.bubbles[0].sealedTradeIds).toEqual(state.bubbles[0].bucket.tradeIds);
+    const before = state.bubbles;
+    state = ingestBubbleTrade(state, late);
+    expect(state.bubbles).toEqual(before);
+    expect(state.bubbles.map(b => b.bucket)).toEqual(reference(state.store));
+  });
+
+  const a = trade("valid-a", 1), b = trade("valid-b", 2, "SELL", endNs);
+  const invalidInputs: readonly (readonly Trade[])[] = [
+    [{ ...a, header: { ...a.header, exchangeTimeNs: "01" } }],
+    [{ ...a, header: { ...a.header, exchangeTimeNs: null } }],
+    [{ ...a, priceTicks: 0.5 }],
+    [{ ...a, priceTicks: -Number.MAX_SAFE_INTEGER }],
+    [{ ...a, qty: 0.5 as Trade["qty"] }],
+    [{ ...a, priceTicks: -Number.MAX_SAFE_INTEGER },
+      { ...b, header: { ...b.header, exchangeTimeNs: "bad-time" } }],
+    [a, { ...b, priceTicks: NaN }, { ...a, header: { ...a.header, exchangeTimeNs: "-1" } }],
+    [{ ...a, qty: 0.5 as Trade["qty"] }, { ...b, priceTicks: -Number.MAX_SAFE_INTEGER }],
+  ];
+  it.each(invalidInputs.map((trades, i) => ({ trades, i })))(
+    "preserves original error constructor, message and precedence for invalid Store $i", ({ trades }) => {
+      // Deliberately malformed public input, not accepted TradeStore ingestion.
+      const store: TradeStore = { ...load([]), trades };
+      const failure = (run: () => unknown) => {
+        try { run(); return null; }
+        catch (error) {
+          if (!(error instanceof Error)) throw error;
+          return { constructor: error.constructor, message: error.message };
+        }
+      };
+      const expected = failure(() => reference(store));
+      expect(expected).not.toBeNull();
+      expect(failure(() => aggregateTrades(store))).toEqual(expected);
+    });
 });
