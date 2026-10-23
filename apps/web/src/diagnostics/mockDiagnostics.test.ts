@@ -661,6 +661,182 @@ it("release without a recorded baseline or with unmatched identities is HOLD", a
 function evidenceRow(revision = 1, stage = "ingest") {
   return { stage, at: 10, ms: .25, revision, seq: revision, layer: "session", a: 5, b: 8, c: 1 };
 }
+
+// D1: only injected operations/fake time. Never launch Chromium or send an OS signal.
+function terminationHarness(options: { stuck?: boolean; groupResidual?: boolean; killFails?: boolean;
+  unknown?: boolean; reuse?: boolean; foreign?: boolean; membershipChange?: boolean } = {}) {
+  const started = { pid: 400, ppid: 20, pgid: 400, sid: 400, startTicks: "100", uid: 1000, state: "S" };
+  const child = { ...started, pid: 401, ppid: 400, startTicks: "101" };
+  let processes = [started, child], exited = false, inspections = 0;
+  const calls: string[] = [];
+  const io = {
+    close: vi.fn(async () => {
+      calls.push("close");
+      if (options.stuck) throw Error("synthetic close failure");
+      exited = true; processes = options.groupResidual ? [child] : [];
+    }),
+    exited: () => exited,
+    holdsLeader: () => !exited,
+    waitExit: vi.fn(async () => { calls.push("grace"); }),
+    inspect: vi.fn(async () => {
+      calls.push("inspect"); inspections++;
+      if (options.unknown) throw Error("synthetic unreadable metadata");
+      let current = processes;
+      if (options.reuse) current = current.map(p => ({ ...p, startTicks: "900" }));
+      if (options.foreign) current = [...current, { ...child, pid: 402, ppid: 99 }];
+      if (options.membershipChange && inspections === 2) current = [...current, { ...child, pid: 403 }];
+      return { processes: current, live: current.map(p => p.pid), zombies: [] };
+    }),
+    signal: vi.fn((_target: number, _signal: string) => {
+      calls.push("signal");
+      if (options.killFails) throw Error("synthetic denied signal");
+      processes = []; exited = true;
+    }),
+    recover: vi.fn(async () => { calls.push("recover"); }),
+  };
+  return { io, started, calls };
+}
+
+it("D1 normal close preserves PASS, is single-flight, and does not signal", async () => {
+  const { createBrowserTermination } = await import(driverUrl), h = terminationHarness();
+  const c = createBrowserTermination(h.io, { trialId: "cells128-1-control", started: h.started });
+  const a = c.finish(); expect(c.finish()).toBe(a);
+  expect(await a).toMatchObject({ status: "PASS", liveAfter: 0, zombiesAfter: 0,
+    signal: { attempted: false }, close: "OK" });
+  expect(h.io.close).toHaveBeenCalledTimes(1); expect(h.io.signal).not.toHaveBeenCalled();
+});
+it("D1 wall expiry records FAIL before close and keeps FAIL even after graceful success", async () => {
+  const { createBrowserTermination } = await import(driverUrl), h = terminationHarness();
+  const c = createBrowserTermination(h.io, { trialId: "wall", started: h.started });
+  const done = c.wallTimeout(); expect(c.expired()).toBe(true);
+  expect(await done).toMatchObject({ status: "FAIL", reason: "BROWSER_WALL_TIMEOUT",
+    paths: ["WALL_TIMEOUT"], close: "OK", liveAfter: 0, subsequentTrial: "BLOCKED" });
+  expect(h.calls).toEqual(["close", "inspect"]); expect(h.io.signal).not.toHaveBeenCalled();
+});
+it.each(["wall", "close"])("D1 %s failure waits, verifies twice, signals only the owned group, and remains FAIL", async path => {
+  const { createBrowserTermination } = await import(driverUrl), h = terminationHarness({ stuck: true });
+  const c = createBrowserTermination(h.io, { trialId: path, started: h.started });
+  const result = await (path === "wall" ? c.wallTimeout() : c.finish());
+  expect(result).toMatchObject({ status: "FAIL", close: "ERROR", grace: "EXPIRED",
+    ownership: { status: "PASS" }, signal: { attempted: true, result: "SENT" }, liveAfter: 0,
+    subsequentTrial: "BLOCKED" });
+  expect(h.io.signal).toHaveBeenCalledExactlyOnceWith(-400, "SIGKILL");
+  expect(h.calls).toEqual(["close", "grace", "inspect", "inspect", "signal", "recover", "inspect"]);
+});
+it("D1 remaining descendants after leader exit are FAIL and cannot authorize a group signal", async () => {
+  const { createBrowserTermination } = await import(driverUrl), h = terminationHarness({ groupResidual: true });
+  const result = await createBrowserTermination(h.io, { trialId: "group", started: h.started }).finish();
+  expect(result).toMatchObject({ status: "FAIL", paths: ["GROUP_RESIDUAL", "REMAINDER"],
+    ownership: { status: "FAIL", reason: "LEADER_NOT_VERIFIABLE" }, liveAfter: 1 });
+  expect(h.io.signal).not.toHaveBeenCalled();
+});
+it.each(["unknown", "reuse", "foreign", "membershipChange"])("D1 %s ownership cannot authorize SIGKILL", async kind => {
+  const { createBrowserTermination } = await import(driverUrl);
+  const h = terminationHarness({ stuck: true, [kind]: true });
+  const result = await createBrowserTermination(h.io, { trialId: kind, started: h.started }).finish();
+  expect(result.status).toBe("FAIL"); expect(result.ownership.status).toBe("FAIL");
+  expect(h.io.signal).not.toHaveBeenCalled(); expect(result.signal.attempted).toBe(false);
+});
+it("D1 independently detects PID, PGID, session reuse, orphaned and ambiguous identities", async () => {
+  const { verifyBrowserOwnership } = await import(driverUrl), h = terminationHarness();
+  const s = await h.io.inspect();
+  expect(verifyBrowserOwnership(h.started, s).status).toBe("PASS");
+  for (const key of ["startTicks", "pgid", "sid", "uid"]) {
+    const modified = structuredClone(s);
+    (modified.processes[0] as any)[key] = key === "startTicks" ? "200" : 999;
+    expect(verifyBrowserOwnership(h.started, modified).status).toBe("FAIL");
+  }
+  expect(verifyBrowserOwnership(null, s).status).toBe("FAIL");
+  expect(verifyBrowserOwnership(h.started, { ...s, processes: [s.processes[1]] }).status).toBe("FAIL");
+  expect(verifyBrowserOwnership(h.started, { ...s, live: [400, 400] }).status).toBe("FAIL");
+  expect(verifyBrowserOwnership(h.started, { ...s, processes: [...s.processes, s.processes[0]] }).status).toBe("FAIL");
+});
+it("D1 release of the spawning ChildProcess between metadata checks and signal denies SIGKILL", async () => {
+  const { createBrowserTermination } = await import(driverUrl), h = terminationHarness({ stuck: true });
+  h.io.holdsLeader = () => false;
+  const result = await createBrowserTermination(h.io, { trialId: "released", started: h.started }).finish();
+  expect(result).toMatchObject({ status: "FAIL",
+    ownership: { status: "FAIL", reason: "LEADER_IDENTITY_RELEASED" }, signal: { attempted: false } });
+  expect(h.io.signal).not.toHaveBeenCalled();
+});
+it("D1 failed recovery or denied signal never changes FAIL to PASS", async () => {
+  const { createBrowserTermination } = await import(driverUrl), h = terminationHarness({ stuck: true, killFails: true });
+  const result = await createBrowserTermination(h.io, { trialId: "denied", started: h.started }).finish();
+  expect(result).toMatchObject({ status: "FAIL", signal: { attempted: true, result: "ERROR" }, liveAfter: 2 });
+});
+it("D1 unavailable close, exit, inspection and recovery operations have finite deadlines", async () => {
+  const { createBrowserTermination } = await import(driverUrl);
+  vi.useFakeTimers();
+  const never = () => new Promise(() => {});
+  const h = terminationHarness({ stuck: true });
+  h.io.close.mockImplementation(never as any); h.io.waitExit.mockImplementation(never as any);
+  h.io.recover.mockImplementation(never as any); h.io.signal.mockImplementation(() => {});
+  const done = createBrowserTermination(h.io, { trialId: "bounded", started: h.started,
+    closeMs: 10, graceMs: 2, inspectMs: 2, recoveryMs: 2 }).wallTimeout();
+  await vi.runAllTimersAsync();
+  expect(await done).toMatchObject({ status: "FAIL", close: "TIMEOUT", grace: "EXPIRED",
+    recovery: "TIMEOUT", liveAfter: 2, signal: { attempted: true } });
+  expect(vi.getTimerCount()).toBe(0);
+  h.io.inspect.mockImplementation(never as any);
+  const unknown = createBrowserTermination(h.io, { trialId: "unknown", started: h.started,
+    closeMs: 10, graceMs: 2, inspectMs: 2 }).finish();
+  await vi.runAllTimersAsync();
+  expect(await unknown).toMatchObject({ status: "FAIL", liveAfter: null,
+    ownership: { status: "FAIL", reason: "OWNERSHIP_UNKNOWN" } });
+  expect(vi.getTimerCount()).toBe(0);
+});
+it("D1 timeout during an existing normal shutdown uses one close and permanently invalidates it", async () => {
+  const { createBrowserTermination } = await import(driverUrl), h = terminationHarness();
+  let release!: () => void;
+  const original = h.io.close.getMockImplementation()!;
+  h.io.close.mockImplementation(async () => { await new Promise<void>(r => { release = r; }); await original(); });
+  const c = createBrowserTermination(h.io, { trialId: "race", started: h.started });
+  const done = c.finish(); await Promise.resolve();
+  expect(c.wallTimeout()).toBe(done); release();
+  expect((await done).status).toBe("FAIL"); expect(h.io.close).toHaveBeenCalledTimes(1);
+});
+it("D1 forced cleanup fails validation, preserves diagnostics losslessly, and prevents the next formal job", async () => {
+  const { createBrowserTermination, comparisonPlan, executeComparison, validateFormalTrial,
+    boundedEvidence, decodeEvidence } = await import(driverUrl);
+  let attempts = 0;
+  const saved: any[] = [];
+  const report = await executeComparison(comparisonPlan("both", "formal"), async (job: any) => {
+    attempts++; const h = terminationHarness({ stuck: true });
+    const termination = await createBrowserTermination(h.io, { trialId: job.id, started: h.started }).finish();
+    const trial = { ...protocolTrial(job), termination };
+    expect(() => validateFormalTrial(trial, job)).toThrow("BROWSER_TERMINATION_FAILED");
+    const error: any = Error(termination.reason); error.partialResult = trial; throw error;
+  }, async (r: any) => { saved.push(decodeEvidence(boundedEvidence(r).trim()).value); });
+  expect(attempts).toBe(1); expect(report.status).toBe("HOLD"); expect(saved).toHaveLength(1);
+  const t = saved[0].runs[0];
+  expect(t).toMatchObject({ failed: true, termination: { trialId: "cells128-1-control",
+    status: "FAIL", subsequentTrial: "BLOCKED", signal: { attempted: true, result: "SENT" } } });
+  expect(Buffer.byteLength(JSON.stringify(t.termination))).toBeLessThanOrEqual(4096);
+  expect(Buffer.byteLength(boundedEvidence(saved[0]))).toBeLessThanOrEqual(2 * 1024 * 1024);
+});
+it("D1 startup identity is copied, missing identity is FAIL, and malformed observations never authorize signaling", async () => {
+  const { createBrowserTermination, verifyBrowserOwnership } = await import(driverUrl);
+  const h = terminationHarness(), c = createBrowserTermination(h.io, { trialId: "copy", started: h.started });
+  h.started.startTicks = "999";
+  expect((await c.finish()).started.startTicks).toBe("100");
+  const missing = terminationHarness();
+  const result = await createBrowserTermination(missing.io, { trialId: "missing", started: null }).finish();
+  expect(result).toMatchObject({ status: "FAIL", reason: "START_IDENTITY_UNVERIFIED", liveAfter: 0 });
+  expect(missing.io.signal).not.toHaveBeenCalled();
+  expect(verifyBrowserOwnership(h.started, { processes: [null], live: [400] }).status).toBe("FAIL");
+  expect(() => createBrowserTermination(h.io, { trialId: "x".repeat(97), started: h.started }))
+    .toThrow("TERMINATION_TRIAL_ID_LIMIT");
+});
+it("D1 browser wiring has only the ownership-gated signal and routes wall/cleanup failures into stop diagnostics", () => {
+  const text = readFileSync(new URL("./baseline13-driver.mjs", import.meta.url), "utf8");
+  expect(text.match(/process\.kill\(/g)).toHaveLength(1);
+  expect(text).toContain('signal: (pid, signal) => process.kill(pid, signal)');
+  expect(text).toContain('termination.wallTimeout()');
+  expect(text).toContain('const error = Error(ended.reason)');
+  expect(text).toContain('chromiumCleanup: { ...cleanup, profile: dir }, termination: ended');
+  expect(text).toContain('if (ended.liveAfter === 0 && ended.zombiesAfter === 0)');
+});
+
 function protocolTrial(job: { workload: string; mode: string; repetition: number }) {
   const vertices = job.workload === "cells128" ? 768 : 3072;
   const counters = { draws: 1, vertices, uploads: 1, bytes: vertices * 32, buffers: 2, deletes: 2,

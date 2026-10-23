@@ -241,6 +241,8 @@ export function summarizeRuns(runs) {
 
 export function validateFormalTrial(t, job) {
   assert(!t.failed && !["FAIL", "HOLD", "UNKNOWN"].includes(t.status), "TRIAL_NOT_PASS");
+  assert(!t.termination || (t.termination.status === "PASS" && !t.termination.signal.attempted),
+    "BROWSER_TERMINATION_FAILED");
   assert.equal(t.workload, job.workload); assert.equal(t.mode, job.mode); assert.equal(t.repetition, job.repetition);
   assert.deepEqual(t.counts, { inputs: 128, accepted: 128, duplicate: 0, rejected: 0 });
   assert.equal(t.revision, 128); assert(t.layerRevisions.length === 6 && t.layerRevisions.every(r => r === 128));
@@ -546,6 +548,181 @@ async function browserGroup(pgid) {
   return { live, zombies };
 }
 
+// Only kernel identity metadata is retained: no arguments, environment, URLs or profile contents.
+async function processIdentity(pid) {
+  if (!Number.isSafeInteger(pid) || pid <= 1) throw Error("PROCESS_IDENTITY_UNKNOWN");
+  const text = await readFile(`/proc/${pid}/stat`, "utf8");
+  const fields = text.slice(text.lastIndexOf(")") + 2).trim().split(/\s+/);
+  const status = await readFile(`/proc/${pid}/status`, "utf8");
+  const uid = Number(status.match(/^Uid:\s+(\d+)/m)?.[1]);
+  const result = { pid, ppid: Number(fields[1]), pgid: Number(fields[2]), sid: Number(fields[3]),
+    startTicks: fields[19], uid, state: fields[0] };
+  assert(Number.isSafeInteger(uid) && /^\d+$/.test(result.startTicks), "PROCESS_IDENTITY_UNKNOWN");
+  return result;
+}
+
+async function ownershipSnapshot(pgid) {
+  const processes = [];
+  for (const name of await readdir("/proc")) {
+    if (!/^\d+$/.test(name)) continue;
+    let p;
+    try { p = await processIdentity(Number(name)); }
+    catch (e) {
+      if (e.code === "ENOENT" || e.code === "ESRCH") continue;
+      // Unreadable processes outside the session need not disclose identity metadata.
+      let text;
+      try { text = await readFile(`/proc/${name}/stat`, "utf8"); } catch { continue; }
+      const fields = text.slice(text.lastIndexOf(")") + 2).trim().split(/\s+/);
+      if (Number(fields[2]) === pgid || Number(fields[3]) === pgid) throw Error("OWNERSHIP_UNKNOWN");
+      continue;
+    }
+    if (p.pgid === pgid || p.sid === pgid) processes.push(p);
+    assert(processes.length <= 256, "OWNERSHIP_OBSERVATION_LIMIT");
+  }
+  return { processes, live: processes.filter(p => p.pgid === pgid && !["Z", "X"].includes(p.state)).map(p => p.pid),
+    zombies: processes.filter(p => p.pgid === pgid && ["Z", "X"].includes(p.state)).map(p => p.pid) };
+}
+
+export function verifyBrowserOwnership(started, snapshot) {
+  const fail = reason => ({ status: "FAIL", reason });
+  if (!started || !Number.isSafeInteger(started.pid) || started.pid <= 1 ||
+      started.pid !== started.pgid || started.pid !== started.sid ||
+      !/^\d+$/.test(started.startTicks) || !Number.isSafeInteger(started.uid))
+    return fail("START_IDENTITY_UNVERIFIED");
+  if (!snapshot || !Array.isArray(snapshot.processes) || !Array.isArray(snapshot.live))
+    return fail("OWNERSHIP_UNKNOWN");
+  if (snapshot.processes.some(p => !p || !Number.isSafeInteger(p.pid) || p.pid <= 1 ||
+      !Number.isSafeInteger(p.ppid) || !Number.isSafeInteger(p.pgid) || !Number.isSafeInteger(p.sid) ||
+      !Number.isSafeInteger(p.uid) || !/^\d+$/.test(p.startTicks) || typeof p.state !== "string"))
+    return fail("IDENTITY_AMBIGUOUS");
+  const byPid = new Map(snapshot.processes.map(p => [p.pid, p]));
+  if (byPid.size !== snapshot.processes.length) return fail("IDENTITY_AMBIGUOUS");
+  const leader = byPid.get(started.pid);
+  if (!leader || ["Z", "X"].includes(leader.state)) return fail("LEADER_NOT_VERIFIABLE");
+  for (const key of ["pid", "pgid", "sid", "startTicks", "uid"])
+    if (leader[key] !== started[key]) return fail("PID_OR_PGID_REUSED");
+  const live = snapshot.processes.filter(p => p.pgid === started.pgid && !["Z", "X"].includes(p.state));
+  if (live.length !== snapshot.live.length || new Set(snapshot.live).size !== live.length ||
+      live.some(p => !snapshot.live.includes(p.pid))) return fail("GROUP_VIEW_INCONSISTENT");
+  for (const member of live) {
+    let p = member;
+    const visited = new Set();
+    while (p) {
+      if (visited.has(p.pid) || p.uid !== started.uid || p.sid !== started.sid ||
+          !/^\d+$/.test(p.startTicks) || BigInt(p.startTicks) < BigInt(started.startTicks))
+        return fail("FOREIGN_OR_UNKNOWN_MEMBER");
+      visited.add(p.pid);
+      if (p.pid === started.pid) break;
+      const parent = byPid.get(p.ppid);
+      if (!parent || BigInt(parent.startTicks) > BigInt(p.startTicks)) return fail("ANCESTRY_UNVERIFIED");
+      p = parent;
+    }
+  }
+  return { status: "PASS", reason: "START_IDENTITY_AND_DESCENDANTS_MATCH" };
+}
+
+async function boundedStep(fn, ms) {
+  let timer;
+  try {
+    return await Promise.race([
+      Promise.resolve().then(fn).then(value => ({ status: "OK", value }), () => ({ status: "ERROR" })),
+      new Promise(resolve => { timer = setTimeout(() => resolve({ status: "TIMEOUT" }), ms); }),
+    ]);
+  } finally { clearTimeout(timer); }
+}
+
+/** Injected operations permit deterministic tests without Chromium or real signals.
+ * One shutdown promise owns all cleanup; a wall expiry permanently invalidates the trial.
+ */
+export function createBrowserTermination(io, { trialId, started, closeMs = 10000, graceMs = 2000,
+  inspectMs = 2000, recoveryMs = 2000 }) {
+  assert(typeof trialId === "string" && trialId.length <= 96, "TERMINATION_TRIAL_ID_LIMIT");
+  started = started ? Object.freeze(Object.fromEntries(
+    ["pid", "ppid", "pgid", "sid", "startTicks", "uid", "state"].map(key => [key, started[key]]))) : null;
+  const report = { version: 1, trialId, status: "PASS", reason: null, paths: [],
+    pid: started?.pid ?? null, pgid: started?.pgid ?? null, started: started ?? null,
+    close: "NOT_ATTEMPTED", grace: "NOT_NEEDED", graceMs,
+    ownership: { status: "NOT_NEEDED" }, signal: { attempted: false, result: "NOT_ATTEMPTED" },
+    recovery: "NOT_NEEDED", liveAfter: null, zombiesAfter: null, subsequentTrial: "NOT_BLOCKED" };
+  let shutdown;
+  const fail = (path, reason) => {
+    report.status = "FAIL"; report.subsequentTrial = "BLOCKED";
+    if (!report.paths.includes(path)) report.paths.push(path);
+    if (!report.reason || path === "WALL_TIMEOUT") report.reason = reason;
+  };
+  if (verifyBrowserOwnership(started, { processes: started ? [started] : [], live: started ? [started.pid] : [] }).status !== "PASS")
+    fail("START_IDENTITY", "START_IDENTITY_UNVERIFIED");
+  const output = () => {
+    assert(Buffer.byteLength(JSON.stringify(report)) <= 4096, "TERMINATION_DIAGNOSTIC_LIMIT");
+    return structuredClone(report);
+  };
+  const inspect = () => boundedStep(io.inspect, inspectMs);
+  const finish = () => shutdown ??= (async () => {
+    report.close = (await boundedStep(io.close, closeMs)).status;
+    if (!io.exited()) {
+      const waited = await boundedStep(() => io.waitExit(graceMs), graceMs);
+      report.grace = io.exited() ? "EXITED" : waited.status === "ERROR" ? "ERROR" : "EXPIRED";
+      if (!io.exited()) fail("BROWSER_CLOSE_RESIDUAL", "BROWSER_CLOSE_RESIDUAL");
+    }
+    let observation = await inspect();
+    if (observation.status !== "OK" || !Array.isArray(observation.value?.live) ||
+        !Array.isArray(observation.value?.zombies)) {
+      fail("INSPECTION_FAILED", "CLEANUP_UNVERIFIED");
+      report.ownership = { status: "FAIL", reason: "OWNERSHIP_UNKNOWN" };
+      return output();
+    }
+    let snapshot = observation.value;
+    if (snapshot.live.length) {
+      fail("GROUP_RESIDUAL", "BROWSER_GROUP_RESIDUAL");
+      report.ownership = verifyBrowserOwnership(started, snapshot);
+      if (report.ownership.status === "PASS") {
+        // Re-read immediately before signaling. A missing/reused leader, changed membership,
+        // or unprovable ancestry forbids group signaling; never fall back to a name-based kill.
+        observation = await inspect();
+        if (observation.status !== "OK" || !Array.isArray(observation.value?.live))
+          report.ownership = { status: "FAIL", reason: "OWNERSHIP_UNKNOWN" };
+        else {
+          const current = observation.value;
+          report.ownership = verifyBrowserOwnership(started, current);
+          const identities = s => s.processes.filter(p => s.live.includes(p.pid))
+            .map(p => `${p.pid}:${p.startTicks}:${p.pgid}:${p.sid}:${p.uid}`).sort().join("|");
+          if (report.ownership.status === "PASS" && identities(snapshot) !== identities(current))
+            report.ownership = { status: "FAIL", reason: "GROUP_CHANGED_BEFORE_SIGNAL" };
+          snapshot = current;
+        }
+        if (report.ownership.status === "PASS") {
+          // No await between this final guard and signal: the spawning Node event loop
+          // must still hold its unreaped ChildProcess. An exited/reaped leader cannot
+          // authorize signaling a subsequently reused PID/process group.
+          if (io.holdsLeader?.() !== true)
+            report.ownership = { status: "FAIL", reason: "LEADER_IDENTITY_RELEASED" };
+          else {
+            report.signal.attempted = true;
+            try { io.signal(-started.pgid, "SIGKILL"); report.signal.result = "SENT"; }
+            catch { report.signal.result = "ERROR"; }
+            const recovered = await boundedStep(() => io.recover(recoveryMs), recoveryMs);
+            report.recovery = recovered.status;
+          }
+        }
+      }
+      // Includes denied/failed signal attempts: no successful-cleanup-to-PASS transition.
+      observation = await inspect();
+      if (observation.status === "OK" && Array.isArray(observation.value?.live) &&
+          Array.isArray(observation.value?.zombies)) snapshot = observation.value;
+      else { snapshot = null; fail("INSPECTION_FAILED", "CLEANUP_UNVERIFIED"); }
+    }
+    report.liveAfter = snapshot?.live.length ?? null;
+    report.zombiesAfter = snapshot?.zombies.length ?? null;
+    if (report.liveAfter !== 0 || report.zombiesAfter !== 0) fail("REMAINDER", "BROWSER_PROCESS_REMAINING");
+    return output();
+  })();
+  return {
+    finish,
+    wallTimeout() { fail("WALL_TIMEOUT", "BROWSER_WALL_TIMEOUT"); return finish(); },
+    expired() { return report.paths.includes("WALL_TIMEOUT"); },
+  };
+}
+
 function installGLObserver(compact = false, commitMarkers = false) {
   const proto = WebGL2RenderingContext.prototype, saved = new Map(), contexts = new WeakMap(), listeners = [];
   const counters = () => ({
@@ -668,6 +845,7 @@ async function browserRun(mode, repetition, lifecycle, workload, reference) {
   const completionLimitMs = expectedInputs * 300 + 6000;
   const browserLimitMs = completionLimitMs + 15000;
   const dir = await mkdtemp("/tmp/orderflow-b2b1-browser-");
+  const spawnedAt = performance.now();
   const browser = spawn("/repl/tools/bin/chromium", ["--headless=new", "--no-sandbox", "--disable-dev-shm-usage",
     "--disable-background-networking", "--disable-component-update", "--disable-sync", "--no-first-run",
     "--no-default-browser-check", `--user-data-dir=${dir}`, "--remote-debugging-pipe"],
@@ -685,15 +863,56 @@ async function browserRun(mode, repetition, lifecycle, workload, reference) {
     }
   });
   browser.on("exit", () => { for (const p of pending.values()) { clearTimeout(p.timer); p.reject(Error("BROWSER_EXIT")); } pending.clear(); });
+  browser.on("error", () => {
+    for (const p of pending.values()) { clearTimeout(p.timer); p.reject(Error("BROWSER_SPAWN_FAILED")); }
+    pending.clear();
+  });
+  const transportClosed = () => {
+    for (const p of pending.values()) { clearTimeout(p.timer); p.reject(Error("CDP_UNAVAILABLE")); }
+    pending.clear();
+  };
+  browser.stdio[3].on("error", transportClosed);
+  browser.stdio[4].on("error", transportClosed);
+  let termination;
   const call = (method, params = {}, sessionId) => new Promise((resolve, reject) => {
+    if (browser.exitCode !== null || browser.signalCode || browser.stdio[3].destroyed ||
+        !browser.stdio[3].writable) { reject(Error("CDP_UNAVAILABLE")); return; }
+    if (termination?.expired() && method !== "Browser.close") { reject(Error("BROWSER_WALL_TIMEOUT")); return; }
     const n = ++id, timer = setTimeout(() => { pending.delete(n); reject(Error(`CDP_TIMEOUT:${method}`)); }, 10000);
     pending.set(n, { resolve, reject, timer });
     browser.stdio[3].write(JSON.stringify({ id: n, method, params, ...(sessionId ? { sessionId } : {}) }) + "\0");
   });
-  const hardStop = setTimeout(() => { try { process.kill(-browser.pid, "SIGKILL"); } catch {} }, browserLimitMs);
+  const identityRead = await boundedStep(() => processIdentity(browser.pid), 2000);
+  const started = identityRead.status === "OK" ? identityRead.value : null;
+  const exited = () => browser.exitCode !== null || !!browser.signalCode;
+  const inspect = () => ownershipSnapshot(browser.pid);
+  termination = createBrowserTermination({
+    close: () => call("Browser.close"),
+    exited,
+    waitExit: ms => new Promise(resolve => {
+      if (exited()) { resolve(); return; }
+      const done = () => { clearTimeout(timer); browser.off("exit", done); resolve(); };
+      const timer = setTimeout(done, ms); browser.once("exit", done);
+    }),
+    inspect,
+    holdsLeader: () => browser.pid === started?.pid && !exited(),
+    signal: (pid, signal) => process.kill(pid, signal),
+    recover: async ms => {
+      const until = performance.now() + ms;
+      do {
+        const group = await inspect();
+        if (!group.live.length && !group.zombies.length) return;
+        await new Promise(resolve => setTimeout(resolve, 100));
+      } while (performance.now() < until);
+    },
+  }, { trialId: `${workload}-${repetition}-${mode}`, started });
+  // The wall deadline is still measured from spawn, not from identity collection.
+  const hardStop = setTimeout(() => { void termination.wallTimeout().catch(() => {}); },
+    Math.max(0, browserLimitMs - (performance.now() - spawnedAt)));
   let captured;
   let rescue;
   try {
+    assert(started && started.pid === started.pgid && started.pid === started.sid, "START_IDENTITY_UNVERIFIED");
     const version = await call("Browser.getVersion"), target = await call("Target.createTarget", { url: "about:blank" });
     const { sessionId } = await call("Target.attachToTarget", { targetId: target.targetId, flatten: true });
     const page = (method, params) => call(method, params, sessionId);
@@ -899,23 +1118,25 @@ async function browserRun(mode, repetition, lifecycle, workload, reference) {
     if (captured) error.partialResult = captured;
     throw error;
   } finally {
-    try { await call("Browser.close"); } catch {}
-    if (browser.exitCode === null && !browser.signalCode) await new Promise(r => {
-      browser.once("exit", r); setTimeout(r, 2000);
-    });
-    clearTimeout(hardStop);
-    if (browser.exitCode === null && !browser.signalCode) { try { process.kill(-browser.pid, "SIGKILL"); } catch {} }
-    let group = await browserGroup(browser.pid);
-    if (group.live.length) {
-      try { process.kill(-browser.pid, "SIGKILL"); } catch {}
-      for (let n = 0; n < 20 && group.live.length; n++) {
-        await new Promise(r => setTimeout(r, 100)); group = await browserGroup(browser.pid);
-      }
+    let ended;
+    try { ended = await termination.finish(); } finally { clearTimeout(hardStop); }
+    // Never remove a profile while its processes might still be live or unverified.
+    let profileRemoved = false;
+    if (ended.liveAfter === 0 && ended.zombiesAfter === 0) {
+      const removed = await boundedStep(() => rm(dir, { recursive: true, force: true }), 2000);
+      profileRemoved = removed.status === "OK";
     }
-    await rm(dir, { recursive: true, force: true });
-    if (captured) captured.chromiumCleanup = { pid: browser.pid, ...group, profileRemoved: true };
-    if (group.live.length) {
-      const error = Error("BROWSER_PROCESS_REMAINING"); error.partialResult = captured; throw error;
+    if (!profileRemoved) {
+      ended.status = "FAIL"; ended.reason ??= "PROFILE_NOT_RELEASED"; ended.subsequentTrial = "BLOCKED";
+    }
+    const cleanup = { pid: browser.pid, started,
+      live: ended.liveAfter === 0 ? [] : null, zombies: ended.zombiesAfter === 0 ? [] : null, profileRemoved };
+    if (captured) captured.chromiumCleanup = cleanup;
+    if (ended.status === "FAIL") {
+      const error = Error(ended.reason);
+      error.partialResult = { ...(captured ?? { mode, repetition, workload }), failed: true,
+        chromiumCleanup: { ...cleanup, profile: dir }, termination: ended };
+      throw error;
     }
   }
 }
