@@ -800,13 +800,14 @@ it("D1 forced cleanup fails validation, preserves diagnostics losslessly, and pr
     boundedEvidence, decodeEvidence } = await import(driverUrl);
   let attempts = 0;
   const saved: any[] = [];
+  const baseline = (await syntheticE2()).baseline;
   const report = await executeComparison(comparisonPlan("both", "formal"), async (job: any) => {
     attempts++; const h = terminationHarness({ stuck: true });
     const termination = await createBrowserTermination(h.io, { trialId: job.id, started: h.started }).finish();
     const trial = { ...protocolTrial(job), termination };
-    expect(() => validateFormalTrial(trial, job)).toThrow("BROWSER_TERMINATION_FAILED");
+    expect(() => validateFormalTrial(trial, job, baseline)).toThrow("BROWSER_TERMINATION_FAILED");
     const error: any = Error(termination.reason); error.partialResult = trial; throw error;
-  }, async (r: any) => { saved.push(decodeEvidence(boundedEvidence(r).trim()).value); });
+  }, async (r: any) => { saved.push(decodeEvidence(boundedEvidence(r).trim()).value); }, baseline);
   expect(attempts).toBe(1); expect(report.status).toBe("HOLD"); expect(saved).toHaveLength(1);
   const t = saved[0].runs[0];
   expect(t).toMatchObject({ failed: true, termination: { trialId: "cells128-1-control",
@@ -846,12 +847,18 @@ function protocolTrial(job: { workload: string; mode: string; repetition: number
     completionLimitMs: 44400, browserLimitMs: 59400, completionObservedMs: 38000,
     counts: { inputs: 128, accepted: 128, duplicate: 0, rejected: 0 }, revision: 128,
     layerRevisions: [128, 128, 128, 128, 128, 128], golden: Array.from({ length: 8 }, () => ({ ok: true })),
-    meaningHash: (job.workload === "cells128" ? "a" : "b").repeat(64), meaningEncoding: { wireBytes: 64043 },
+    meaningHash: (job.workload === "cells128" ? "a" : "b").repeat(64),
+    meaningEncoding: { wireBytes: 64043, version: job.workload === "cells128" ? 2 : 3 },
+    inspection: { summary: { cellCount: job.workload === "cells128" ? 128 : 512,
+      scope: { environment: "MOCK", sourceId: `SYNTHETIC-${job.workload}`, sessionId: "SYNTHETIC-SESSION" } } },
+    progress: { status: { sourceInputs: 128 } },
     afterReleaseGate: { status: "PASS" }, afterReleaseGL: { heatmap: { ...counters }, bubble: { ...counters } },
     chromiumCleanup: { live: [], zombies: [], profileRemoved: true },
-    viewport: { viewport: { dpr: 1, bounds: { width: 403, height: 324 }, time: { minNs: "0", maxNs: "8" },
+    viewport: { source: `SYNTHETIC fixture ${job.workload}`,
+      viewport: { dpr: 1, bounds: { width: 403, height: 324 }, time: { minNs: "0", maxNs: "8" },
       price: { minTick: 79998, maxTick: 80067 } },
-      heatmap: { width: 403, height: 324, status: "READY" },
+      heatmap: { width: 403, height: 324, status: "READY", rects: job.workload === "cells128" ? 128 : 512,
+        minNs: "0", maxNs: "8" },
       bubble: { width: 403, height: 324, status: "READY", vertices: 24 } },
     gl: { version: job.mode === "on" ? 2 : 0, observation: job.mode === "on" ? "PERFORMANCE_OBSERVER" : "OFF_SAFETY_ONLY",
       limited: false, unrecordedApiCalls: 0, totals: { heatmap: { ...counters }, bubble: { ...counters } },
@@ -859,6 +866,171 @@ function protocolTrial(job: { workload: string; mode: string; repetition: number
     telemetry: job.mode === "on" ? { sessionId: 1, records: 1, allocatedBytes: 147456,
       saturated: false, dropped: 0, rows: [evidenceRow()], receipts: [] } : null };
 }
+// Portable artificial E2-shaped evidence; the pristine anchor is outside all mutable files.
+async function syntheticE2(mutate?: (runs: any[]) => void) {
+  const d = await import(driverUrl), root = ".local/diagnostics/task28-b2-b2-e2";
+  const plan = d.comparisonPlan("both", "formal"), runs = plan.map(protocolTrial);
+  mutate?.(runs);
+  const files = new Map<string, string>(), refs: any[] = [];
+  for (const [i, job] of plan.entries()) {
+    const file = `${job.id}-completed.json`, wire = d.boundedEvidence({ job, trial: runs[i], failure: null });
+    files.set(`${root}/formal.json.trials/${file}`, wire);
+    refs.push({ file, bytes: Buffer.byteLength(wire), sha256: createHash("sha256").update(wire).digest("hex") });
+  }
+  files.set(`${root}/formal.json`, d.boundedEvidence({
+    phase: "formal", plan, runs, failure: null, status: "PASS", trialFiles: refs }));
+  for (const p of ["analysis.json", "driver.log", "environment-observations.json", "launch-and-exit.log", "report.md", "timings.csv"])
+    files.set(`${root}/${p}`, p.endsWith(".json") ? "{}" : "SYNTHETIC ONLY\n");
+  const manifest = { status: "PASS", fixture: { inputs: 128, intervalMs: 300, cases: ["cells128", "cells512"] },
+    observed: { chromium: runs[0].chromium, renderer: runs[0].gpu.renderer, dpr: 1, webgl2: true },
+    node: "SYNTHETIC NODE", cpu: "SYNTHETIC CPU", logicalCpu: 8, cpuMax: "800000 100000",
+    memoryMax: "17179869184", e2Files: Object.fromEntries([...files].map(([p, text]) =>
+      [p, createHash("sha256").update(text).digest("hex")])) };
+  const wire = JSON.stringify(manifest), anchor = createHash("sha256").update(wire).digest("hex");
+  return { ...d, files, manifest, wire, anchor, root, plan, runs,
+    baseline: d.verifyE2Evidence(wire, files, anchor) };
+}
+
+it.each(["cells128", "cells512"].flatMap(workload => [1, 2, 3].flatMap(repetition =>
+  ["control", "on"].map(mode => ({ workload, repetition, mode })))))
+("D3 $workload $mode repetition $repetition requires the independently verified fixed hash", async job => {
+  const s = await syntheticE2(), t = protocolTrial(job);
+  expect(() => s.validateFormalTrial(t, job, s.baseline)).not.toThrow();
+  t.meaningHash = "c".repeat(64);
+  expect(() => s.validateFormalTrial(t, job, s.baseline)).toThrow("E2_FIXED_HASH_MISMATCH");
+});
+
+const badE2Conditions: [string, (t: any) => void][] = [
+  ["Chrome", t => { t.chromium = "Chrome/0.0.0.0"; }],
+  ["renderer exact spelling", t => { t.gpu.renderer += " "; }],
+  ["WebGL2", t => { t.gpu.webgl2 = false; }],
+  ["DPR", t => { t.viewport.viewport.dpr = 2; }],
+  ["Canvas width", t => { t.viewport.heatmap.width = 404; }],
+  ["Canvas height", t => { t.viewport.bubble.height = 325; }],
+  ["fixture description", t => { t.viewport.source = "different fixture"; }],
+  ["session", t => { t.inspection.summary.scope.sessionId = "different"; }],
+  ["query time", t => { t.viewport.viewport.time.maxNs = "9"; }],
+  ["query price", t => { t.viewport.viewport.price.maxTick++; }],
+  ["drawn query range", t => { t.viewport.heatmap.maxNs = "9"; }],
+  ["cell count", t => { t.inspection.summary.cellCount++; }],
+  ["drawn cell count", t => { t.viewport.heatmap.rects++; }],
+  ["input count", t => { t.progress.status.sourceInputs = 127; }],
+  ["input cadence policy", t => { t.completionLimitMs++; }],
+  ["wire query encoding", t => { t.meaningEncoding.version = 99; }],
+  ["mode", t => { t.mode = "different"; }],
+  ["revision", t => { t.layerRevisions[5] = 127; }],
+];
+it.each(badE2Conditions)("D3 rejects nonbaseline %s, even when the semantic hash is unchanged", async (_name, mutate) => {
+  const s = await syntheticE2(), t = protocolTrial(s.plan[0]);
+  mutate(t);
+  expect(() => s.validateFormalTrial(t, s.plan[0], s.baseline)).toThrow();
+});
+
+it("D3 the same wrong hash for all future repetitions fails the first job and saves all failed evidence", async () => {
+  const s = await syntheticE2(), seen: any[] = [], saved: any[] = [];
+  const r = await s.executeComparison(s.plan, async (job: any) => {
+    seen.push(job); return { ...protocolTrial(job), meaningHash: "f".repeat(64) };
+  }, async (report: any) => { saved.push(s.decodeEvidence(s.boundedEvidence(report).trim()).value); }, s.baseline);
+  expect(seen).toHaveLength(1);
+  expect(r.status).toBe("HOLD"); expect(r.failure).toContain("E2_FIXED_HASH_MISMATCH");
+  expect(saved[0].runs[0]).toMatchObject({ failed: true, meaningHash: "f".repeat(64) });
+  expect(saved[0].e2Reference.manifestSha256).toBe(s.anchor);
+});
+it("D3 rejects missing or cloned/unverified baselines before starting any trial", async () => {
+  const s = await syntheticE2(), run = vi.fn(), save = vi.fn();
+  await expect(s.executeComparison(s.plan, run, save)).rejects.toThrow("E2_BASELINE_UNVERIFIED_HOLD");
+  await expect(s.executeComparison(s.plan, run, save, structuredClone(s.baseline))).rejects.toThrow("E2_BASELINE_UNVERIFIED_HOLD");
+  expect(run).not.toHaveBeenCalled(); expect(save).not.toHaveBeenCalled();
+  expect(Object.isFrozen(s.baseline.trials[s.plan[0].id].conditions.scope)).toBe(true);
+});
+it("D3 missing manifest or required reference file is HOLD, with no reader fallback", async () => {
+  const s = await syntheticE2(), read = vi.fn(async () => { throw Object.assign(Error(), { code: "ENOENT" }); });
+  await expect(s.loadE2Baseline(read)).rejects.toThrow("E2_BASELINE_LOAD_OR_VERIFY_HOLD");
+  expect(read).toHaveBeenCalledTimes(1);
+  const missing = new Map(s.files); missing.delete(`${s.root}/formal.json`);
+  expect(() => s.verifyE2Evidence(s.wire, missing, s.anchor)).toThrow("E2_FILES_MISSING_HOLD");
+});
+it("D3 independently pinned manifest rejects coordinated file/checksum tampering", async () => {
+  const s = await syntheticE2(), files = new Map(s.files);
+  files.set(`${s.root}/driver.log`, "tampered");
+  expect(() => s.verifyE2Evidence(s.wire, files, s.anchor)).toThrow("E2_FILE_INTEGRITY_HOLD");
+  const m = structuredClone(s.manifest);
+  m.e2Files[`${s.root}/driver.log`] = createHash("sha256").update("tampered").digest("hex");
+  expect(() => s.verifyE2Evidence(JSON.stringify(m), files, s.anchor)).toThrow("E2_MANIFEST_TRUST_HOLD");
+});
+it("D3 authenticated but inconsistent reference hashes/schema cannot become a baseline", async () => {
+  await expect(syntheticE2(r => { r[1].meaningHash = "c".repeat(64); })).rejects.toThrow("E2_HASH_INCONSISTENT_HOLD");
+  await expect(syntheticE2(r => { r[0].meaningHash = "invalid"; })).rejects.toThrow("MISSING_HASH");
+  await expect(syntheticE2(r => { r[0].inspection.summary.cellCount = 1; })).rejects.toThrow("E2_CELL_COUNT_HOLD");
+  await expect(syntheticE2(r => { r[1].viewport.viewport.dpr = 2; })).rejects.toThrow("E2_ENVIRONMENT_INCONSISTENT_HOLD");
+});
+it("D3 reference file schema and per-trial/aggregate mismatch are rejected even with valid outer checksums", async () => {
+  const s = await syntheticE2();
+  const verifyReanchored = (files: Map<string, string>) => {
+    // Represents malformed evidence signed by an independent synthetic publisher;
+    // it tests schema/cross-file validation, not production anchor substitution.
+    const manifest = structuredClone(s.manifest);
+    manifest.e2Files = Object.fromEntries([...files].map(([p, b]) => [p, createHash("sha256").update(b).digest("hex")]));
+    const text = JSON.stringify(manifest), anchor = createHash("sha256").update(text).digest("hex");
+    return s.verifyE2Evidence(text, files, anchor);
+  };
+  const broken = new Map<string, string>(s.files); broken.set(`${s.root}/formal.json`, "{");
+  expect(() => verifyReanchored(broken)).toThrow();
+  const files = new Map<string, string>(s.files), aggregate = s.decodeEvidence(files.get(`${s.root}/formal.json`)!.trim()).value;
+  const ref = aggregate.trialFiles[0], p = `${s.root}/formal.json.trials/${ref.file}`;
+  const child = s.decodeEvidence(files.get(p)!.trim()).value; child.trial.revision = 127;
+  const wire = s.boundedEvidence(child);
+  files.set(p, wire); ref.bytes = Buffer.byteLength(wire); ref.sha256 = createHash("sha256").update(wire).digest("hex");
+  files.set(`${s.root}/formal.json`, s.boundedEvidence(aggregate));
+  expect(() => verifyReanchored(files)).toThrow("E2_TRIAL_AGGREGATE_HOLD");
+});
+it("D3 retains the 2MiB bound without dropping records or accepting an oversized reference", async () => {
+  const s = await syntheticE2(), files = new Map(s.files);
+  files.set(`${s.root}/driver.log`, "x".repeat(2 * 1024 * 1024 + 1));
+  expect(() => s.verifyE2Evidence(s.wire, files, s.anchor)).toThrow("E2_FILE_MISSING_OR_LIMIT_HOLD");
+  const r = await s.executeComparison(s.plan, async (job: any) => protocolTrial(job), async () => {}, s.baseline);
+  const wire = s.boundedEvidence(r), decoded = s.decodeEvidence(wire.trim(), r);
+  expect(Buffer.byteLength(wire)).toBeLessThanOrEqual(2 * 1024 * 1024);
+  expect(decoded.value.runs).toHaveLength(12);
+  expect(decoded.value.runs.map((t: any) => t.telemetry?.records)).toEqual(r.runs.map((t: any) => t.telemetry?.records));
+  expect(decoded.value.e2Reference.manifestSha256).toBe(s.anchor);
+});
+it("D3 production wiring loads its trusted baseline before any browser and preserves D1 finally cleanup", () => {
+  const source = readFileSync(new URL("./baseline13-driver.mjs", import.meta.url), "utf8");
+  const fn = source.slice(source.indexOf("async function formalComparison("), source.indexOf("export function browserCasePolicy("));
+  expect(fn.indexOf("await loadE2Baseline()")).toBeLessThan(fn.indexOf("return browserRun("));
+  expect(fn).toContain('failure: "E2_BASELINE_OR_EXTERNAL_PREFLIGHT_HOLD", browsersStarted: 0');
+  expect(fn).toContain("validateE2ExternalEnvironment(baseline,");
+  expect(fn).toContain('capacityOnly(undefined, true)');
+  expect(fn).toContain("reference, baseline)");
+  expect(source).toContain("try { ended = await termination.finish(); } finally { clearTimeout(hardStop); }");
+  expect(source).toContain('if (ended.status === "FAIL")');
+});
+it("D3 startup/external environment are exact matches and cells512 independent verification stays required", async () => {
+  const s = await syntheticE2(), t = s.runs[0];
+  expect(() => s.validateE2BrowserStartup(t.chromium, t.gpu, 1, s.baseline)).not.toThrow();
+  expect(() => s.validateE2BrowserStartup(t.chromium + " ", t.gpu, 1, s.baseline)).toThrow("E2_CHROME_MISMATCH");
+  expect(() => s.validateE2BrowserStartup(t.chromium, { ...t.gpu, renderer: t.gpu.renderer + " " }, 1, s.baseline))
+    .toThrow("E2_GPU_MISMATCH");
+  expect(() => s.validateE2BrowserStartup(t.chromium, t.gpu, 2, s.baseline)).toThrow("E2_DPR_MISMATCH");
+  expect(() => s.validateE2ExternalEnvironment(s.baseline, { ...s.baseline.external })).not.toThrow();
+  for (const field of ["cpu", "cpuMax", "logicalCpu", "memoryMax", "node"])
+    expect(() => s.validateE2ExternalEnvironment(s.baseline, { ...s.baseline.external, [field]: "UNKNOWN" }))
+      .toThrow("E2_EXTERNAL_ENVIRONMENT_MISMATCH_HOLD");
+  expect(() => s.resolveBrowserMeaning("cells512", "{}", undefined)).toThrow("MISSING_INDEPENDENT_LEGACY_REFERENCE");
+});
+it("D3 condition, revision, fixed hash, then safety gates run in order without skipping failure checkpoint", async () => {
+  const s = await syntheticE2(), t = protocolTrial(s.plan[0]);
+  t.meaningHash = "d".repeat(64); t.afterReleaseGate.status = "FAIL";
+  t.viewport.viewport.dpr = 2;
+  expect(() => s.validateFormalTrial(t, s.plan[0], s.baseline)).toThrow("COMPARISON_ENVIRONMENT_MISMATCH");
+  t.viewport.viewport.dpr = 1; t.revision = 0;
+  expect(() => s.validateFormalTrial(t, s.plan[0], s.baseline)).not.toThrow("E2_FIXED_HASH_MISMATCH");
+  t.revision = 128;
+  expect(() => s.validateFormalTrial(t, s.plan[0], s.baseline)).toThrow("E2_FIXED_HASH_MISMATCH");
+  t.meaningHash = s.runs[0].meaningHash;
+  expect(() => s.validateFormalTrial(t, s.plan[0], s.baseline)).toThrow("RESOURCE_GATE");
+});
 it("formal whitelist fixes 12 trials while all three preflights retain one OFF/ON pair", async () => {
   const { comparisonPlan, browserCasePolicy } = await import(driverUrl);
   expect(comparisonPlan("both", "formal").map((j: { id: string }) => j.id)).toEqual(
@@ -876,7 +1048,7 @@ it("synthetic formal runner creates 12 distinct trials with checkpoints and no r
   const plan = comparisonPlan("both", "formal"), calls: unknown[] = [], checkpoints: unknown[] = [];
   const r = await executeComparison(plan, async (job: any) => {
     calls.push(job); return protocolTrial(job);
-  }, async (_r: unknown, trial: unknown) => { checkpoints.push(trial); });
+  }, async (_r: unknown, trial: unknown) => { checkpoints.push(trial); }, (await syntheticE2()).baseline);
   expect(r.status).toBe("PASS"); expect(r.failure).toBeNull();
   expect(calls).toHaveLength(12); expect(new Set(calls).size).toBe(12);
   expect(new Set(r.runs).size).toBe(12); expect(checkpoints).toEqual(r.runs);
@@ -897,7 +1069,7 @@ it.each(Array.from({ length: 12 }, (_, i) => i + 1))(
       }, async (report: any, trial: any) => {
         if (calls === at && failure === "capacity" && !report.failure) throw Error("REPORT_SIZE_LIMIT");
         evidence.push({ trial: JSON.parse(JSON.stringify(trial)), failure: report.failure });
-      });
+      }, (await syntheticE2()).baseline);
       expect(calls).toBe(at); expect(r.runs).toHaveLength(at); expect(r.status).toBe("HOLD");
       expect(r.runs.at(-1).failed).toBe(true); expect(evidence.at(-1).failure).toBeTruthy();
       if (at <= 6) expect(r.runs.every((v: any) => v.workload === "cells128")).toBe(true);
@@ -909,20 +1081,22 @@ it("environment mismatch and missing trials stop instead of silently proceeding"
   let count = 0;
   const r = await executeComparison(comparisonPlan("both", "formal"), async (job: any) => {
     const t = protocolTrial(job); if (++count === 2) t.viewport.viewport.dpr = 2; return t;
-  }, async () => {});
+  }, async () => {}, (await syntheticE2()).baseline);
   expect(count).toBe(2); expect(r.failure).toContain("COMPARISON_ENVIRONMENT_MISMATCH");
-  const missing = await executeComparison(comparisonPlan("both", "formal"), async () => undefined, async () => {});
+  const missing = await executeComparison(comparisonPlan("both", "formal"), async () => undefined, async () => {},
+    (await syntheticE2()).baseline);
   expect(missing.runs).toHaveLength(1); expect(missing.failure).toContain("MISSING_TRIAL");
 });
 it.each(["cells128", "cells512"])("%s requires owned-resource PASS and OFF safety only", async workload => {
   const { validateFormalTrial } = await import(driverUrl);
   const job = { workload, mode: "control", repetition: 1 }, t: any = protocolTrial(job);
-  expect(() => validateFormalTrial(t, job)).not.toThrow();
+  const baseline = (await syntheticE2()).baseline;
+  expect(() => validateFormalTrial(t, job, baseline)).not.toThrow();
   for (const status of ["HOLD", "UNKNOWN", "FAIL"]) {
-    t.afterReleaseGate.status = status; expect(() => validateFormalTrial(t, job)).toThrow("RESOURCE_GATE");
+    t.afterReleaseGate.status = status; expect(() => validateFormalTrial(t, job, baseline)).toThrow("RESOURCE_GATE");
   }
   t.afterReleaseGate.status = "PASS"; t.gl.observation = "PERFORMANCE_OBSERVER";
-  expect(() => validateFormalTrial(t, job)).toThrow("OFF_NOT_SAFETY_ONLY");
+  expect(() => validateFormalTrial(t, job, baseline)).toThrow("OFF_NOT_SAFETY_ONLY");
 });
 
 function evidenceFixture() {

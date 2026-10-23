@@ -8,6 +8,118 @@ import { createHash } from "node:crypto";
 import assert from "node:assert/strict";
 import { isDeepStrictEqual } from "node:util";
 import { fileURLToPath } from "node:url";
+import { cpus } from "node:os";
+
+// Independent C4 preflight manifest, already verified in D1/D2. Pin its bytes,
+// not another copy of the two semantic hashes stored in the E2 evidence.
+const E2_MANIFEST = ".local/diagnostics/task28-c4-c/preflight.json";
+const E2_MANIFEST_SHA256 = "db329c602b8d52bf80e900bb6b990023e9018a6d62c31d9699da161431776544";
+const E2_DIRECTORY = ".local/diagnostics/task28-b2-b2-e2";
+const verifiedBaselines = new WeakSet();
+const freezeBaseline = value => {
+  if (value && typeof value === "object") { Object.values(value).forEach(freezeBaseline); Object.freeze(value); }
+  return value;
+};
+const e2Files = () => ["analysis.json", "driver.log", "environment-observations.json", "formal.json",
+  ...comparisonPlan("both", "formal").map(j => `formal.json.trials/${j.id}-completed.json`),
+  "launch-and-exit.log", "report.md", "timings.csv"].map(p => `${E2_DIRECTORY}/${p}`);
+const requireBaseline = b => assert(b && verifiedBaselines.has(b), "E2_BASELINE_UNVERIFIED_HOLD");
+
+/** Pure verifier. The anchor is external to the manifest/evidence under test.
+ * Production always uses the pinned manifest digest above; tests inject a separate
+ * pristine synthetic anchor, never a checksum read from the file being verified.
+ */
+export function verifyE2Evidence(manifestBytes, files, anchor = E2_MANIFEST_SHA256) {
+  assert(Buffer.byteLength(manifestBytes) <= 65536 && digest(manifestBytes) === anchor, "E2_MANIFEST_TRUST_HOLD");
+  const manifest = JSON.parse(manifestBytes);
+  assert(manifest.status === "PASS" && manifest.fixture?.inputs === 128 &&
+    manifest.fixture.intervalMs === 300, "E2_MANIFEST_SCHEMA_HOLD");
+  assert.deepEqual(manifest.fixture.cases, ["cells128", "cells512"], "E2_MANIFEST_CASES_HOLD");
+  const paths = e2Files();
+  assert.deepEqual(Object.keys(manifest.e2Files).sort(), [...paths].sort(), "E2_FILE_SET_HOLD");
+  assert(files instanceof Map && files.size === paths.length, "E2_FILES_MISSING_HOLD");
+  for (const p of paths) {
+    const bytes = files.get(p);
+    assert((typeof bytes === "string" || Buffer.isBuffer(bytes)) && Buffer.byteLength(bytes) <= EVIDENCE_LIMIT,
+      "E2_FILE_MISSING_OR_LIMIT_HOLD");
+    assert(/^[a-f0-9]{64}$/.test(manifest.e2Files[p]) &&
+      digest(bytes) === manifest.e2Files[p], "E2_FILE_INTEGRITY_HOLD");
+  }
+  const decoded = decodeEvidence(String(files.get(`${E2_DIRECTORY}/formal.json`)).trim()), r = decoded.value;
+  const plan = comparisonPlan("both", "formal");
+  assert(r.status === "PASS" && r.failure === null && r.phase === "formal" &&
+    Array.isArray(r.runs) && r.runs.length === 12 && r.trialFiles?.length === 12, "E2_FORMAL_SCHEMA_HOLD");
+  assert.deepEqual(r.plan, plan, "E2_PLAN_HOLD");
+  const trials = {}, hashes = {};
+  let environment;
+  for (const [i, job] of plan.entries()) {
+    const t = r.runs[i], ref = r.trialFiles[i], file = `${job.id}-completed.json`;
+    validateTrialSafety(t, job);
+    assert(t.inspection?.summary?.cellCount === (job.workload === "cells128" ? 128 : 512),
+      "E2_CELL_COUNT_HOLD");
+    const wire = files.get(`${E2_DIRECTORY}/formal.json.trials/${file}`);
+    assert(ref.file === file && ref.bytes === Buffer.byteLength(wire) && ref.sha256 === digest(wire),
+      "E2_TRIAL_REFERENCE_HOLD");
+    const perTrial = decodeEvidence(String(wire).trim()).value;
+    assert.deepEqual(perTrial.job, job, "E2_TRIAL_JOB_HOLD");
+    assert.equal(perTrial.failure, null, "E2_FAILED_REFERENCE_HOLD");
+    assert.deepEqual(perTrial.trial, t, "E2_TRIAL_AGGREGATE_HOLD");
+    const signature = comparisonEnvironment(t);
+    environment ??= signature;
+    assert.equal(signature, environment, "E2_ENVIRONMENT_INCONSISTENT_HOLD");
+    hashes[job.workload] ??= t.meaningHash;
+    assert.equal(t.meaningHash, hashes[job.workload], "E2_HASH_INCONSISTENT_HOLD");
+    trials[job.id] = { job, meaningHash: t.meaningHash, conditions: e2Conditions(t),
+      meaningEncodingVersion: t.meaningEncoding.version };
+  }
+  assert.deepEqual(manifest.observed.chromium, r.runs[0].chromium, "E2_CHROME_INCONSISTENT_HOLD");
+  assert.equal(manifest.observed.renderer, r.runs[0].gpu.renderer, "E2_RENDERER_INCONSISTENT_HOLD");
+  assert.equal(manifest.observed.dpr, r.runs[0].viewport.viewport.dpr, "E2_DPR_INCONSISTENT_HOLD");
+  assert.equal(manifest.observed.webgl2, true, "E2_WEBGL_HOLD");
+  assert(Number.isSafeInteger(manifest.logicalCpu) && manifest.logicalCpu > 0 &&
+    [manifest.node, manifest.cpu, manifest.cpuMax, manifest.memoryMax].every(v => typeof v === "string" && v.length > 0),
+    "E2_EXTERNAL_ENVIRONMENT_HOLD");
+  const baseline = freezeBaseline({ version: 1, manifestSha256: anchor, aggregateSha256: digest(files.get(`${E2_DIRECTORY}/formal.json`)),
+    restoredSha256: decoded.sha256, trials, hashes, environment,
+    external: { node: manifest.node, cpu: manifest.cpu, logicalCpu: manifest.logicalCpu,
+      cpuMax: manifest.cpuMax, memoryMax: manifest.memoryMax } });
+  verifiedBaselines.add(baseline);
+  return baseline;
+}
+
+function e2Conditions(t) {
+  const summary = t.inspection?.summary, viewport = t.viewport;
+  assert(summary?.scope && typeof viewport?.source === "string" &&
+    Number.isSafeInteger(summary.cellCount) && typeof viewport.heatmap?.minNs === "string" &&
+    typeof viewport.heatmap?.maxNs === "string" &&
+    t.progress?.status?.sourceInputs === 128, "E2_FIXTURE_QUERY_UNKNOWN");
+  return { environment: comparisonEnvironment(t), source: viewport.source, scope: summary.scope,
+    cellCount: summary.cellCount, drawnRange: { minNs: viewport.heatmap.minNs, maxNs: viewport.heatmap.maxNs },
+    rects: viewport.heatmap.rects, sourceInputs: t.progress.status.sourceInputs };
+}
+
+export function validateE2ExternalEnvironment(baseline, observed) {
+  requireBaseline(baseline);
+  assert.deepEqual(observed, baseline.external, "E2_EXTERNAL_ENVIRONMENT_MISMATCH_HOLD");
+}
+
+/** Missing/untrusted baseline stops before a browser or input session is started. */
+export async function loadE2Baseline(read = async p => {
+  const st = await lstat(p);
+  assert(st.isFile() && !st.isSymbolicLink() && st.size <= EVIDENCE_LIMIT, "E2_FILE_TYPE_OR_SIZE_HOLD");
+  return readFile(p);
+}) {
+  try {
+    const manifestBytes = await read(E2_MANIFEST);
+    assert(Buffer.byteLength(manifestBytes) <= 65536 && digest(manifestBytes) === E2_MANIFEST_SHA256,
+      "E2_MANIFEST_TRUST_HOLD");
+    const files = new Map();
+    for (const p of e2Files()) files.set(p, await read(p));
+    return verifyE2Evidence(manifestBytes, files);
+  } catch {
+    throw Error("E2_BASELINE_LOAD_OR_VERIFY_HOLD");
+  }
+}
 
 /** Independent v3 decoder. The wire contract is canonical, minified JSON.
  * Parse/stringify identity rejects duplicate keys (including escaped aliases),
@@ -239,7 +351,7 @@ export function summarizeRuns(runs) {
     gpuMs: "UNKNOWN", presentationAt: "UNKNOWN", physicalGPU: "UNKNOWN", heap: "UNKNOWN", rss: "UNKNOWN", gc: "UNKNOWN" };
 }
 
-export function validateFormalTrial(t, job) {
+function validateTrialSafety(t, job) {
   assert(!t.failed && !["FAIL", "HOLD", "UNKNOWN"].includes(t.status), "TRIAL_NOT_PASS");
   assert(!t.termination || (t.termination.status === "PASS" && !t.termination.signal.attempted),
     "BROWSER_TERMINATION_FAILED");
@@ -272,6 +384,38 @@ export function validateFormalTrial(t, job) {
   }
 }
 
+function validateE2Conditions(t, job, baseline) {
+  requireBaseline(baseline);
+  const expected = baseline.trials[job.id ?? `${job.workload}-${job.repetition}-${job.mode}`];
+  assert(expected && expected.job.workload === job.workload && expected.job.mode === job.mode &&
+    expected.job.repetition === job.repetition, "E2_TRIAL_CONDITION_MISMATCH");
+  assert(!t.failed && !["FAIL", "HOLD", "UNKNOWN"].includes(t.status), "TRIAL_NOT_PASS");
+  assert.equal(t.workload, job.workload); assert.equal(t.mode, job.mode); assert.equal(t.repetition, job.repetition);
+  assert.deepEqual(e2Conditions(t), expected.conditions, "COMPARISON_ENVIRONMENT_MISMATCH");
+  return expected;
+}
+function validateE2Meaning(t, expected) {
+  assert.equal(t.meaningEncoding?.version, expected.meaningEncodingVersion, "E2_QUERY_ENCODING_MISMATCH");
+  assert.deepEqual(t.counts, { inputs: 128, accepted: 128, duplicate: 0, rejected: 0 });
+  assert.equal(t.revision, 128); assert.deepEqual(t.layerRevisions, [128, 128, 128, 128, 128, 128]);
+  assert.equal(t.meaningHash, expected.meaningHash, "E2_FIXED_HASH_MISMATCH");
+}
+export function validateFormalTrial(t, job, baseline) {
+  const expected = validateE2Conditions(t, job, baseline);
+  validateE2Meaning(t, expected);
+  // Golden/GL/capacity/release/termination gates remain mandatory after fixed
+  // semantic verification; browserRun's finally has already executed on every path.
+  validateTrialSafety(t, job);
+}
+
+export function validateE2BrowserStartup(chromium, gpu, dpr, baseline) {
+  requireBaseline(baseline);
+  const expected = JSON.parse(baseline.environment);
+  assert.equal(chromium, expected.chromium, "E2_CHROME_MISMATCH");
+  assert.deepEqual(gpu, expected.gpu, "E2_GPU_MISMATCH");
+  assert.equal(dpr, expected.dpr, "E2_DPR_MISMATCH");
+}
+
 export function comparisonEnvironment(t) {
   assert(typeof t.chromium === "string" && t.gpu?.webgl2 === true &&
     /SwiftShader/.test(t.gpu.renderer), "ENVIRONMENT_UNKNOWN_OR_NOT_SWIFTSHADER");
@@ -291,9 +435,12 @@ export function comparisonEnvironment(t) {
 }
 
 /** Injectable runner/checkpoint for offline protocol tests; no automatic retry. */
-export async function executeComparison(plan, runTrial, checkpoint) {
+export async function executeComparison(plan, runTrial, checkpoint, baseline) {
   assert.deepEqual(plan, comparisonPlan("both", "formal"), "FORMAL_PLAN_INVALID");
-  const report = { phase: "formal", plan, runs: [], failure: null, status: "RUNNING" };
+  requireBaseline(baseline);
+  const report = { phase: "formal", plan, runs: [], failure: null, status: "RUNNING",
+    e2Reference: { manifestSha256: baseline.manifestSha256, aggregateSha256: baseline.aggregateSha256,
+      restoredSha256: baseline.restoredSha256 } };
   let environment;
   for (const job of plan) {
     let trial;
@@ -301,7 +448,7 @@ export async function executeComparison(plan, runTrial, checkpoint) {
       trial = await runTrial({ ...job });
       assert(trial && typeof trial === "object", "MISSING_TRIAL");
       report.runs.push(trial);
-      validateFormalTrial(trial, job);
+      validateFormalTrial(trial, job, baseline);
       const observedEnvironment = comparisonEnvironment(trial);
       if (environment === undefined) environment = observedEnvironment;
       assert.equal(observedEnvironment, environment, "COMPARISON_ENVIRONMENT_MISMATCH");
@@ -326,15 +473,28 @@ export async function executeComparison(plan, runTrial, checkpoint) {
  * explicitly NOT a successful complete aggregate or a bypass of that limit.
  */
 async function formalComparison(output) {
-  const plan = comparisonPlan("both", "formal"), trialDir = output + ".trials", refs = [];
   try { await lstat(output); throw Error("OUTPUT_ALREADY_EXISTS"); }
   catch (e) { if (e.code !== "ENOENT") throw e; }
+  let baseline;
+  try {
+    baseline = await loadE2Baseline();
+    validateE2ExternalEnvironment(baseline, { node: process.version, cpu: cpus()[0].model.trim(), logicalCpu: cpus().length,
+      cpuMax: (await readFile("/sys/fs/cgroup/cpu.max", "utf8")).trim(),
+      memoryMax: (await readFile("/sys/fs/cgroup/memory.max", "utf8")).trim() });
+  } catch {
+    await mkdir(dirname(output), { recursive: true });
+    await writeFile(output, boundedEvidence({ phase: "formal", status: "HOLD", runs: [],
+      failure: "E2_BASELINE_OR_EXTERNAL_PREFLIGHT_HOLD", browsersStarted: 0 }), { flag: "wx" });
+    process.exitCode = 1;
+    return;
+  }
+  const plan = comparisonPlan("both", "formal"), trialDir = output + ".trials", refs = [];
   await mkdir(trialDir, { recursive: true });
   assert.equal((await readdir(trialDir)).length, 0, "TRIAL_DIRECTORY_NOT_EMPTY");
   let reference, lastWire;
   const report = await executeComparison(plan, async job => {
     if (job.workload === "cells512" && !reference) reference = await capacityOnly(undefined, true);
-    return browserRun(job.mode, job.repetition, false, job.workload, reference);
+    return browserRun(job.mode, job.repetition, false, job.workload, reference, baseline);
   }, async (r, trial, job) => {
     const file = `${job.id}-${r.failure ? "failed" : "completed"}.json`;
     let trialWire;
@@ -360,7 +520,7 @@ async function formalComparison(output) {
         note: "Complete aggregate exceeded capacity or was invalid. No trial omitted from the preserved file index.",
         plan, trialFiles: refs });
     }
-  });
+  }, baseline);
   if (report.status === "PASS") lastWire = boundedEvidence(report);
   await writeFile(output, lastWire, { flag: "wx" });
   if (report.failure) { process.exitCode = 1; console.error(report.failure); }
@@ -838,7 +998,7 @@ function captureViewport() {
     bubble: bubble ? { revision: Number(bubble.dataset.revision), vertices: Number(bubble.dataset.vertexCount),
       status: bubble.dataset.status, width: bubble.width, height: bubble.height } : null };
 }
-async function browserRun(mode, repetition, lifecycle, workload, reference) {
+async function browserRun(mode, repetition, lifecycle, workload, reference, baseline) {
   const policy = browserCasePolicy(workload), observeGL = mode === "on" || workload !== "baseline13";
   const observeResources = workload !== "baseline13", safetyOnly = observeGL && mode !== "on";
   const expectedInputs = workload === "baseline13" ? 13 : 128;
@@ -954,6 +1114,8 @@ async function browserRun(mode, repetition, lifecycle, workload, reference) {
         timerExtension:!!g.getExtension('EXT_disjoint_timer_query_webgl2')};
       g.getExtension('WEBGL_lose_context')?.loseContext();return out})()`);
     assert(gpu.webgl2, "WEBGL2_UNAVAILABLE");
+    captured = { mode, repetition, workload, chromium: version.product, gpu, completionLimitMs, browserLimitMs };
+    if (baseline) validateE2BrowserStartup(version.product, gpu, await evaluate("devicePixelRatio"), baseline);
     const start = await evaluate(`(()=>{window.__b2resources?.beginSession(1);
       const t=performance.now();document.querySelector('[data-testid="button-unified-start"]').click();return t})()`);
     await wait(`document.querySelector('[data-testid="status-data"]')?.textContent.includes("COMPLETED")`, completionLimitMs);
@@ -962,8 +1124,9 @@ async function browserRun(mode, repetition, lifecycle, workload, reference) {
     const preflight = await rescue();
     captured = { mode, repetition, workload, chromium: version.product, gpu, ...preflight,
       completionLimitMs, browserLimitMs, completionObservedMs: observedCompletion - start };
+    const e2Expected = baseline ? validateE2Conditions(captured, { workload, mode, repetition }, baseline) : null;
     const summary = preflight.inspection?.summary;
-    assert(summary?.checks.every(c => c.ok), "GOLDEN_MISMATCH");
+    if (!baseline) assert(summary?.checks.every(c => c.ok), "GOLDEN_MISMATCH");
     if (workload !== "baseline13") {
       const view = preflight.viewport, p = view.viewport.price, t = view.viewport.time;
       assert(BigInt(t.minNs) <= 1767225600000000000n && BigInt(t.maxNs) >= 1767225606000000000n, "TIME_OUTSIDE_VIEWPORT");
@@ -980,10 +1143,15 @@ async function browserRun(mode, repetition, lifecycle, workload, reference) {
       restoredBytes: decoded.legacyBytes, verified: decoded.verified,
       referenceSource: policy.version === 3 ? "INDEPENDENT_NODE_LEGACY_REPLAY" : "LEGACY_BROWSER_SERIALIZER" };
     assert.equal(meaning.processedInputs, expectedInputs); assert.equal(meaning.counts.inputs, expectedInputs);
-    assert(meaning.checks.every(c => c.ok), "GOLDEN_MISMATCH");
+    if (!baseline) assert(meaning.checks.every(c => c.ok), "GOLDEN_MISMATCH");
     assert.equal(meaning.counts.accepted, expectedInputs); assert.equal(meaning.counts.duplicate, 0); assert.equal(meaning.counts.rejected, 0);
     const revision = meaning.frame.revision;
     const layerRevisions = ["book", "heatmap", "bubbles", "delta", "volumeProfile", "quality"].map(l => meaning.frame[l].revision);
+    if (baseline) {
+      Object.assign(captured, { counts: meaning.counts, revision, layerRevisions, meaningHash: decoded.sha256 });
+      validateE2Meaning(captured, e2Expected);
+      assert(summary?.checks.every(c => c.ok) && meaning.checks.every(c => c.ok), "GOLDEN_MISMATCH");
+    }
     assert(layerRevisions.every(r => r === revision), "MIXED_FRAME");
     assert(!sample.errors.some(s => /RENDER ERROR|WebGL2 unavailable/i.test(s)), "RENDER_ERROR");
     if (workload !== "baseline13") {
