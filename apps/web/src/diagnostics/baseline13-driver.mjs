@@ -2,7 +2,7 @@
 // Offline codec capacity: node .../baseline13-driver.mjs [new output.json] capacity
 // Legacy browser preflight entry remains separate; never invoked by capacity/tests.
 import { spawn } from "node:child_process";
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, rm, writeFile, readdir, readFile } from "node:fs/promises";
 import { resolve, dirname } from "node:path";
 import { createHash } from "node:crypto";
 import assert from "node:assert/strict";
@@ -80,13 +80,66 @@ export function verifyCompactMeaning(wire, reference) {
     comparisonMs: performance.now() - started };
 }
 
-function installGLObserver(compact = false) {
+export function browserCasePolicy(workload) {
+  assert(["baseline13", "cells128", "cells512"].includes(workload), "CASE_NOT_APPROVED_FOR_THIS_FUNCTIONAL_VERIFICATION");
+  return { version: workload === "baseline13" ? 1 : workload === "cells128" ? 2 : 3,
+    compactGL: workload !== "baseline13", method: workload === "cells512" ? "compactMeaning" : "meaning" };
+}
+export function browserReadoutExpression(workload) {
+  const policy = browserCasePolicy(workload);
+  const body = `({meaning:${policy.version === 3 ? "await " : ""}window.__orderflowMockDiagnostics.${policy.method}(),
+      telemetry:window.__orderflowMockDiagnostics.snapshot(),gl:window.__b2gl?.snapshot(),
+      errors:[...document.querySelectorAll('[role="alert"]')].map(e=>e.textContent)})`;
+  return policy.version === 3 ? `(async()=>${body})()` : body;
+}
+export function resolveBrowserMeaning(workload, wire, reference) {
+  const policy = browserCasePolicy(workload);
+  assert(typeof wire === "string", "MISSING_MEANING");
+  if (policy.version === 3) {
+    assert(typeof reference === "string", "MISSING_INDEPENDENT_LEGACY_REFERENCE");
+    return verifyCompactMeaning(wire, reference);
+  }
+  const bytes = Buffer.byteLength(wire, "utf8");
+  assert(bytes <= 65536, "DIAGNOSTIC_SEMANTIC_LIMIT");
+  return { text: wire, value: JSON.parse(wire), wireBytes: bytes, legacyBytes: bytes,
+    sha256: createHash("sha256").update(wire).digest("hex"), verified: null };
+}
+
+function installResourceObserver() {
+  const names = ["setInterval", "clearInterval", "requestAnimationFrame", "cancelAnimationFrame"];
+  const saved = Object.fromEntries(names.map(k => [k, window[k]])), intervals = new Set(), raf = new Set();
+  window.setInterval = function (...args) {
+    const id = saved.setInterval.apply(window, args); intervals.add(id); return id;
+  };
+  window.clearInterval = function (id) { intervals.delete(id); return saved.clearInterval.call(window, id); };
+  window.requestAnimationFrame = function (fn) {
+    const id = saved.requestAnimationFrame.call(window, function (t) { raf.delete(id); return fn.call(this, t); });
+    raf.add(id); return id;
+  };
+  window.cancelAnimationFrame = function (id) { raf.delete(id); return saved.cancelAnimationFrame.call(window, id); };
+  window.__b2resources = { snapshot: () => ({ intervals: intervals.size, raf: raf.size }),
+    dispose() { Object.assign(window, saved); delete window.__b2resources; } };
+}
+async function browserGroup(pgid) {
+  const live = [], zombies = [];
+  for (const name of await readdir("/proc")) {
+    if (!/^\d+$/.test(name)) continue;
+    let text;
+    try { text = await readFile(`/proc/${name}/stat`, "utf8"); }
+    catch (e) { if (e.code === "ENOENT" || e.code === "ESRCH") continue; throw e; }
+    const fields = text.slice(text.lastIndexOf(")") + 2).split(" ");
+    if (Number(fields[2]) === pgid) (fields[0] === "Z" || fields[0] === "X" ? zombies : live).push(Number(name));
+  }
+  return { live, zombies };
+}
+
+function installGLObserver(compact = false, commitMarkers = false) {
   const proto = WebGL2RenderingContext.prototype, saved = new Map(), contexts = new WeakMap(), listeners = [];
   const counters = () => ({
     draws: 0, vertices: 0, uploads: 0, bytes: 0, buffers: 0, deletes: 0, loss: 0, restore: 0, errors: 0, cpuMs: 0,
   });
   const totals = Object.fromEntries(["heatmap", "bubble"].map(l => [l, counters()]));
-  const draws = [], frames = [], frameIndex = new Map();
+  const draws = [], frames = [], frameIndex = new Map(), lastDraws = {};
   let limited = false, unrecordedApiCalls = 0;
   // v2: at most 256 revision records, each with two fixed layer counter sets.
   // Revision -1 explicitly means no matching active draw token, not an inferred DOM revision.
@@ -106,7 +159,7 @@ function installGLObserver(compact = false) {
     const layer = this.classList.contains("hm-canvas") ? "heatmap" : this.classList.contains("bb-canvas") ? "bubble" : null;
     if (args[0] === "webgl2" && gl && layer && !contexts.has(gl)) {
       if (listeners.length === 16) { limited = true; return gl; }
-      const info = { layer, last: null }; contexts.set(gl, info);
+      const info = { layer, last: null, canvas: this, uploadedBytes: 0 }; contexts.set(gl, info);
       const lost = () => { totals[layer].loss++; const f = frameCounters(-1, layer); if (f) f.loss++; };
       const restored = () => { totals[layer].restore++; const f = frameCounters(-1, layer); if (f) f.restore++; };
       this.addEventListener("webglcontextlost", lost); this.addEventListener("webglcontextrestored", restored);
@@ -128,7 +181,11 @@ function installGLObserver(compact = false) {
       const token = window.__orderflowMockDiagnostics?.activeDraw(), t = performance.now();
       const value = original.apply(this, args), ms = performance.now() - t, total = totals[info.layer];
       total.cpuMs += ms;
-      const f = frameCounters(token?.layer === info.layer ? token.revision : -1, info.layer);
+      const marker = commitMarkers ? info.canvas.dataset?.revision : undefined;
+      const tokenMatches = token?.layer === info.layer;
+      const revision = tokenMatches ? token.revision :
+        marker !== undefined && marker !== "" && Number.isSafeInteger(Number(marker)) ? Number(marker) : -1;
+      const f = frameCounters(revision, info.layer);
       if (f) f.cpuMs += ms;
       if (!compact && token && token.layer === info.layer && info.last?.start !== token.start && draws.length < 256) {
         info.last = { layer: info.layer, revision: token.revision, start: token.start, firstGLAt: t,
@@ -141,11 +198,14 @@ function installGLObserver(compact = false) {
       if (name === "deleteBuffer" && args[0]) { total.deletes++; if (f) f.deletes++; }
       if (name === "bufferData") {
         a = typeof args[1] === "number" ? args[1] : args[1]?.byteLength ?? 0;
+        info.uploadedBytes = a;
         total.uploads++; total.bytes += a; kind = 2;
         if (f) { f.uploads++; f.bytes += a; }
       }
       if (name === "drawArrays") {
         a = args[2]; total.draws++; total.vertices += a; kind = 3;
+        lastDraws[info.layer] = { revision, vertices: a, uploadedBytes: info.uploadedBytes,
+          revisionSource: tokenMatches ? "ACTIVE_DRAW_TOKEN" : commitMarkers ? "CANVAS_COMMIT_MARKER" : "UNKNOWN" };
         if (f) { f.draws++; f.vertices += a; }
         if (token && info.last?.start === token.start) info.last.vertices += a;
       }
@@ -156,7 +216,7 @@ function installGLObserver(compact = false) {
   }
   window.__b2gl = {
     snapshot: () => ({ version: compact ? 2 : 1, limit: 256, totals, draws,
-      frames: compact ? frames : undefined, limited, unrecordedApiCalls }),
+      frames: compact ? frames : undefined, limited, unrecordedApiCalls, lastDraws }),
     dispose() {
       for (const [name, original] of saved) proto[name] = original;
       HTMLCanvasElement.prototype.getContext = getContext;
@@ -188,7 +248,8 @@ function captureViewport() {
     bubble: bubble ? { revision: Number(bubble.dataset.revision), vertices: Number(bubble.dataset.vertexCount),
       status: bubble.dataset.status, width: bubble.width, height: bubble.height } : null };
 }
-async function browserRun(mode, repetition, lifecycle, workload) {
+async function browserRun(mode, repetition, lifecycle, workload, reference) {
+  const policy = browserCasePolicy(workload), observeGL = mode === "on" || workload === "cells512";
   const expectedInputs = workload === "baseline13" ? 13 : 128;
   const completionLimitMs = expectedInputs * 300 + 6000;
   const browserLimitMs = completionLimitMs + 15000;
@@ -230,6 +291,7 @@ async function browserRun(mode, repetition, lifecycle, workload) {
     rescue = async () => evaluate(`({progress:window.__orderflowMockDiagnostics?.progress(),
       inspection:window.__orderflowMockDiagnostics?.inspectMeaning(),
       telemetry:window.__orderflowMockDiagnostics?.snapshot(),gl:window.__b2gl?.snapshot(),
+      resources:window.__b2resources?.snapshot(),
       viewport:(${captureViewport.toString()})()})`);
     const wait = async (expression, limit = 10000) => {
       const deadline = performance.now() + limit;
@@ -244,8 +306,10 @@ async function browserRun(mode, repetition, lifecycle, workload) {
     await page("Page.enable");
     await page("Network.enable");
     await page("Network.setBlockedURLs", { urls: ["*tick-stream.xyz*"] });
-    if (mode === "on") await page("Page.addScriptToEvaluateOnNewDocument", {
-      source: `(${installGLObserver.toString()})(${workload === "cells128"})` });
+    if (workload === "cells512") await page("Page.addScriptToEvaluateOnNewDocument", {
+      source: `(${installResourceObserver.toString()})()` });
+    if (observeGL) await page("Page.addScriptToEvaluateOnNewDocument", {
+      source: `(${installGLObserver.toString()})(${policy.compactGL},${mode !== "on"})` });
     await page("Page.navigate", { url: `http://127.0.0.1:80/?mockDiagnostics=${mode === "on" ? "1" : "control"}&mockCase=${workload}` });
     await wait(`!!document.querySelector('[data-testid="button-unified-start"]')`);
     const initial = await evaluate(`({text:document.body.textContent, bridge:!!window.__orderflowMockDiagnostics})`);
@@ -274,17 +338,37 @@ async function browserRun(mode, repetition, lifecycle, workload) {
       assert.equal(view.heatmap.revision, summary.revision); assert.equal(view.bubble.revision, summary.revision);
       assert.equal(view.heatmap.status, "READY"); assert.equal(view.bubble.status, "READY");
     }
-    assert(preflight.inspection?.allowed, "DIAGNOSTIC_SEMANTIC_LIMIT");
-    const sample = await evaluate(`({meaning:window.__orderflowMockDiagnostics.meaning(),
-      telemetry:window.__orderflowMockDiagnostics.snapshot(),gl:window.__b2gl?.snapshot(),
-      errors:[...document.querySelectorAll('[role="alert"]')].map(e=>e.textContent)})`);
-    const meaning = JSON.parse(sample.meaning);
+    if (policy.version !== 3) assert(preflight.inspection?.allowed, "DIAGNOSTIC_SEMANTIC_LIMIT");
+    const sample = await evaluate(browserReadoutExpression(workload));
+    const decoded = resolveBrowserMeaning(workload, sample.meaning, reference), meaning = decoded.value;
+    captured.meaningEncoding = { version: policy.version, wireBytes: decoded.wireBytes,
+      restoredBytes: decoded.legacyBytes, verified: decoded.verified,
+      referenceSource: policy.version === 3 ? "INDEPENDENT_NODE_LEGACY_REPLAY" : "LEGACY_BROWSER_SERIALIZER" };
     assert.equal(meaning.processedInputs, expectedInputs); assert.equal(meaning.counts.inputs, expectedInputs);
     assert(meaning.checks.every(c => c.ok), "GOLDEN_MISMATCH");
+    assert.equal(meaning.counts.accepted, expectedInputs); assert.equal(meaning.counts.duplicate, 0); assert.equal(meaning.counts.rejected, 0);
     const revision = meaning.frame.revision;
     const layerRevisions = ["book", "heatmap", "bubbles", "delta", "volumeProfile", "quality"].map(l => meaning.frame[l].revision);
     assert(layerRevisions.every(r => r === revision), "MIXED_FRAME");
     assert(!sample.errors.some(s => /RENDER ERROR|WebGL2 unavailable/i.test(s)), "RENDER_ERROR");
+    if (workload === "cells512") {
+      assert.equal(meaning.frame.heatmap.cells.length, 512);
+      assert.equal(revision, 128);
+      assert(!sample.gl.limited && sample.gl.unrecordedApiCalls === 0, "GL_RECORD_LIMIT");
+      assert(sample.gl.frames.length <= 256);
+      for (const layer of ["heatmap", "bubble"]) {
+        assert.equal(sample.gl.totals[layer].errors, 0, `GL_ERRORS:${layer}`);
+        const last = sample.gl.lastDraws[layer];
+        assert.equal(last.revision, revision, `FINAL_NATIVE_DRAW_REVISION:${layer}`);
+        assert.equal(last.vertices, layer === "heatmap" ? 512 * 6 : preflight.viewport.bubble.vertices,
+          `FINAL_NATIVE_VERTICES:${layer}`);
+        assert.equal(last.uploadedBytes, last.vertices * (layer === "heatmap" ? 32 : 52), `FINAL_NATIVE_UPLOAD:${layer}`);
+        for (const key of ["draws", "vertices", "uploads", "bytes", "buffers", "deletes", "loss", "restore", "errors"])
+          assert.equal(sample.gl.frames.reduce((n, f) => n + f.layers[layer][key], 0), sample.gl.totals[layer][key],
+            `GL_TOTAL:${layer}:${key}`);
+      }
+      if (mode !== "on") assert.equal(sample.telemetry, null, "OFF_COLLECTOR_NOT_DISABLED");
+    }
     if (mode === "on") {
       assert.equal(sample.telemetry.dropped, 0); assert(!sample.telemetry.saturated);
       assert(sample.telemetry.records < 2048);
@@ -342,7 +426,7 @@ async function browserRun(mode, repetition, lifecycle, workload) {
     }
     const result = captured = { ...captured, mode, repetition, chromium: version.product, gpu, counts: meaning.counts,
       revision, layerRevisions, golden: meaning.checks, quality: meaning.frame.quality,
-      meaningHash: createHash("sha256").update(sample.meaning).digest("hex"),
+      meaningHash: decoded.sha256,
       completionObservedMs: observedCompletion - start, telemetry: sample.telemetry, gl: sample.gl ?? null };
     if (workload === "baseline13") assert.equal(result.meaningHash,
       "dfe56d920917807ed5265bae6ba1c3039a36a3729207c4d1ae38da2c0dc54d27", "BASELINE_HASH_REGRESSION");
@@ -356,6 +440,10 @@ async function browserRun(mode, repetition, lifecycle, workload) {
       await evaluate(`document.querySelector('[data-testid="button-unified-stop"]').click()`);
       await wait("!window.__orderflowMockDiagnostics");
       result.stopReleased = true;
+      if (workload === "cells512") {
+        result.afterStopResources = await evaluate("window.__b2resources.snapshot()");
+        assert.equal(result.afterStopResources.intervals, 0, "STOP_INTERVAL_REMAINING");
+      }
       await evaluate(`document.querySelector('[data-testid="button-unified-restart"]').click()`);
       await wait("window.__orderflowMockDiagnostics?.snapshot()?.sessionId===3");
       await evaluate(`window.dispatchEvent(new Event("orderflow:diagnostic-unmount"))`);
@@ -369,10 +457,15 @@ async function browserRun(mode, repetition, lifecycle, workload) {
       assert(await evaluate("!window.__orderflowMockDiagnostics"));
       result.exitReleased = true;
     }
-    if (mode === "on") {
+    if (observeGL) {
       result.afterReleaseGL = await evaluate("window.__b2gl.snapshot().totals");
       assert(Object.values(result.afterReleaseGL).every(t => t.buffers === t.deletes), "BUFFER_NOT_RELEASED");
       await evaluate("window.__b2gl.dispose()");
+    }
+    if (workload === "cells512") {
+      result.afterReleaseResources = await evaluate("window.__b2resources.snapshot()");
+      assert.deepEqual(result.afterReleaseResources, { intervals: 0, raf: 0 }, "APP_TIMER_REMAINING");
+      await evaluate("window.__b2resources.dispose()");
     }
     return result;
   } catch (error) {
@@ -388,11 +481,22 @@ async function browserRun(mode, repetition, lifecycle, workload) {
     });
     clearTimeout(hardStop);
     if (browser.exitCode === null && !browser.signalCode) { try { process.kill(-browser.pid, "SIGKILL"); } catch {} }
+    let group = await browserGroup(browser.pid);
+    if (group.live.length) {
+      try { process.kill(-browser.pid, "SIGKILL"); } catch {}
+      for (let n = 0; n < 20 && group.live.length; n++) {
+        await new Promise(r => setTimeout(r, 100)); group = await browserGroup(browser.pid);
+      }
+    }
     await rm(dir, { recursive: true, force: true });
+    if (captured) captured.chromiumCleanup = { pid: browser.pid, ...group, profileRemoved: true };
+    if (group.live.length) {
+      const error = Error("BROWSER_PROCESS_REMAINING"); error.partialResult = captured; throw error;
+    }
   }
 }
 
-async function capacityOnly(output) {
+async function capacityOnly(output, referenceOnly = false) {
   const { createServer } = await import("vite");
   const server = await createServer({ configFile: false, root: fileURLToPath(new URL("../../", import.meta.url)),
     logLevel: "error", server: { middlewareMode: true, hmr: false, watch: null },
@@ -413,6 +517,7 @@ async function capacityOnly(output) {
       cells512: [126193, "b1a413d76d16417718c3fcd1561ec45c82972f9798e58a6bf73eb53fc5043e3e"],
     };
     for (const [id, version] of [["baseline13", 1], ["cells128", 2], ["cells512", 3]]) {
+      if (referenceOnly && id !== "cells512") continue;
       const trial = { case: id, version, result: "STARTED" }; report.trials.push(trial);
       const timers = new Map(); let timerId = 0, d;
       try {
@@ -446,6 +551,8 @@ async function capacityOnly(output) {
         assert.equal(inspection.bytes, expected[id][0], "LEGACY_BYTE_REGRESSION");
         assert.equal(hash, expected[id][1], "LEGACY_HASH_REGRESSION");
         trial.sha256 = hash;
+        // Local trusted old JSON only; never transported around the browser wire limit.
+        if (referenceOnly) return legacy;
         if (id !== "cells512") {
           assert.equal(window.__orderflowMockDiagnostics.meaning(), legacy);
           trial.outputBytes = inspection.bytes;
@@ -483,6 +590,7 @@ async function capacityOnly(output) {
       }
     }
   } catch (error) {
+    if (referenceOnly) throw error;
     report.failure = String(error);
     Object.assign(report.trials.at(-1) ?? {}, { result: "FAIL", failure: String(error),
       attemptedOutputBytes: error.bytes ?? null });
@@ -506,14 +614,17 @@ const output = resolve(process.argv[2] ?? ".local/diagnostics/task28-b2-b1/resul
 assert(output.startsWith(resolve(".local/diagnostics") + "/"), "OUTPUT_MUST_BE_IGNORED_DIAGNOSTICS");
 if (process.argv[3] === "capacity") { await capacityOnly(output); return; }
 const workload = process.argv[3] ?? "baseline13", phase = process.argv[4] ?? "preflight";
-assert(["baseline13", "cells128"].includes(workload), "CASE_NOT_APPROVED_FOR_THIS_FUNCTIONAL_VERIFICATION");
+browserCasePolicy(workload);
 assert(phase === "preflight", "FORMAL_COMPARISON_NOT_APPROVED");
 assert(output.startsWith(resolve(".local/diagnostics") + "/"), "OUTPUT_MUST_BE_IGNORED_DIAGNOSTICS");
 const report = { workload, phase, runs: [], failure: null,
   gpuMs: "UNKNOWN", presentationAt: "UNKNOWN", note: "No heavy trace; OFF has only explicit control-mode semantic readout. Completion includes DOM polling uncertainty." };
 try {
+  const reference = workload === "cells512" ? await capacityOnly(undefined, true) : undefined;
+  if (reference) report.reference = { source: "INDEPENDENT_NODE_LEGACY_REPLAY",
+    bytes: Buffer.byteLength(reference), sha256: createHash("sha256").update(reference).digest("hex") };
   for (let r = 1; r <= (phase === "preflight" ? 1 : 3); r++) for (const mode of r % 2 ? ["control", "on"] : ["on", "control"]) {
-    const sample = await browserRun(mode, r, mode === "on" && r === 1, workload);
+    const sample = await browserRun(mode, r, mode === "on" && r === 1, workload, reference);
     report.runs.push(sample);
     assert(report.runs.every(x => x.meaningHash === sample.meaningHash), "ON_OFF_MEANING_HASH_MISMATCH");
     console.log(JSON.stringify({ mode, repetition: r, hash: sample.meaningHash, records: sample.telemetry?.records ?? 0,

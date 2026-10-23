@@ -272,7 +272,7 @@ it("pre-browser baseline13/cells128 output sizes and existing hashes remain exac
 });
 
 /** Evaluate only the observer function in a fake GL sandbox: never import/run the CLI. */
-function glHarness() {
+function glHarness(commitMarkers = false) {
   const text = readFileSync(new URL("./baseline13-driver.mjs", import.meta.url), "utf8");
   const source = text.slice(text.indexOf("function installGLObserver("), text.indexOf("function captureViewport("));
   class GL {
@@ -285,6 +285,7 @@ function glHarness() {
   }
   class Canvas {
     readonly gl = new GL();
+    readonly dataset: Record<string, string> = {};
     readonly events = new Map<string, () => void>();
     readonly classList: { contains: (name: string) => boolean };
     constructor(layer: string) { this.classList = { contains: name => name === (layer === "heatmap" ? "hm-canvas" : "bb-canvas") }; }
@@ -296,14 +297,15 @@ function glHarness() {
   let token: { layer: string; revision: number; start: number } | undefined;
   let delegated = 0;
   const win: { __b2gl?: { snapshot: () => { frames: { revision: number; layers: Record<string, Counters> }[];
-    totals: Record<string, Counters>; limited: boolean; unrecordedApiCalls: number }; dispose: () => void };
+    totals: Record<string, Counters>; limited: boolean; unrecordedApiCalls: number;
+    lastDraws: Record<string, { revision: number; revisionSource: string; vertices: number; uploadedBytes: number }> }; dispose: () => void };
     __orderflowMockDiagnostics: { activeDraw: () => typeof token; gl: () => void } } = {
     __orderflowMockDiagnostics: { activeDraw: () => token, gl: () => { delegated++; } } };
   const native = GL.prototype.drawArrays;
   const install = runInNewContext(`(${source})`, {
     window: win, WebGL2RenderingContext: GL, HTMLCanvasElement: Canvas, performance: { now: () => 0 },
   });
-  install(true);
+  install(true, commitMarkers);
   return { GL, Canvas, win, native, setToken: (v: typeof token) => { token = v; }, delegated: () => delegated };
 }
 it("v2 GL groups both layers and repeated draws by actual revision with exact counters", () => {
@@ -489,4 +491,65 @@ it("cells512 opts into v3 without replacing v1/v2 meaning() or growing the numer
       expect(d.stats()).toMatchObject({ records: 1, mergedReceipts: 1, delegatedGL: 1, dropped: 0 });
     }
   }
+});
+it.each([["baseline13", 1, "meaning", false], ["cells128", 2, "meaning", true], ["cells512", 3, "compactMeaning", true]])(
+  "browser driver routes %s explicitly without changing legacy readouts", async (id, version, method, compactGL) => {
+    const driver = await import(driverUrl);
+    expect(driver.browserCasePolicy(id)).toEqual({ version, method, compactGL });
+    const expression = driver.browserReadoutExpression(id);
+    const calls: string[] = [];
+    const wire = "opaque";
+    const value = await runInNewContext(expression, { window: { __orderflowMockDiagnostics: {
+      meaning: () => { calls.push("meaning"); return wire; },
+      compactMeaning: async () => { calls.push("compactMeaning"); return wire; }, snapshot: () => null,
+    } }, document: { querySelectorAll: () => [] } });
+    expect(calls).toEqual([method]); expect(value.meaning).toBe(wire);
+    expect(value.telemetry).toBeNull();
+  });
+it("cells512 OFF and ON use the same independently verified v3 resolver", async () => {
+  const driver = await import(driverUrl), reference = legacyJson(compactFixture());
+  const { wire } = await encodeCompactMeaning(reference);
+  const results = ["OFF", "ON"].map(() => driver.resolveBrowserMeaning("cells512", wire, reference));
+  expect(results[0].text).toBe(reference); expect(results[1].text).toBe(reference);
+  expect(results[0].verified).toEqual(results[1].verified);
+  expect(results[0].sha256).toBe(results[1].sha256);
+  expect(() => driver.resolveBrowserMeaning("cells512", wire)).toThrow("MISSING_INDEPENDENT_LEGACY_REFERENCE");
+});
+it("legacy browser limits and case whitelist remain fail-closed", async () => {
+  const driver = await import(driverUrl), reference = '{"x":1}';
+  for (const id of ["baseline13", "cells128"]) {
+    expect(driver.resolveBrowserMeaning(id, reference).text).toBe(reference);
+    expect(() => driver.resolveBrowserMeaning(id, " ".repeat(65537))).toThrow("DIAGNOSTIC_SEMANTIC_LIMIT");
+  }
+  expect(() => driver.browserCasePolicy("unknown")).toThrow("CASE_NOT_APPROVED");
+});
+it("OFF native GL observations distinguish commit markers from active draw tokens", () => {
+  const h = glHarness(true), c = new h.Canvas("heatmap"), gl = c.getContext("webgl2");
+  c.dataset.revision = "128"; gl.bufferData(1, new Float32Array(3072 * 8), 2); gl.drawArrays(4, 0, 3072);
+  const first = h.win.__b2gl!.snapshot();
+  expect(first.lastDraws.heatmap).toEqual({ revision: 128, revisionSource: "CANVAS_COMMIT_MARKER",
+    vertices: 3072, uploadedBytes: 98304 });
+  h.setToken({ layer: "heatmap", revision: 127, start: 1 }); gl.drawArrays(4, 0, 6);
+  expect(h.win.__b2gl!.snapshot().lastDraws.heatmap.revision).toBe(127);
+  expect(h.win.__b2gl!.snapshot().lastDraws.heatmap.revisionSource).toBe("ACTIVE_DRAW_TOKEN");
+  expect(first.frames.find(f => f.revision === 128)!.layers.heatmap.draws).toBe(1);
+  h.win.__b2gl!.dispose();
+});
+it("driver resource observer forwards native timers and releases one-shot RAF IDs", () => {
+  const text = readFileSync(new URL("./baseline13-driver.mjs", import.meta.url), "utf8");
+  const source = text.slice(text.indexOf("function installResourceObserver("), text.indexOf("async function browserGroup("));
+  const callbacks = new Map<number, (t: number) => void>(); let id = 0;
+  const nativeSet = vi.fn(() => ++id), nativeClear = vi.fn(), nativeCancel = vi.fn();
+  const win: Record<string, any> = { setInterval: nativeSet, clearInterval: nativeClear,
+    requestAnimationFrame: (fn: (t: number) => void) => { callbacks.set(++id, fn); return id; },
+    cancelAnimationFrame: nativeCancel };
+  runInNewContext(`(${source})()`, { window: win });
+  const interval = win.setInterval(() => {}, 250), fn = vi.fn(), raf = win.requestAnimationFrame(fn);
+  expect(win.__b2resources.snapshot()).toEqual({ intervals: 1, raf: 1 });
+  callbacks.get(raf)!(42); expect(fn).toHaveBeenCalledWith(42);
+  win.clearInterval(interval);
+  expect(win.__b2resources.snapshot()).toEqual({ intervals: 0, raf: 0 });
+  const cancelled = win.requestAnimationFrame(fn); win.cancelAnimationFrame(cancelled);
+  expect(nativeCancel).toHaveBeenCalledWith(cancelled);
+  win.__b2resources.dispose(); expect(win.setInterval).toBe(nativeSet); expect(win.__b2resources).toBeUndefined();
 });
