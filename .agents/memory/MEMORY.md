@@ -1,4 +1,5 @@
 - [R00変更範囲の承認](r00-scope-approval.md) — Preview登録用の追加設定のみ承認済み。以降の工程や範囲拡大には別途承認が必要。
+- [Volume ProfileのValue Area契約](volume-profile-value-area-policy.md) — 70%、POC起点、隣接tick比較、同量は両側。ゼロ区間の省略でも同じ境界を維持する。
 - [補助コマンドと実行環境](runtime-scope.md) — 未導入コマンドの自動構成変更を避ける。Linuxの終了済み子と稼働中のRSS測定不能を区別する。
 - [WebGLの検証環境](webgl-verification.md) — 標準テスターはGL無効の場合がある。実WebGLのバッファ・画素検証と物理GPU性能を区別する。
 - [相対基準の品質方針](relative-baseline-policy.md) — R07は承認された保守的な300秒全域観測を条件とする。暫定固定を正式な基準と表示しない。
