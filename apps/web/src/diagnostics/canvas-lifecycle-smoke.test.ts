@@ -441,7 +441,23 @@ it("E5 source gate defers timer ticks, preserves original inputs and leaves 250m
   const original = (fn: () => void, ms: number) => { timers.push({ fn, ms }); return timers.length; };
   const fakeWindow = { setInterval: original,
     __orderflowMockDiagnostics: { progress: () => ({ status: { revision } }) } };
-  class SourceError extends Error { stack = "at start (http://localhost/src/lib/mockAnalysisSession.ts:119:7)"; }
+  function SourceError(message?: string) {
+    const error = Error(message);
+    error.stack = "at start (http://localhost/src/lib/mockAnalysisSession.ts:119:7)";
+    return error;
+  }
+  // Callable and constructible, like native Error; returned errors retain their
+  // host Error prototype across the VM boundary and the source-identifying stack.
+  SourceError.prototype = Error.prototype;
+  const errors = runInNewContext('[Error("called"), new Error("constructed")]', { Error: SourceError }) as Error[];
+  expect(errors.map(error => error.message)).toEqual(["called", "constructed"]);
+  for (const error of errors) {
+    expect(error).toBeInstanceOf(Error);
+    expect(error).toBeInstanceOf(SourceError);
+    expect(error.name).toBe("Error");
+    expect(error.stack).toContain("/src/lib/mockAnalysisSession.ts:119:7");
+  }
+  expect(() => runInNewContext('throw Error("realm rejection")', { Error: SourceError })).toThrow(Error);
   runInNewContext(`(${smoke.installContinuationInputGate.toString()})()`, { window: fakeWindow, Error: SourceError, performance });
   const gate = (fakeWindow as typeof fakeWindow & { __canvasContinuationInput: {
     setCeiling: (n: number) => void; snapshot: () => { delivered: number; deferredTicks: number; fault: string | null };
