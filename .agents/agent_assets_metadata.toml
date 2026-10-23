@@ -588,3 +588,17 @@ mtime_ms = 1792776495727
 storage_uri = "gcs://replit-rams-assets-pike/rams/assets/repl:396298eb-318f-4ad8-9c4e-13a5b19e25a9/5348b4f7-1cb9-49cd-8485-4a0b4de1e718/b59869a1-f444-4d88-8e8f-93c0aa6d3b86"
 storage_version_token = "1792776520278861"
 content_type = "text/markdown"
+
+[[outputs]]
+id = "dMzszZIWjbadf9ifnlm67"
+uri = "file://.local/diagnostics/task28-c4-e2/report.md"
+type = "text"
+title = "C4-E2 Canvas rAF最適化・オフライン回帰報告"
+description = "承認3ファイルの修正内容、新規30件・全2298件PASS、context復旧設計、実ブラウザでの未検証事項をまとめています。"
+logical_id = "70223f91-e3a8-4801-9c92-1199cca52811"
+content_hash = "sha256:43caadb1918bd7785e6e0d1f6f6865e080127ed908e9bcf64f31b6f358f557c2"
+size = 6597
+mtime_ms = 1792777258847
+storage_uri = "gcs://replit-rams-assets-pike/rams/assets/repl:396298eb-318f-4ad8-9c4e-13a5b19e25a9/70223f91-e3a8-4801-9c92-1199cca52811/a76f4856-6e2a-4aff-a0d6-33d1e6cefe34"
+storage_version_token = "1792777291558982"
+content_type = "text/markdown"

@@ -2,6 +2,7 @@ import { afterEach, expect, it, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import { runInNewContext } from "node:vm";
 import { createHash } from "node:crypto";
+import { transpileModule, ModuleKind, JsxEmit } from "typescript";
 import { UNIFIED_MOCK_STREAM } from "@workspace/fixtures";
 import { createMockAnalysisSession } from "../lib/mockAnalysisSession";
 import { unifiedChecks } from "../hooks/useMockAnalysisSession";
@@ -12,6 +13,223 @@ import {
 } from "./mockDiagnostics";
 
 afterEach(() => { releaseDiagnostics(); vi.restoreAllMocks(); vi.useRealTimers(); vi.unstubAllGlobals(); });
+
+// Offline component-hook harness: execute the actual Canvas function, not a copy
+// of its scheduler. The renderer/DOM/clock are artificial; real renderer and
+// projection correctness remain covered by @workspace/render's existing tests.
+type CanvasLayer = "heatmap" | "bubble";
+const canvasPrograms = new Map<CanvasLayer, string>();
+function canvasSchedulerHarness(layer: CanvasLayer, scheduler: "frame" | "interval" = "frame") {
+  const name = layer === "heatmap" ? "HeatmapCanvas" : "BubbleCanvas";
+  if (!canvasPrograms.has(layer)) {
+    const source = readFileSync(new URL(`../components/${name}.tsx`, import.meta.url), "utf8");
+    canvasPrograms.set(layer, transpileModule(
+      `import { useRef, useState, useEffect, useLayoutEffect } from "react";\n${source.slice(source.indexOf(`export function ${name}(`))}`,
+      { compilerOptions: { module: ModuleKind.CommonJS, jsx: JsxEmit.ReactJSX, target: 9 } },
+    ).outputText);
+  }
+  // The VM boundary intentionally has dynamic React-element/hook payloads.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  type Value = any;
+  const hooks: { value?: Value; deps?: Value[]; cleanup?: () => void; create?: () => void | (() => void) }[] = [];
+  const rafs = new Map<number, (stamp: number) => void>(), allRafs = new Map<number, (stamp: number) => void>();
+  const intervals = new Map<number, () => void>(), canceled: number[] = [];
+  const records: Value[] = [], renderers: ArtificialRenderer[] = [];
+  let cursor = 0, nextId = 0, now = 0, stateDirty = false, tree: Value, effects: (() => void)[] = [];
+  const parentEvents = new Map<string, Value>();
+  const canvas = { parentElement: { addEventListener: (k: string, f: Value) => parentEvents.set(k, f),
+    removeEventListener: (k: string) => parentEvents.delete(k),
+    getBoundingClientRect: () => ({ left: 0, top: 0 }) } };
+  const hook = () => hooks[cursor++] ?? (hooks[cursor - 1] = {});
+  const effect = (create: () => void | (() => void), deps?: Value[]) => {
+    const h = hook(), changed = !h.create || !deps || deps.some((v, i) => !Object.is(v, h.deps?.[i]));
+    if (changed) {
+      h.deps = deps; h.create = create;
+      effects.push(() => { h.cleanup?.(); h.cleanup = create() || undefined; });
+    }
+  };
+  const react = {
+    useRef: (initial: Value) => { const h = hook(); return h.value ?? (h.value = { current: initial }); },
+    useState: (initial: Value) => {
+      const h = hook();
+      if (!("value" in h)) h.value = typeof initial === "function" ? initial() : initial;
+      return [h.value, (next: Value) => {
+        const value = typeof next === "function" ? next(h.value) : next;
+        if (!Object.is(value, h.value)) { h.value = value; stateDirty = true; }
+      }];
+    },
+    useEffect: effect, useLayoutEffect: effect,
+  };
+  class ArtificialRenderer {
+    status = "READY";
+    draws: Value[][] = [];
+    lastFrame = { vertexCount: 6, rects: [], clusters: [], bubbles: [] };
+    disposed = false;
+    failNext = false;
+    saved: Value[] | null = null;
+    constructor(readonly target: unknown, readonly statusChanged: (s: string, e: string | null) => void) {
+      renderers.push(this); statusChanged("READY", null);
+    }
+    draw(...args: Value[]) {
+      if (this.disposed || this.status === "CONTEXT LOST") throw new Error("invalid draw");
+      if (this.failNext) { this.failNext = false; throw new Error("artificial draw failure"); }
+      if (this.status !== "READY") { this.status = "READY"; this.statusChanged("READY", null); }
+      this.saved = args; this.draws.push(args); return this.lastFrame;
+    }
+    loss() { this.status = "CONTEXT LOST"; this.statusChanged(this.status, "artificial context loss"); }
+    restore() {
+      this.status = "READY"; this.statusChanged("READY", null);
+      // Match the existing renderer's automatic replay *after* its READY callback.
+      if (this.saved) this.draw(...this.saved);
+    }
+    dispose() { this.disposed = true; }
+  }
+  const jsx = (type: Value, props: Value) => ({ type, props });
+  const module = { exports: {} as Record<string, (props: Value) => Value> };
+  runInNewContext(canvasPrograms.get(layer)!, {
+    module, exports: module.exports, Error,
+    require: (id: string) => id === "react" ? react : { jsx, jsxs: jsx, Fragment: "fragment" },
+    HeatmapRenderer: ArtificialRenderer, BubbleRenderer: ArtificialRenderer,
+    useTimeFormat: () => ({ fmt: String }), hitTestCell: () => null, hitTestProjectedBubble: () => null,
+    BubbleTooltip: () => null, DISPLAY_INTERVAL_MS: 250,
+    diagnostics: () => ({ add: (...v: Value[]) => records.push(v) }),
+    beginDraw: (l: string, revision: number) => { records.push(["begin", revision, l]); return {}; },
+    endDraw: () => {},
+    performance: { now: () => now },
+    window: {
+      requestAnimationFrame: (f: (stamp: number) => void) => {
+        const id = nextId++; rafs.set(id, f); allRafs.set(id, f); return id;
+      },
+      cancelAnimationFrame: (id: number) => { canceled.push(id); rafs.delete(id); },
+      setInterval: (f: () => void) => { const id = nextId++; intervals.set(id, f); return id; },
+      clearInterval: (id: number) => intervals.delete(id),
+    },
+  });
+  let props: Value = { cells: [], bubbles: [], vp: { bounds: { left: 0, top: 0, width: 403, height: 324 },
+    time: { minNs: "0", maxNs: "100" }, dpr: 1 }, revision: 1, scheduler };
+  const attach = (node: Value) => {
+    if (!node || typeof node !== "object") return;
+    if (node.type === "canvas") node.props.ref.current = canvas;
+    const children = node.props?.children;
+    for (const c of Array.isArray(children) ? children : [children]) attach(c);
+  };
+  const render = (patch: Value = {}) => {
+    props = { ...props, ...patch };
+    let passes = 0;
+    do {
+      if (++passes > 15) throw new Error("unexpected render loop");
+      cursor = 0; effects = []; stateDirty = false;
+      tree = module.exports[name](props); attach(tree);
+      for (const run of effects) run();
+    } while (stateDirty);
+  };
+  const unmount = () => { for (const h of hooks) { h.cleanup?.(); h.cleanup = undefined; } };
+  const advance = () => {
+    now += 16;
+    for (const [id, f] of [...rafs]) { rafs.delete(id); f(now); }
+    render();
+  };
+  const canvasProps = () => tree.props.children.find((v: Value) => v?.type === "canvas").props;
+  render();
+  return { render, advance, unmount, props: () => props, rafs, allRafs, canceled, records, renderers, intervals, canvasProps,
+    strictReplay: () => {
+      unmount();
+      for (const h of hooks) if (h.create) h.cleanup = h.create() || undefined;
+      render();
+    } };
+}
+
+for (const layer of ["heatmap", "bubble"] as const) {
+  it(`${layer}: mount draws once; statistics-only render does not schedule rAF`, () => {
+    const h = canvasSchedulerHarness(layer);
+    expect(h.renderers[0].draws).toHaveLength(1);
+    expect(h.rafs.size).toBe(0); h.render(); expect(h.rafs.size).toBe(0); h.unmount();
+  });
+  it(`${layer}: dirty requests coalesce, use latest revision/props and do not reschedule after draw`, () => {
+    const h = canvasSchedulerHarness(layer), cells: unknown[] = [], bubbles: unknown[] = [];
+    h.render({ revision: 2 }); h.render({ revision: 3, cells, bubbles });
+    expect(h.rafs.size).toBe(1); h.advance();
+    expect(h.renderers[0].draws).toHaveLength(2);
+    expect(h.renderers[0].draws.at(-1)![0]).toBe(layer === "heatmap" ? cells : bubbles);
+    expect(h.records.filter(v => v[0] === "begin").at(-1)![1]).toBe(3);
+    expect(h.rafs.size).toBe(0); expect(h.canceled).toHaveLength(0);
+    h.render({ revision: 4 }); expect(h.rafs.size).toBe(1); h.unmount();
+  });
+  for (const change of ["viewport", "zoom", "pan", "resize", "DPR", "color", "threshold"] as const) {
+    it(`${layer}: same-revision ${change} invalidates and redraws`, () => {
+      const h = canvasSchedulerHarness(layer), p = h.props();
+      const vp = { ...p.vp, bounds: { ...p.vp.bounds } };
+      if (change === "DPR") vp.dpr = 2;
+      else if (change === "resize") vp.bounds.width = 500;
+      else if (change === "zoom") vp.time = { ...vp.time, maxNs: "50" };
+      else if (change === "pan") vp.time = { minNs: "10", maxNs: "110" };
+      if (change === "color") h.render({ style: {}, colors: {} });
+      else if (change === "threshold") h.render({ style: {}, filters: {}, sizing: {} });
+      else h.render({ vp });
+      expect(h.rafs.size).toBe(1); h.advance();
+      expect(h.renderers[0].draws).toHaveLength(2);
+      expect(h.rafs.size).toBe(0); h.unmount();
+    });
+  }
+  it(`${layer}: unmount cancels even id=0; stale callback cannot draw`, () => {
+    const h = canvasSchedulerHarness(layer);
+    h.render({ revision: 2 }); const stale = h.allRafs.get(0)!;
+    h.unmount(); expect(h.canceled).toContain(0); expect(h.rafs.size).toBe(0);
+    stale(100); expect(h.renderers[0].draws).toHaveLength(1); expect(h.intervals.size).toBe(0);
+  });
+  it(`${layer}: context loss cancels requests; restore replays latest inputs, never old revision`, () => {
+    const h = canvasSchedulerHarness(layer), renderer = h.renderers[0];
+    h.render({ revision: 2 }); const stale = h.allRafs.get(0)!;
+    renderer.loss(); h.render({ revision: 3, cells: [], bubbles: [] });
+    expect(h.rafs.size).toBe(0); stale(100); expect(renderer.draws).toHaveLength(1);
+    expect(h.canvasProps()["data-status"]).toBe("CONTEXT LOST");
+    const latest = h.props()[layer === "heatmap" ? "cells" : "bubbles"];
+    renderer.restore(); h.render();
+    expect(renderer.draws.slice(1).every(args => args[0] === latest)).toBe(true);
+    expect(renderer.draws.length).toBeGreaterThan(1);
+    expect(h.canvasProps()["data-status"]).toBe("READY");
+    expect(h.rafs.size).toBe(0); h.unmount();
+  });
+  it(`${layer}: StrictMode-style cleanup/setup, stop/resume and remount isolate old renderer`, () => {
+    const h = canvasSchedulerHarness(layer);
+    h.render({ revision: 2 }); const stale = h.allRafs.get(0)!;
+    h.strictReplay(); stale(100);
+    expect(h.renderers[0].disposed).toBe(true);
+    expect(h.renderers[0].draws).toHaveLength(1);
+    expect(h.renderers[1].draws).toHaveLength(1);
+    h.render(); expect(h.rafs.size).toBe(0); // stopped, unchanged frame
+    h.render({ revision: 3 }); h.advance(); // resumed
+    expect(h.renderers[1].draws).toHaveLength(2); h.unmount();
+    const next = canvasSchedulerHarness(layer); stale(200);
+    expect(next.renderers[0].draws).toHaveLength(1); next.unmount();
+  });
+  it(`${layer}: unchanged context restore uses native replay without extra component draw/rAF`, () => {
+    const h = canvasSchedulerHarness(layer), renderer = h.renderers[0];
+    renderer.loss(); h.render(); renderer.restore(); h.render();
+    expect(renderer.draws).toHaveLength(2);
+    expect(h.records.filter(v => v[0] === "begin")).toHaveLength(1);
+    expect(h.rafs.size).toBe(0); h.unmount();
+  });
+  it(`${layer}: a recoverable renderer error retries on new input, without recursive READY draw`, () => {
+    const h = canvasSchedulerHarness(layer), renderer = h.renderers[0];
+    renderer.status = "RENDER ERROR"; renderer.statusChanged(renderer.status, "artificial GL error");
+    h.render({ revision: 2 }); expect(h.rafs.size).toBe(1); h.advance();
+    expect(renderer.draws).toHaveLength(2);
+    expect(h.canvasProps()["data-status"]).toBe("READY");
+    expect(h.rafs.size).toBe(0); h.unmount();
+  });
+  it(`${layer}: legacy interval mode and visible error/statistics remain functional`, () => {
+    const h = canvasSchedulerHarness(layer, "interval"), renderer = h.renderers[0];
+    expect(h.intervals.size).toBe(1); expect(h.rafs.size).toBe(0);
+    h.render({ revision: 2 }); renderer.failNext = true;
+    [...h.intervals.values()][0](); h.render();
+    expect(h.canvasProps()["data-error"]).toBe("artificial draw failure");
+    h.render({ revision: 3 }); [...h.intervals.values()][0](); h.render();
+    expect(h.canvasProps()["data-error"]).toBe("");
+    expect(h.canvasProps()["data-draw-count"]).toBe(2);
+    h.unmount(); expect(h.intervals.size).toBe(0);
+  });
+}
 it("allocates exactly a fixed numeric slab and returns defensive copies", () => {
   const d = createRecorder(7);
   d.add("ingest", 3, 2);

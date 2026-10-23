@@ -67,6 +67,7 @@ interface Props {
 export function BubbleCanvas({ bubbles, vp, sizing, clustering, filters, colors, scheduler = "interval", revision }: Props) {
   const schedulerRef = useRef(scheduler);
   const flushRef = useRef<() => void>(() => {});
+  const requestFrameRef = useRef<() => void>(() => {});
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const pending = useRef({ bubbles, vp, sizing, clustering, filters, colors, revision, dirty: true });
   const origin = useRef(0);
@@ -86,19 +87,33 @@ export function BubbleCanvas({ bubbles, vp, sizing, clustering, filters, colors,
   const [tip, setTip] = useState<BubbleTip | null>(null);
 
   const p = pending.current;
-  p.revision = revision;
-  if (p.bubbles !== bubbles || p.vp !== vp || p.sizing !== sizing || p.clustering !== clustering
+  if (p.revision !== revision || p.bubbles !== bubbles || p.vp !== vp || p.sizing !== sizing || p.clustering !== clustering
     || p.filters !== filters || p.colors !== colors) {
     p.bubbles = bubbles; p.vp = vp; p.sizing = sizing; p.clustering = clustering;
     p.filters = filters; p.colors = colors; p.dirty = true;
   }
+  p.revision = revision;
 
   useEffect(() => {
     const canvas = canvasRef.current; if (!canvas) return;
     const parent = canvas.parentElement;
+    let active = true, restoring = false, frameId: number | null = null, generation = 0;
+    const cancelFrame = () => {
+      generation++;
+      if (frameId !== null) window.cancelAnimationFrame(frameId);
+      frameId = null;
+    };
     const renderer = new BubbleRenderer(canvas, (s, e) => {
+      if (!active) return;
       setStatus(s); setError(e);
       if (s !== "READY") { pinned.current = null; setTip(null); }
+      if (s === "CONTEXT LOST") restoring = true;
+      if (s === "READY" && restoring) {
+        restoring = false;
+        // Refresh saved inputs before the renderer's synchronous restore replay.
+        cancelFrame();
+        flushRef.current();
+      } else if (s !== "READY") cancelFrame();
     });
     let n = 0;
     const idOf = (b: { source: BubbleState; cluster?: { id: string } }) => b.cluster?.id ?? b.source.id;
@@ -119,7 +134,7 @@ export function BubbleCanvas({ bubbles, vp, sizing, clustering, filters, colors,
     };
     const flush = () => {
       const q = pending.current;
-      if (!q.dirty) return;
+      if (!active || !q.dirty || renderer.status === "CONTEXT LOST") return;
       q.dirty = false;
       const token = beginDraw("bubble", q.revision, origin.current);
       try {
@@ -161,9 +176,26 @@ export function BubbleCanvas({ bubbles, vp, sizing, clustering, filters, colors,
     parent?.addEventListener("pointerdown", pdown);
     parent?.addEventListener("pointerup", pup);
     flushRef.current = flush;
+    requestFrameRef.current = () => {
+      if (!active || schedulerRef.current !== "frame" || frameId !== null ||
+        !pending.current.dirty || renderer.status === "CONTEXT LOST") return;
+      const ticket = ++generation;
+      const d = diagnostics(), requested = d ? performance.now() : 0;
+      frameId = window.requestAnimationFrame((stamp) => {
+        if (!active || ticket !== generation) return;
+        frameId = null;
+        if (!pending.current.dirty || renderer.status === "CONTEXT LOST") return;
+        d?.add("raf", pending.current.revision ?? -1, -1, "bubble", performance.now() - requested, stamp);
+        origin.current = 1;
+        try { flush(); } finally { origin.current = 0; }
+      });
+    };
     flush();
     const timer = schedulerRef.current === "frame" ? null : window.setInterval(flush, DISPLAY_INTERVAL_MS);
     return () => {
+      active = false;
+      cancelFrame();
+      requestFrameRef.current = () => {};
       if (timer !== null) window.clearInterval(timer);
       flushRef.current = () => {};
       parent?.removeEventListener("pointermove", move);
@@ -179,14 +211,7 @@ export function BubbleCanvas({ bubbles, vp, sizing, clustering, filters, colors,
   }, []);
 
   useEffect(() => {
-    if (schedulerRef.current !== "frame") return;
-    const d = diagnostics(), requested = d ? performance.now() : 0;
-    const id = window.requestAnimationFrame((stamp) => {
-      d?.add("raf", pending.current.revision ?? -1, -1, "bubble", performance.now() - requested, stamp);
-      origin.current = 1;
-      try { flushRef.current(); } finally { origin.current = 0; }
-    });
-    return () => window.cancelAnimationFrame(id);
+    requestFrameRef.current();
   });
 
   const failed = status === "RENDER ERROR" || status === "CONTEXT LOST" || drawError !== null;

@@ -189,6 +189,7 @@ interface Props {
 export function HeatmapCanvas({ cells, vp, style, scheduler = "interval", revision }: Props) {
   const schedulerRef = useRef(scheduler);
   const flushRef = useRef<() => void>(() => {});
+  const requestFrameRef = useRef<() => void>(() => {});
   const { fmt: fmtJst } = useTimeFormat();
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const rendererRef = useRef<HeatmapRenderer | null>(null);
@@ -204,13 +205,33 @@ export function HeatmapCanvas({ cells, vp, style, scheduler = "interval", revisi
   const [tip, setTip] = useState<Tip | null>(null);
 
   const p = pending.current;
+  if (p.revision !== revision || p.cells !== cells || p.vp !== vp || p.style !== style) {
+    p.cells = cells; p.vp = vp; p.style = style; p.dirty = true;
+  }
   p.revision = revision;
-  if (p.cells !== cells || p.vp !== vp || p.style !== style) { p.cells = cells; p.vp = vp; p.style = style; p.dirty = true; }
 
   useEffect(() => {
     const canvas = canvasRef.current; if (!canvas) return;
     const parent = canvas.parentElement;
-    const renderer = new HeatmapRenderer(canvas, (s, e) => { setStatus(s); setError(e); });
+    let active = true, restoring = false, frameId: number | null = null, generation = 0;
+    const cancelFrame = () => {
+      generation++;
+      if (frameId !== null) window.cancelAnimationFrame(frameId);
+      frameId = null;
+    };
+    const renderer = new HeatmapRenderer(canvas, (s, e) => {
+      if (!active) return;
+      setStatus(s); setError(e);
+      if (s === "CONTEXT LOST") restoring = true;
+      if (s === "READY" && restoring) {
+        restoring = false;
+        // Restore replays the renderer's saved inputs after this callback.
+        // If inputs changed during loss, refresh them synchronously first:
+        // never replay an older revision under the latest Canvas revision.
+        cancelFrame();
+        flushRef.current();
+      } else if (s !== "READY") cancelFrame();
+    });
     rendererRef.current = renderer;
     let count = 0;
     hoverRef.current = () => {
@@ -221,7 +242,7 @@ export function HeatmapCanvas({ cells, vp, style, scheduler = "interval", revisi
     // Display scheduling: only the latest queued cells/viewport, only when changed, every 250 ms.
     const flush = () => {
       const q = pending.current;
-      if (!q.dirty) return;
+      if (!active || !q.dirty || renderer.status === "CONTEXT LOST") return;
       q.dirty = false;
       const token = beginDraw("heatmap", q.revision, origin.current);
       try {
@@ -245,9 +266,26 @@ export function HeatmapCanvas({ cells, vp, style, scheduler = "interval", revisi
     parent?.addEventListener("pointermove", move);
     parent?.addEventListener("pointerleave", leave);
     flushRef.current = flush;
+    requestFrameRef.current = () => {
+      if (!active || schedulerRef.current !== "frame" || frameId !== null ||
+        !pending.current.dirty || renderer.status === "CONTEXT LOST") return;
+      const ticket = ++generation;
+      const d = diagnostics(), requested = d ? performance.now() : 0;
+      frameId = window.requestAnimationFrame((stamp) => {
+        if (!active || ticket !== generation) return;
+        frameId = null;
+        if (!pending.current.dirty || renderer.status === "CONTEXT LOST") return;
+        d?.add("raf", pending.current.revision ?? -1, -1, "heatmap", performance.now() - requested, stamp);
+        origin.current = 1;
+        try { flush(); } finally { origin.current = 0; }
+      });
+    };
     flush();
     const timer = schedulerRef.current === "frame" ? null : window.setInterval(flush, DISPLAY_INTERVAL_MS);
     return () => {
+      active = false;
+      cancelFrame();
+      requestFrameRef.current = () => {};
       if (timer !== null) window.clearInterval(timer);
       flushRef.current = () => {};
       parent?.removeEventListener("pointermove", move);
@@ -260,14 +298,9 @@ export function HeatmapCanvas({ cells, vp, style, scheduler = "interval", revisi
   }, []);
 
   useEffect(() => {
-    if (schedulerRef.current !== "frame") return;
-    const d = diagnostics(), requested = d ? performance.now() : 0;
-    const id = window.requestAnimationFrame((stamp) => {
-      d?.add("raf", pending.current.revision ?? -1, -1, "heatmap", performance.now() - requested, stamp);
-      origin.current = 1;
-      try { flushRef.current(); } finally { origin.current = 0; }
-    });
-    return () => window.cancelAnimationFrame(id);
+    // A render is not itself a draw request (e.g. statistics/hover state).
+    // One lifecycle-owned request survives intervening renders and uses latest props.
+    requestFrameRef.current();
   });
 
   const failed = status === "RENDER ERROR" || status === "CONTEXT LOST" || drawError !== null;
