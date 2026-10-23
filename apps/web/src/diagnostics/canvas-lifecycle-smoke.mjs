@@ -1,0 +1,506 @@
+// Phase A only. No product imports, new dependencies, settings writes or automatic retries.
+// baseline13-driver's inspected main guard makes named imports side-effect free.
+import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
+import { readFile, readdir, mkdtemp, rm, mkdir, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { cpus } from "node:os";
+import { resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import {
+  loadE2Baseline, validateE2ExternalEnvironment, validateE2BrowserStartup,
+  installSafetyGLObserver, createBrowserTermination, verifyBrowserOwnership,
+  resourceReleaseGate, resolveBrowserMeaning,
+} from "./baseline13-driver.mjs";
+
+const DRIVER = "apps/web/src/diagnostics/baseline13-driver.mjs";
+const DRIVER_SHA = "c3c4abea3662ee71a3226d81800e0a3270db03725e8b09341fd0e2df393b72a3";
+const LAYERS = ["heatmap", "bubble"];
+const LIMIT = 2 * 1024 * 1024;
+const digest = data => createHash("sha256").update(data).digest("hex");
+export function resourceObserverSource(source) {
+  assert.equal(digest(source), DRIVER_SHA, "FORMAL_DRIVER_CHANGED");
+  const start = source.indexOf("function installResourceObserver()");
+  const end = source.indexOf("\nasync function browserGroup", start);
+  assert(start > 0 && end > start, "RESOURCE_OBSERVER_BOUNDARY");
+  return `(${source.slice(start, end).trim()})()`;
+}
+export function rafAccounting(r) {
+  return r.reserved === r.executed + r.cancelled + r.live;
+}
+export function verifyDrawCoverage(rows, lastRevision = 128) {
+  for (const layer of LAYERS) {
+    for (let revision = 1; revision <= lastRevision; revision++) {
+      const draws = rows.filter(r => r.kind === "draw" && r.layer === layer && r.revision === revision);
+      assert(draws.length > 0, `MISSING_DRAW:${layer}:${revision}`);
+      assert(draws.every(r => r.tokenRevision === null || r.tokenRevision === revision), "MIXED_REVISION");
+    }
+  }
+}
+export function assessRestore({ restored, timedOut, lostDraws, rows, expectedHash }) {
+  if (timedOut) return { status: "FAIL", reason: "CONTEXT_RESTORE_TIMEOUT" };
+  if (!restored) return { status: "UNKNOWN", reason: "RESTORE_NOT_OBSERVED" };
+  if (lostDraws) return { status: "FAIL", reason: "DRAW_WHILE_LOST" };
+  if (!rows.length) return { status: "FAIL", reason: "RESTORE_DRAW_MISSING" };
+  if (rows.some(r => r.tokenRevision !== null && r.tokenRevision !== r.revision))
+    return { status: "FAIL", reason: "RESTORE_REVISION_MISMATCH" };
+  if (rows.length > 1 && rows.some((r, i) => i && r.revision === rows[i - 1].revision &&
+      r.sha256 === rows[i - 1].sha256))
+    return { status: "FAIL", reason: "DUPLICATE_RESTORE_DRAW" };
+  if (expectedHash && rows[0].sha256 !== expectedHash)
+    return { status: "FAIL", reason: "RESTORE_GPU_PAYLOAD_MISMATCH" };
+  return expectedHash ? { status: "PASS", reason: "GPU_PAYLOAD_MATCH" } :
+    { status: "UNKNOWN", reason: "INDEPENDENT_PAYLOAD_REFERENCE_UNAVAILABLE" };
+}
+export async function runCases(cases, record) {
+  for (const c of cases) {
+    let result;
+    try { result = { name: c.name, gate: c.gate, ...await c.run() }; }
+    catch (e) { result = { name: c.name, gate: c.gate, status: "FAIL", reason: String(e) }; }
+    assert(["PASS", "FAIL", "UNKNOWN", "NOT_SUPPORTED"].includes(result.status), "INVALID_CLASSIFICATION");
+    await record(result);
+    if (result.status === "FAIL" || (c.gate === "core" && result.status !== "PASS")) return false;
+  }
+  return true;
+}
+export async function saveEvidence(path, value) {
+  const bytes = JSON.stringify(value, null, 2) + "\n";
+  assert(Buffer.byteLength(bytes) <= LIMIT, "PHASE_A_EVIDENCE_LIMIT");
+  await writeFile(path, bytes, { flag: "wx" });
+  return { path, bytes: Buffer.byteLength(bytes), sha256: digest(bytes) };
+}
+
+// External, Phase-A-only observation. Never changes renderer inputs or application state.
+export function installPhaseObserver() {
+  const rows = [], contexts = new Map(), pending = new Set(), rafs = new Map();
+  const totals = Object.fromEntries(["heatmap", "bubble"].map(l => [l,
+    { reserved: 0, executed: 0, cancelled: 0, live: 0 }]));
+  const saved = {}, proto = WebGL2RenderingContext.prototype;
+  let limited = false, unrecorded = 0, serial = 0;
+  const push = row => {
+    if (rows.length >= 2048) { limited = true; unrecorded++; return; }
+    rows.push({ at: performance.now(), ...row });
+  };
+  const layerOf = canvas => canvas.classList.contains("hm-canvas") ? "heatmap" :
+    canvas.classList.contains("bb-canvas") ? "bubble" : null;
+  const revision = canvas => Number(canvas.dataset.revision || -1);
+  const originLayer = () => {
+    const stack = new Error().stack ?? "";
+    return stack.includes("/components/HeatmapCanvas.tsx") ? "heatmap" :
+      stack.includes("/components/BubbleCanvas.tsx") ? "bubble" : null;
+  };
+  saved.getContext = HTMLCanvasElement.prototype.getContext;
+  HTMLCanvasElement.prototype.getContext = function (...args) {
+    const gl = saved.getContext.apply(this, args), layer = layerOf(this);
+    if (args[0] === "webgl2" && gl && layer && !contexts.has(gl)) {
+      if (contexts.size >= 16) { limited = true; return gl; }
+      const c = { canvas: this, layer, id: ++serial, buffers: new Set(), invalidated: 0,
+        created: 0, deleted: 0, lost: false, upload: null, loss: 0, restore: 0 };
+      contexts.set(gl, c);
+      c.onLost = () => { c.lost = true; c.loss++; c.invalidated += c.buffers.size; c.buffers.clear(); };
+      c.onRestore = () => { c.lost = false; c.restore++; };
+      this.addEventListener("webglcontextlost", c.onLost);
+      this.addEventListener("webglcontextrestored", c.onRestore);
+    }
+    return gl;
+  };
+  for (const name of ["createBuffer", "deleteBuffer", "bufferData", "drawArrays"]) {
+    saved[name] = proto[name];
+    proto[name] = function (...args) {
+      const result = saved[name].apply(this, args), c = contexts.get(this);
+      if (!c) return result;
+      if (name === "createBuffer" && result) { c.buffers.add(result); c.created++; }
+      if (name === "deleteBuffer" && args[0] && c.buffers.delete(args[0])) c.deleted++;
+      if (name === "bufferData" && args[0] === 34962 && ArrayBuffer.isView(args[1])) {
+        const data = args[1];
+        if (data.byteLength > 262144 || pending.size >= 8) { limited = true; unrecorded++; return result; }
+        const bytes = new Uint8Array(data.buffer, data.byteOffset, data.byteLength).slice();
+        const upload = c.upload = { bytes: bytes.byteLength, sha256: null };
+        const job = crypto.subtle.digest("SHA-256", bytes).then(hash => {
+          upload.sha256 = [...new Uint8Array(hash)].map(v => v.toString(16).padStart(2, "0")).join("");
+        }).catch(() => { limited = true; }).finally(() => pending.delete(job));
+        pending.add(job);
+      }
+      if (name === "drawArrays") {
+        const token = window.__orderflowMockDiagnostics?.activeDraw();
+        push({ kind: "draw", layer: c.layer, canvasId: c.id, revision: revision(c.canvas),
+          tokenRevision: token?.revision ?? null, vertices: args[2], lost: this.isContextLost(), upload: c.upload });
+      }
+      return result;
+    };
+  }
+  saved.raf = window.requestAnimationFrame; saved.cancel = window.cancelAnimationFrame;
+  window.requestAnimationFrame = function (fn) {
+    const layer = originLayer();
+    const id = saved.raf.call(window, function (stamp) {
+      if (layer) {
+        rafs.delete(id); totals[layer].executed++; totals[layer].live--;
+        push({ kind: "execute", layer });
+      }
+      return fn.call(this, stamp);
+    });
+    if (layer) {
+      if (rafs.size >= 16) { limited = true; unrecorded++; }
+      rafs.set(id, layer); totals[layer].reserved++; totals[layer].live++;
+      push({ kind: "reserve", layer });
+    }
+    return id;
+  };
+  window.cancelAnimationFrame = function (id) {
+    const layer = rafs.get(id);
+    if (layer) {
+      rafs.delete(id); totals[layer].cancelled++; totals[layer].live--;
+      push({ kind: "cancel", layer });
+    }
+    return saved.cancel.call(window, id);
+  };
+  window.__canvasPhaseA = {
+    async snapshot() {
+      await Promise.all([...pending]);
+      return { rows: rows.map(({ upload, ...r }) => upload ? { ...r, bytes: upload.bytes, sha256: upload.sha256 } : r),
+        totals: structuredClone(totals), limited, unrecorded, contexts: [...contexts.values()].map(c => ({
+          id: c.id, layer: c.layer, revision: revision(c.canvas), connected: c.canvas.isConnected,
+          created: c.created, deleted: c.deleted, invalidated: c.invalidated, liveBuffers: c.buffers.size,
+          lost: c.lost, loss: c.loss, restore: c.restore,
+        })) };
+    },
+    // Actual extension invocation is an intervention, separate from snapshots.
+    intervene(layer, action) {
+      const entry = [...contexts.entries()].find(([, c]) => c.layer === layer && c.canvas.isConnected);
+      if (!entry) return "UNKNOWN";
+      const ext = entry[1].extension ??= entry[0].getExtension("WEBGL_lose_context");
+      if (!ext) return "NOT_SUPPORTED";
+      if (action === "lose") ext.loseContext(); else ext.restoreContext();
+      return "REQUESTED";
+    },
+    dispose() {
+      HTMLCanvasElement.prototype.getContext = saved.getContext;
+      for (const name of ["createBuffer", "deleteBuffer", "bufferData", "drawArrays"]) proto[name] = saved[name];
+      window.requestAnimationFrame = saved.raf; window.cancelAnimationFrame = saved.cancel;
+      for (const c of contexts.values()) {
+        c.canvas.removeEventListener("webglcontextlost", c.onLost);
+        c.canvas.removeEventListener("webglcontextrestored", c.onRestore);
+      }
+      delete window.__canvasPhaseA;
+    },
+  };
+}
+
+// Kernel identity readers mirror the inspected formal driver; its exported termination
+// and ownership verifier remain the single policy implementation.
+async function identity(pid) {
+  const text = await readFile(`/proc/${pid}/stat`, "utf8"), f = text.slice(text.lastIndexOf(")") + 2).trim().split(/\s+/);
+  const status = await readFile(`/proc/${pid}/status`, "utf8");
+  return { pid, ppid: Number(f[1]), pgid: Number(f[2]), sid: Number(f[3]), startTicks: f[19],
+    uid: Number(status.match(/^Uid:\s+(\d+)/m)?.[1]), state: f[0] };
+}
+async function group(pgid) {
+  const processes = [];
+  for (const name of await readdir("/proc")) {
+    if (!/^\d+$/.test(name)) continue;
+    try {
+      const p = await identity(Number(name));
+      if (p.pgid === pgid || p.sid === pgid) processes.push(p);
+    } catch (e) {
+      if (["ENOENT", "ESRCH"].includes(e.code)) continue;
+      let text;
+      try { text = await readFile(`/proc/${name}/stat`, "utf8"); } catch { continue; }
+      const f = text.slice(text.lastIndexOf(")") + 2).split(/\s+/);
+      if (Number(f[2]) === pgid || Number(f[3]) === pgid) throw Error("OWNERSHIP_UNKNOWN");
+    }
+    assert(processes.length <= 256, "OWNERSHIP_OBSERVATION_LIMIT");
+  }
+  return { processes, live: processes.filter(p => p.pgid === pgid && !["Z", "X"].includes(p.state)).map(p => p.pid),
+    zombies: processes.filter(p => p.pgid === pgid && ["Z", "X"].includes(p.state)).map(p => p.pid) };
+}
+export async function smoke(output) {
+  const baseline = await loadE2Baseline();
+  const driver = await readFile(DRIVER, "utf8"), observer = resourceObserverSource(driver);
+  const environment = { node: process.version, cpu: cpus()[0].model.trim(), logicalCpu: cpus().length,
+    cpuMax: (await readFile("/sys/fs/cgroup/cpu.max", "utf8")).trim(),
+    memoryMax: (await readFile("/sys/fs/cgroup/memory.max", "utf8")).trim() };
+  validateE2ExternalEnvironment(baseline, environment);
+  const report = { status: "RUNNING", environment, driverSha256: digest(driver),
+    toolSha256: digest(await readFile(fileURLToPath(import.meta.url))), cases: [], phaseBEligible: false };
+  // The finite wall includes all interventions, navigation and cleanup.
+  const dir = await mkdtemp("/tmp/orderflow-phase-a-");
+  const spawnedAt = performance.now();
+  const browser = spawn("/repl/tools/bin/chromium", ["--headless=new", "--no-sandbox", "--disable-dev-shm-usage",
+    "--disable-background-networking", "--disable-component-update", "--disable-sync", "--no-first-run",
+    "--no-default-browser-check", `--user-data-dir=${dir}`, "--remote-debugging-pipe"],
+  { detached: true, stdio: ["ignore", "ignore", "ignore", "pipe", "pipe"] });
+  let id = 0, buffer = "", termination, started, transportFailure = null;
+  const pending = new Map();
+  const rejectPending = () => { for (const p of pending.values()) { clearTimeout(p.timer); p.reject(Error("CDP_CLOSED")); } pending.clear(); };
+  browser.on("exit", rejectPending); browser.on("error", rejectPending);
+  browser.stdio[3].on("error", rejectPending); browser.stdio[4].on("error", rejectPending);
+  browser.stdio[4].on("data", data => {
+    buffer += data;
+    if (buffer.length >= LIMIT) {
+      transportFailure = "CDP_BUFFER_LIMIT"; buffer = ""; rejectPending(); return;
+    }
+    for (;;) {
+      const i = buffer.indexOf("\0"); if (i < 0) break;
+      const value = buffer.slice(0, i); buffer = buffer.slice(i + 1); if (!value) continue;
+      const r = JSON.parse(value), p = pending.get(r.id); if (!p) continue;
+      pending.delete(r.id); clearTimeout(p.timer);
+      r.error ? p.reject(Error(`CDP_ERROR:${r.error.code}`)) : p.resolve(r.result);
+    }
+  });
+  const call = (method, params = {}, sessionId) => new Promise((resolveCall, reject) => {
+    if (browser.exitCode !== null || browser.signalCode || !browser.stdio[3].writable)
+      return reject(Error("CDP_UNAVAILABLE"));
+    if (transportFailure && method !== "Browser.close") return reject(Error(transportFailure));
+    if (termination?.expired() && method !== "Browser.close") return reject(Error("BROWSER_WALL_TIMEOUT"));
+    const n = ++id, timer = setTimeout(() => { pending.delete(n); reject(Error(`CDP_TIMEOUT:${method}`)); }, 10000);
+    pending.set(n, { resolve: resolveCall, reject, timer });
+    browser.stdio[3].write(JSON.stringify({ id: n, method, params, ...(sessionId ? { sessionId } : {}) }) + "\0");
+  });
+  try { started = await identity(browser.pid); } catch { started = null; }
+  const exited = () => browser.exitCode !== null || !!browser.signalCode;
+  // Provide the actual immutable leader identity to the reused policy.
+  // The page can never authorize a process signal.
+  termination = createBrowserTermination({
+    close: () => call("Browser.close"), exited, holdsLeader: () => browser.pid === started?.pid && !exited(),
+    inspect: () => group(browser.pid),
+    waitExit: async ms => { const end = performance.now() + ms; while (!exited() && performance.now() < end)
+      await new Promise(r => setTimeout(r, 50)); },
+    signal: (pid, signal) => process.kill(pid, signal),
+    recover: async ms => { const end = performance.now() + ms; while (performance.now() < end) {
+      const g = await group(browser.pid); if (!g.live.length && !g.zombies.length) return;
+      await new Promise(r => setTimeout(r, 100));
+    } },
+  }, { trialId: "canvas-phase-a", started });
+  const wall = setTimeout(() => { void termination.wallTimeout().catch(() => {}); },
+    Math.max(0, 150000 - (performance.now() - spawnedAt)));
+  let evaluate, snap, page;
+  const checkpoint = () => saveEvidence(output + ".checkpoint.json", report);
+  const record = async result => {
+    report.cases.push(result);
+    // Unique checkpoints preserve every failure/success without overwriting older evidence.
+    await saveEvidence(output + `.case-${report.cases.length}.json`, result);
+  };
+  try {
+    assert.equal(verifyBrowserOwnership(started, await group(browser.pid)).status, "PASS", "OWNERSHIP_UNKNOWN");
+    const version = await call("Browser.getVersion"), target = await call("Target.createTarget", { url: "about:blank" });
+    const { sessionId } = await call("Target.attachToTarget", { targetId: target.targetId, flatten: true });
+    page = (method, params) => call(method, params, sessionId);
+    evaluate = async expression => {
+      const r = await page("Runtime.evaluate", { expression, returnByValue: true, awaitPromise: true });
+      if (r.exceptionDetails) throw Error(`PAGE_EVALUATION:${r.exceptionDetails.text}`);
+      return r.result.value;
+    };
+    const wait = async (expression, ms = 5000) => {
+      const end = performance.now() + ms;
+      while (performance.now() < end) {
+        const v = await evaluate(`({ok:!!(${expression}),record:window.__orderflowMockDiagnostics?.progress().recording})`);
+        assert(!v.record?.saturated && !v.record?.dropped, "DIAGNOSTIC_RECORD_LIMIT");
+        if (v.ok) return;
+        await new Promise(r => setTimeout(r, 50));
+      }
+      throw Error("CONTEXT_OR_CONDITION_TIMEOUT");
+    };
+    snap = () => evaluate(`(async()=>({phase:await window.__canvasPhaseA.snapshot(),gl:window.__b2gl.snapshot(),
+      resources:window.__b2resources.snapshot(),ownership:window.__b2resources.ownership(),
+      progress:window.__orderflowMockDiagnostics?.progress(),
+      layers:[...document.querySelectorAll('.hm-canvas,.bb-canvas')].map(c=>({revision:Number(c.dataset.revision),
+        status:c.dataset.status,width:c.getBoundingClientRect().width,height:c.getBoundingClientRect().height}))}))()`);
+    const click = testid => evaluate(`document.querySelector('[data-testid="${testid}"]').click()`);
+    await page("Page.enable"); await page("Network.enable");
+    await page("Network.setBlockedURLs", { urls: ["*tick-stream.xyz*"] });
+    await page("Page.addScriptToEvaluateOnNewDocument", {
+      source: `${observer};(${installSafetyGLObserver.toString()})();(${installPhaseObserver.toString()})()` });
+    await page("Page.navigate", { url: "http://127.0.0.1:80/?mockDiagnostics=1&mockCase=cells128" });
+    await wait(`!!document.querySelector('[data-testid="button-unified-start"]')`);
+    const gpu = await evaluate(`(()=>{const c=document.createElement('canvas'),g=c.getContext('webgl2');
+      if(!g)return{webgl2:false};const e=g.getExtension('WEBGL_debug_renderer_info');
+      const r={webgl2:true,renderer:g.getParameter(e?e.UNMASKED_RENDERER_WEBGL:g.RENDERER)};
+      g.getExtension('WEBGL_lose_context')?.loseContext();return r})()`);
+    validateE2BrowserStartup(version.product, gpu, await evaluate("devicePixelRatio"), baseline);
+    report.browser = { chromium: version.product, gpu, dpr: 1 };
+    const cases = [
+      { name: "A1 initial and revision drawing / A2 accounting", gate: "core", run: async () => {
+        await evaluate("window.__b2resources.beginSession(1)");
+        await click("button-unified-start");
+        await wait(`window.__orderflowMockDiagnostics?.inspectMeaning().summary?.revision>=1`);
+        const first = await snap();
+        assert(first.layers.length === 2 && first.layers.every(l => l.width === 403 && l.height === 324), "CANVAS_DIMENSIONS");
+        await wait(`document.querySelector('[data-testid="status-data"]')?.textContent.includes("COMPLETED")`, 44400);
+        await new Promise(r => setTimeout(r, 400));
+        const end = await snap();
+        const text = await evaluate("window.__orderflowMockDiagnostics.meaning()");
+        const meaning = resolveBrowserMeaning("cells128", text);
+        assert.equal(meaning.sha256, baseline.hashes.cells128, "FIXED_MEANING_HASH");
+        assert.deepEqual(meaning.value.counts, { inputs: 128, accepted: 128, duplicate: 0, rejected: 0 });
+        assert(meaning.value.checks.length === 8 && meaning.value.checks.every(c => c.ok), "GOLDEN");
+        assert(["book", "heatmap", "bubbles", "delta", "volumeProfile", "quality"]
+          .every(l => meaning.value.frame[l].revision === 128), "MIXED_FRAME");
+        assert(!end.phase.limited && !end.gl.limited && !end.phase.unrecorded, "PHASE_RECORD_LIMIT");
+        assert(Object.values(end.gl.totals).every(l => l.errors === 0), "GL_ERRORS");
+        verifyDrawCoverage(end.phase.rows);
+        assert(Object.values(end.phase.totals).every(rafAccounting), "RAF_ACCOUNTING");
+        const beforeQuiet = structuredClone(end.phase.totals);
+        await new Promise(r => setTimeout(r, 350));
+        assert.deepEqual((await snap()).phase.totals, beforeQuiet, "STATS_ONLY_CALLBACKS");
+        report.control = end;
+        return { status: "PASS", meaningHash: meaning.sha256, first: first.layers, totals: end.phase.totals,
+          drawCounts: Object.fromEntries(LAYERS.map(l => [l, end.phase.rows.filter(r => r.kind === "draw" && r.layer === l).length])) };
+      } },
+      ...LAYERS.map(layer => ({ name: `A5 ${layer} unchanged input actual loss/restore`, gate: "extended", run: async () => {
+        const before = await snap(), prefix = before.phase.rows.length;
+        const requested = await evaluate(`window.__canvasPhaseA.intervene("${layer}","lose")`);
+        if (requested !== "REQUESTED") return { status: requested, reason: "EXTENSION_UNAVAILABLE" };
+        await wait(`document.querySelector('.${layer === "heatmap" ? "hm" : "bb"}-canvas').dataset.status==="CONTEXT LOST"`);
+        await new Promise(r => setTimeout(r, 350));
+        const lost = await snap();
+        await evaluate(`window.__canvasPhaseA.intervene("${layer}","restore")`);
+        let timedOut = false;
+        try { await wait(`document.querySelector('.${layer === "heatmap" ? "hm" : "bb"}-canvas').dataset.status==="READY"`); }
+        catch (e) { if (String(e).includes("TIMEOUT")) timedOut = true; else throw e; }
+        await new Promise(r => setTimeout(r, 100));
+        const after = await snap();
+        const draws = after.phase.rows.slice(prefix).filter(r => r.kind === "draw" && r.layer === layer);
+        const reference = before.phase.rows.filter(r => r.kind === "draw" && r.layer === layer).at(-1);
+        const result = assessRestore({ restored: !timedOut, timedOut, rows: draws,
+          lostDraws: lost.phase.rows.slice(prefix).filter(r => r.kind === "draw" && r.layer === layer).length,
+          expectedHash: reference.sha256 });
+        return { ...result, draws, before: reference, lost: lost.phase.contexts, after: after.phase.contexts };
+      } })),
+      ...LAYERS.map((layer, i) => ({ name: `A5 ${layer} revision advances while actually lost`, gate: "extended", run: async () => {
+        await evaluate(`window.__b2resources.beginSession(${i + 2})`);
+        await click("button-unified-restart");
+        await wait("window.__orderflowMockDiagnostics.inspectMeaning().summary?.revision>=2");
+        const before = await snap(), prefix = before.phase.rows.length;
+        const oldRevision = before.layers[0].revision;
+        const requested = await evaluate(`window.__canvasPhaseA.intervene("${layer}","lose")`);
+        if (requested !== "REQUESTED") return { status: requested, reason: "EXTENSION_UNAVAILABLE" };
+        await wait(`document.querySelector('.${layer === "heatmap" ? "hm" : "bb"}-canvas').dataset.status==="CONTEXT LOST"`);
+        await wait(`window.__orderflowMockDiagnostics.inspectMeaning().summary?.revision>=${oldRevision + 2}`);
+        // Existing Stop freezes inputs but does not mutate analytical state.
+        await click("button-unified-stop");
+        await new Promise(r => setTimeout(r, 300));
+        const lost = await snap(), latest = lost.layers[0].revision;
+        const lostDraws = lost.phase.rows.slice(prefix).filter(r => r.kind === "draw" && r.layer === layer).length;
+        await evaluate(`window.__canvasPhaseA.intervene("${layer}","restore")`);
+        let timedOut = false;
+        try { await wait(`document.querySelector('.${layer === "heatmap" ? "hm" : "bb"}-canvas').dataset.status==="READY"`); }
+        catch (e) { if (String(e).includes("TIMEOUT")) timedOut = true; else throw e; }
+        await new Promise(r => setTimeout(r, 150));
+        const after = await snap(), rows = after.phase.rows.slice(prefix).filter(r => r.kind === "draw" && r.layer === layer);
+        const reference = report.control.phase.rows.find(r => r.kind === "draw" && r.layer === layer && r.revision === latest);
+        const result = assessRestore({ restored: !timedOut, timedOut, lostDraws, rows, expectedHash: reference?.sha256 });
+        return { ...result, oldRevision, latest, referenceHash: reference?.sha256, rows,
+          after: after.phase.contexts, resources: after.resources };
+      } })),
+      { name: "A4 existing UI operations", gate: "extended", run: async () => {
+        const operations = [];
+        const operation = async (name, intervene) => {
+          const before = await snap();
+          await intervene();
+          await new Promise(r => setTimeout(r, 350));
+          const after = await snap();
+          assert(after.layers.every(l => l.status === "READY" && l.revision === before.layers[0].revision),
+            "UI_OPERATION_REVISION_OR_STATUS");
+          assert(Object.values(after.gl.totals).every(l => l.errors === 0), "UI_GL_ERROR");
+          const draws = after.phase.rows.length - before.phase.rows.length;
+          return { name, status: draws > 0 ? "PASS" : "UNKNOWN",
+            reason: draws > 0 ? "SAME_REVISION_REDRAW_OBSERVED" : "OPERATION_EFFECT_NOT_INDEPENDENTLY_PROVEN",
+            beforeRevision: before.layers[0].revision, afterRevision: after.layers[0].revision, observedRows: draws };
+        };
+        const box = await evaluate(`(()=>{const r=document.querySelector('[data-testid="chart-area"]').getBoundingClientRect();
+          return{x:r.left+r.width/2,y:r.top+r.height/2}})()`);
+        operations.push(await operation("zoom", () => evaluate(`document.querySelector('[data-testid="chart-area"]')
+          .dispatchEvent(new WheelEvent("wheel",{deltaY:-100,clientX:${box.x},clientY:${box.y},bubbles:true,cancelable:true}))`)));
+        operations.push(await operation("pan", async () => {
+          await page("Input.dispatchMouseEvent", { type: "mouseMoved", x: box.x, y: box.y });
+          await page("Input.dispatchMouseEvent", { type: "mousePressed", x: box.x, y: box.y, button: "left", clickCount: 1 });
+          await page("Input.dispatchMouseEvent", { type: "mouseMoved", x: box.x + 20, y: box.y, button: "left", buttons: 1 });
+          await page("Input.dispatchMouseEvent", { type: "mouseReleased", x: box.x + 20, y: box.y, button: "left" });
+        }));
+        operations.push(await operation("resize", () => page("Emulation.setDeviceMetricsOverride",
+          { width: 820, height: 600, deviceScaleFactor: 1, mobile: false })));
+        operations.push(await operation("DPR", () => page("Emulation.setDeviceMetricsOverride",
+          { width: 820, height: 600, deviceScaleFactor: 2, mobile: false })));
+        await page("Emulation.clearDeviceMetricsOverride");
+        // Settings are draft previews only. Never use Save or write a settings file.
+        await click("button-settings");
+        await wait(`!!document.querySelector('[data-testid="settings-drawer"]')`);
+        const tab = await evaluate(`!!document.querySelector('[data-testid="settings-tab-heatmap"]')`);
+        if (tab) await click("settings-tab-heatmap");
+        const threshold = await evaluate(`!!document.querySelector('[data-testid="settings-heatmap-minimumVolume"]')`);
+        if (threshold) {
+          operations.push(await operation("threshold", () => evaluate(`(()=>{const e=document.querySelector('[data-testid="settings-heatmap-minimumVolume"]');
+            Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,"value").set.call(e,"2");
+            e.dispatchEvent(new Event("input",{bubbles:true}));e.dispatchEvent(new Event("change",{bubbles:true}));})()`)));
+        } else operations.push({ name: "threshold", status: "NOT_SUPPORTED", reason: "UI_FIELD_UNAVAILABLE" });
+        operations.push({ name: "colors", status: "UNKNOWN", reason: "Color field traversal not independently audited" });
+        await click("button-settings-cancel");
+        await page("Input.dispatchMouseEvent", { type: "mouseMoved", x: box.x, y: box.y });
+        const tooltip = await evaluate(`!!document.querySelector('.hm-tip,.bb-tip')`);
+        operations.push({ name: "hover", status: tooltip ? "PASS" : "UNKNOWN",
+          reason: tooltip ? "ACTUAL_TOOLTIP_OBSERVED" : "CENTER_POINT_NOT_PROVEN_TO_HIT_DATA" });
+        operations.push({ name: "pin", status: "UNKNOWN", reason: "No independently identified projected bubble point" });
+        return { status: operations.every(o => o.status === "PASS") ? "PASS" : "UNKNOWN", operations };
+      } },
+      { name: "A3 stop / restart / unmount / remount", gate: "core", run: async () => {
+        await click("button-unified-restart");
+        await wait("window.__orderflowMockDiagnostics.inspectMeaning().summary?.revision>=2");
+        await click("button-unified-stop");
+        await new Promise(r => setTimeout(r, 350));
+        const stopped = await snap();
+        assert(Object.values(stopped.phase.totals).every(t => t.live === 0), "STOP_RAF_RESIDUAL");
+        await click("button-unified-restart");
+        await wait("window.__orderflowMockDiagnostics.inspectMeaning().summary?.revision>=1");
+        await evaluate(`window.dispatchEvent(new Event("orderflow:diagnostic-unmount"))`);
+        await wait("!document.querySelector('.shell')");
+        await new Promise(r => setTimeout(r, 350));
+        const released = await snap();
+        const count = released.phase.rows.filter(r => r.kind === "draw").length;
+        await new Promise(r => setTimeout(r, 200));
+        assert.equal((await snap()).phase.rows.filter(r => r.kind === "draw").length, count, "DRAW_AFTER_UNMOUNT");
+        assert.equal(resourceReleaseGate(released.resources, released.ownership).status, "PASS", "RESOURCE_RELEASE");
+        assert(released.phase.contexts.every(c => c.liveBuffers === 0 &&
+          c.created === c.deleted + c.invalidated), "BUFFER_LEAK");
+        report.afterRelease = released;
+        return { status: "PASS", stopped, released, remount: "UNKNOWN_NO_PRODUCT_CONTROL" };
+      } },
+    ];
+    report.passedSequence = await runCases(cases, record);
+    report.status = report.passedSequence ? "PASS" : "FAIL";
+  } catch (e) { report.status = "FAIL"; report.failure = String(e); }
+  finally {
+    // Always exit via existing UI first where available, including actual FAIL.
+    if (evaluate && snap) {
+      try {
+        await evaluate(`document.querySelector('[data-testid="button-unified-exit"]')?.click()`);
+        await new Promise(r => setTimeout(r, 400));
+        report.cleanupPage = await snap();
+        assert.equal(resourceReleaseGate(report.cleanupPage.resources, report.cleanupPage.ownership).status, "PASS");
+        assert(report.cleanupPage.phase.contexts.every(c => c.liveBuffers === 0 &&
+          c.created === c.deleted + c.invalidated), "BUFFER_LEAK");
+      } catch (e) { report.cleanupFailure = String(e); report.status = "FAIL"; }
+    }
+    report.termination = await termination.finish(); clearTimeout(wall);
+    const remaining = await group(browser.pid);
+    report.chromiumCleanup = { live: remaining.live, zombies: remaining.zombies, profileRemoved: false };
+    if (!remaining.live.length && !remaining.zombies.length) {
+      await rm(dir, { recursive: true }); report.chromiumCleanup.profileRemoved = true;
+    }
+    if (report.termination.status !== "PASS" || report.termination.signal.attempted ||
+        remaining.live.length || remaining.zombies.length) report.status = "FAIL";
+    report.phaseBEligible = report.status === "PASS";
+    await mkdir(resolve(output, ".."), { recursive: true });
+    await checkpoint();
+    await saveEvidence(output, report);
+  }
+  return report;
+}
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  const output = process.argv[2];
+  assert(output && output.startsWith(".local/diagnostics/task28-c4-e4/"), "EXPLICIT_NEW_OUTPUT_REQUIRED");
+  const report = await smoke(output);
+  console.log(JSON.stringify({ status: report.status, cases: report.cases.map(c => ({ name: c.name, status: c.status,
+    reason: c.reason })), phaseBEligible: report.phaseBEligible, termination: report.termination,
+    chromiumCleanup: report.chromiumCleanup }));
+  if (report.status !== "PASS") process.exitCode = 1;
+}
