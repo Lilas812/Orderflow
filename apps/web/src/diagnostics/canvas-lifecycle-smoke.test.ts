@@ -358,3 +358,115 @@ it("evidence case failure stops subsequent cases before cleanup orchestration", 
     { name: "next", run: next }], async () => { throw Error("CASE_WRITE_FAILED"); })).rejects.toThrow("CASE_WRITE_FAILED");
   expect(next).not.toHaveBeenCalled();
 });
+
+function continuationFixture(layer = "heatmap", scenario = "B") {
+  const hash = (revision: number) => revision.toString().padStart(64, "0");
+  const references = Array.from({ length: 7 }, (_, i) => ({ layer, revision: i + 2,
+    bytes: 96, vertices: 6, sha256: hash(i + 2) }));
+  const restoredRevision = scenario === "A" ? 2 : 4;
+  const snapshot = (revision: number, lost: boolean, restore: number) => ({
+    canvas: { id: 11, connected: true, revision, lost, loss: lost || restore ? 1 : 0, restore },
+    source: { revision, counts: { inputs: revision, accepted: revision, duplicate: 0, rejected: 0 } },
+    size: { width: 403, height: 324, status: lost ? "CONTEXT LOST" : "READY" },
+    raf: { reserved: 2, executed: 2, cancelled: 0, live: 0 },
+    gl: { errors: 0 }, inputGate: { fault: null }, limited: false, release: { status: "PASS" },
+    rows: [] as Record<string, unknown>[],
+  });
+  const draw = (revision: number, native = false) => ({ kind: "draw", layer, canvasId: 11, revision,
+    tokenRevision: native ? null : revision, bytes: 96, vertices: 6, sha256: hash(revision), lost: false });
+  const before = snapshot(2, false, 0), lost = snapshot(restoredRevision, true, 0);
+  lost.rows.push({ kind: "contextlost", layer, canvasId: 11 });
+  const restored = snapshot(restoredRevision, false, 1);
+  restored.rows.push({ kind: "contextrestored", layer, canvasId: 11 }, draw(restoredRevision, true));
+  const followups = Array.from({ length: 8 - restoredRevision }, (_, i) => {
+    const revision = restoredRevision + i + 1, s = snapshot(revision, false, 1);
+    s.raf.reserved += i + 1; s.raf.executed += i + 1;
+    s.rows.push({ kind: "reserve", layer, canvasId: 11, revision, rafId: revision },
+      { kind: "execute", layer, canvasId: 11, revision, rafId: revision }, draw(revision));
+    return s;
+  });
+  const stopped = { ...snapshot(8, false, 1), source: null };
+  return { c: { layer, scenario, before, lost, restored, followups, stopped }, references };
+}
+for (const layer of ["heatmap", "bubble"]) for (const scenario of ["A", "B"]) {
+  it(`E5 ${layer} ${scenario} validates same-Canvas native replay then every continuous GPU draw`, () => {
+    const { c, references } = continuationFixture(layer, scenario), result = smoke.assessContinuation(c, references);
+    expect(result.status).toBe("PASS"); expect(result.canvasId).toBe(11);
+    expect(result.continuedRevisions).toEqual(scenario === "A" ? [3, 4, 5, 6, 7, 8] : [5, 6, 7, 8]);
+    expect(c.restored.rows.at(-1)!.tokenRevision).toBeNull();
+    expect(c.followups.every(s => s.rows.at(-1)!.tokenRevision === s.source.revision)).toBe(true);
+  });
+}
+const mutations: [string, (c: ReturnType<typeof continuationFixture>["c"]) => void, string][] = [
+  ["missing revision", c => { c.followups.splice(1, 1); }, "CONTINUATION_SEQUENCE_MISSING"],
+  ["missing draw", c => { c.followups[0].rows.pop(); }, "CONTINUATION_DRAW_MISSING"],
+  ["duplicate draw", c => { c.followups[0].rows.push({ ...c.followups[0].rows.at(-1)! }); }, "CONTINUATION_DUPLICATE_DRAW"],
+  ["changed Canvas", c => { c.followups[0].canvas.id = 99; }, "CANVAS_IDENTITY_CHANGED"],
+  ["wrong GPU hash", c => { c.followups[0].rows.at(-1)!.sha256 = "tampered"; }, "CONTINUATION_GPU_MISMATCH"],
+  ["wrong GPU bytes", c => { c.followups[0].rows.at(-1)!.bytes = 48; }, "CONTINUATION_GPU_MISMATCH"],
+  ["wrong vertices", c => { c.followups[0].rows.at(-1)!.vertices = 12; }, "CONTINUATION_GPU_MISMATCH"],
+  ["stale callback", c => { c.followups[0].rows.at(-1)!.tokenRevision = 4; }, "NATIVE_VS_RAF_REVISION"],
+  ["second context loss", c => { c.followups[0].canvas.loss = 2; }, "CONTEXT_RELOST_OR_REPLACED"],
+  ["lost GPU draw", c => { c.lost.rows.push({ kind: "draw" }); }, "CONTINUATION_DRAW_WHILE_LOST"],
+  ["unobserved restore event", c => { c.restored.rows.shift(); }, "RESTORE_EVENT_UNOBSERVED"],
+  ["native replay via rAF", c => { c.restored.rows.push({ kind: "execute" }); }, "NATIVE_REPLAY_VIA_RAF"],
+  ["cancelled normal callback", c => { c.followups[0].rows.push({ kind: "cancel" }); }, "CONTINUATION_RAF_CORRESPONDENCE"],
+  ["GL error", c => { c.followups[0].gl.errors = 1282; }, "CONTINUATION_GL_ERRORS"],
+  ["late stop draw", c => { c.stopped.rows.push({ kind: "draw" }); }, "DRAW_AFTER_STOP"],
+];
+for (const [name, mutate, reason] of mutations) {
+  it(`E5 rejects ${name} without upgrading the result`, () => {
+    const { c, references } = continuationFixture(); mutate(c);
+    expect(smoke.assessContinuation(c, references)).toMatchObject({ status: "FAIL", reason: expect.stringContaining(reason) });
+  });
+}
+it("E5 missing independent GPU reference is UNKNOWN, never PASS", () => {
+  const { c } = continuationFixture();
+  expect(smoke.assessContinuation(c, [])).toEqual({ status: "UNKNOWN", reason: "CONTINUATION_REFERENCE_MISSING" });
+});
+it("E5 R3 reference requires a single nonempty hashed payload for every layer/revision", () => {
+  const rows = ["heatmap", "bubble"].flatMap(layer => continuationFixture(layer).references
+    .map(r => ({ kind: "draw", ...r })));
+  const report = { status: "PASS", control: { phase: { rows } } };
+  expect(smoke.continuationReferences(report)).toHaveLength(14);
+  expect(() => smoke.continuationReferences({ ...report, status: "FAIL" })).toThrow("NOT_PASS");
+  expect(() => smoke.continuationReferences({ status: "PASS", control: { phase: { rows: rows.slice(1) } } }))
+    .toThrow("AMBIGUOUS");
+  expect(() => smoke.continuationReferences({ status: "PASS", control: { phase: { rows: [...rows, rows[0]] } } }))
+    .toThrow("AMBIGUOUS");
+});
+it("E5 source gate defers timer ticks, preserves original inputs and leaves 250ms notices untouched", () => {
+  let revision = 0;
+  const timers: { fn: () => void; ms: number }[] = [], input = vi.fn(() => revision++), notice = vi.fn();
+  const original = (fn: () => void, ms: number) => { timers.push({ fn, ms }); return timers.length; };
+  const fakeWindow = { setInterval: original,
+    __orderflowMockDiagnostics: { progress: () => ({ status: { revision } }) } };
+  class SourceError extends Error { stack = "at start (http://localhost/src/lib/mockAnalysisSession.ts:119:7)"; }
+  runInNewContext(`(${smoke.installContinuationInputGate.toString()})()`, { window: fakeWindow, Error: SourceError, performance });
+  const gate = (fakeWindow as typeof fakeWindow & { __canvasContinuationInput: {
+    setCeiling: (n: number) => void; snapshot: () => { delivered: number; deferredTicks: number; fault: string | null };
+    dispose: () => void;
+  } }).__canvasContinuationInput;
+  fakeWindow.setInterval(input, 300); fakeWindow.setInterval(notice, 250);
+  for (let i = 0; i < 4; i++) { timers[0].fn(); timers[1].fn(); }
+  expect(input).toHaveBeenCalledTimes(2); expect(notice).toHaveBeenCalledTimes(4);
+  expect(gate.snapshot()).toMatchObject({ delivered: 2, deferredTicks: 2, fault: null });
+  gate.setCeiling(4); timers[0].fn(); timers[0].fn();
+  expect(revision).toBe(4); expect(timers.map(t => t.ms)).toEqual([300, 250]);
+  expect(() => gate.setCeiling(9)).toThrow("CEILING");
+  gate.dispose(); expect(fakeWindow.setInterval).toBe(original);
+  expect(() => timers[0].fn()).toThrow("AFTER_DISPOSE");
+});
+it("E5 four-case plan is Heatmap A/B then Bubble A/B and never starts formal trials", () => {
+  const cases = smoke.continuationCases({});
+  expect(cases.map((c: { name: string }) => c.name)).toEqual([
+    "E5 heatmap Scenario A", "E5 heatmap Scenario B", "E5 bubble Scenario A", "E5 bubble Scenario B"]);
+  expect(cases.every((c: { gate: string }) => c.gate === "core")).toBe(true);
+});
+it("E5 actual continuation FAIL is preserved in evidence and prevents the next case", async () => {
+  const { c, references } = continuationFixture(); c.followups[0].rows.pop();
+  const record = vi.fn(), next = vi.fn();
+  expect(await smoke.runCases([{ name: "E5", gate: "core", run: async () => smoke.assessContinuation(c, references) },
+    { name: "not run", run: next }], record)).toBe(false);
+  expect(record.mock.calls[0][0].status).toBe("FAIL"); expect(next).not.toHaveBeenCalled();
+});

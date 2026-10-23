@@ -52,6 +52,168 @@ export function assessRestore({ restored, timedOut, lostDraws, rows, expectedHas
   return expectedHash ? { status: "PASS", reason: "GPU_PAYLOAD_MATCH" } :
     { status: "UNKNOWN", reason: "INDEPENDENT_PAYLOAD_REFERENCE_UNAVAILABLE" };
 }
+// E5 functional diagnostic only: defer SOURCE timer ticks, never edit hub/React state.
+// Native 300ms input cadence and the separate 250ms notice timer remain intact.
+export function installContinuationInputGate() {
+  const saved = window.setInterval, events = [];
+  let ceiling = 2, delivered = 0, deferredTicks = 0, registrations = 0, fault = null, disposed = false;
+  const record = event => {
+    if (events.length >= 128) { fault = "INPUT_GATE_RECORD_LIMIT"; throw Error(fault); }
+    events.push({ at: performance.now(), ...event });
+  };
+  window.setInterval = function (fn, ms, ...args) {
+    const source = /\/src\/lib\/mockAnalysisSession\.ts[?:]/.test(new Error().stack ?? "");
+    if (!source || ms !== 300) return saved.call(this, fn, ms, ...args);
+    if (typeof fn !== "function" || ++registrations > 4) throw Error("INPUT_GATE_SOURCE_LIMIT");
+    record({ kind: "source", registration: registrations, inputEveryMs: ms });
+    return saved.call(this, function (...callbackArgs) {
+      if (disposed) throw Error("INPUT_GATE_AFTER_DISPOSE");
+      const before = window.__orderflowMockDiagnostics?.progress().status?.revision;
+      if (!Number.isSafeInteger(before) || before < 0) {
+        fault = "INPUT_GATE_REVISION_UNOBSERVED"; throw Error(fault);
+      }
+      if (before >= ceiling) { deferredTicks++; return; }
+      fn.apply(this, callbackArgs);
+      const after = window.__orderflowMockDiagnostics?.progress().status?.revision;
+      if (after !== before + 1) { fault = "INPUT_GATE_NON_SEQUENTIAL"; throw Error(fault); }
+      delivered++; record({ kind: "delivered", before, after });
+    }, ms, ...args);
+  };
+  window.__canvasContinuationInput = {
+    setCeiling(value) {
+      if (!Number.isSafeInteger(value) || value < 2 || value > 8) throw Error("INPUT_GATE_CEILING");
+      ceiling = value; record({ kind: "ceiling", value });
+    },
+    snapshot: () => ({ ceiling, delivered, deferredTicks, registrations, fault, disposed, events: [...events] }),
+    dispose() { disposed = true; window.setInterval = saved; },
+  };
+}
+export function continuationReferences(report) {
+  assert.equal(report.status, "PASS", "R3_REFERENCE_NOT_PASS");
+  const refs = report.control?.phase?.rows?.filter(r => r.kind === "draw" &&
+    LAYERS.includes(r.layer) && r.revision >= 2 && r.revision <= 8);
+  assert(Array.isArray(refs), "R3_GPU_REFERENCE_MISSING");
+  for (const layer of LAYERS) for (let revision = 2; revision <= 8; revision++) {
+    const matches = refs.filter(r => r.layer === layer && r.revision === revision);
+    assert(matches.length === 1 && /^[a-f0-9]{64}$/.test(matches[0].sha256) &&
+      matches[0].bytes > 0 && matches[0].vertices > 0, "R3_GPU_REFERENCE_AMBIGUOUS");
+  }
+  return refs.map(({ layer, revision, bytes, vertices, sha256 }) => ({ layer, revision, bytes, vertices, sha256 }));
+}
+export function assessContinuation(c, references) {
+  const { layer, scenario, before, lost, restored, followups, stopped } = c;
+  const restoreRevision = scenario === "A" ? 2 : 4;
+  const wanted = Array.from({ length: 8 - restoreRevision }, (_, i) => restoreRevision + i + 1);
+  if (!references || [restoreRevision, ...wanted].some(revision =>
+    !references.some(r => r.layer === layer && r.revision === revision)))
+    return { status: "UNKNOWN", reason: "CONTINUATION_REFERENCE_MISSING" };
+  try {
+    assert(LAYERS.includes(layer) && ["A", "B"].includes(scenario), "CONTINUATION_CASE");
+    const id = before.canvas.id;
+    const check = (s, revision, isLost, loss, restore) => {
+      assert(s.canvas.id === id && s.canvas.connected, "CANVAS_IDENTITY_CHANGED");
+      assert(s.canvas.revision === revision && s.source.revision === revision, "CONTINUATION_REVISION");
+      assert(s.source.counts.inputs === revision && s.source.counts.accepted === revision &&
+        s.source.counts.duplicate === 0 && s.source.counts.rejected === 0, "CONTINUATION_COUNTS");
+      assert(s.size.width === 403 && s.size.height === 324, "CONTINUATION_CANVAS_SIZE");
+      assert(s.canvas.lost === isLost && s.canvas.loss === loss && s.canvas.restore === restore,
+        "CONTEXT_RELOST_OR_REPLACED");
+      assert(s.size.status === (isLost ? "CONTEXT LOST" : "READY"), "CONTEXT_NOT_READY");
+      assert(s.gl.errors === 0, "CONTINUATION_GL_ERRORS");
+      assert(!s.limited && !s.inputGate.fault, "CONTINUATION_OBSERVATION_LIMIT");
+      assert(rafAccounting(s.raf), "CONTINUATION_RAF_ACCOUNTING");
+    };
+    const draw = (s, revision, native) => {
+      const rows = s.rows.filter(r => r.kind === "draw");
+      assert(rows.length === 1, rows.length ? "CONTINUATION_DUPLICATE_DRAW" : "CONTINUATION_DRAW_MISSING");
+      const r = rows[0], ref = references.find(r => r.layer === layer && r.revision === revision);
+      assert(r.canvasId === id && r.revision === revision && !r.lost, "CONTINUATION_STALE_OR_LOST_DRAW");
+      assert(r.tokenRevision === (native ? null : revision), "NATIVE_VS_RAF_REVISION");
+      assert(r.bytes === ref.bytes && r.vertices === ref.vertices && r.sha256 === ref.sha256,
+        "CONTINUATION_GPU_MISMATCH");
+      if (!native) {
+        const reserved = s.rows.filter(r => r.kind === "reserve"), executed = s.rows.filter(r => r.kind === "execute");
+        assert(reserved.length === 1 && executed.length === 1 &&
+          !s.rows.some(r => r.kind === "cancel") && reserved[0].rafId === executed[0].rafId &&
+          executed[0].canvasId === id && executed[0].revision === revision, "CONTINUATION_RAF_CORRESPONDENCE");
+      } else assert(!s.rows.some(r => r.kind === "execute"), "NATIVE_REPLAY_VIA_RAF");
+      assert(s.raf.live === 0, "CONTINUATION_PENDING_RAF");
+    };
+    check(before, 2, false, 0, 0);
+    check(lost, restoreRevision, true, 1, 0);
+    assert(!lost.rows.some(r => r.kind === "draw"), "CONTINUATION_DRAW_WHILE_LOST");
+    assert(lost.rows.filter(r => r.kind === "contextlost" && r.canvasId === id).length === 1,
+      "LOSS_EVENT_UNOBSERVED");
+    check(restored, restoreRevision, false, 1, 1);
+    assert(restored.rows.filter(r => r.kind === "contextrestored" && r.canvasId === id).length === 1,
+      "RESTORE_EVENT_UNOBSERVED");
+    draw(restored, restoreRevision, true);
+    assert.deepEqual(followups.map(s => s.source.revision), wanted, "CONTINUATION_SEQUENCE_MISSING");
+    for (const s of followups) { check(s, s.source.revision, false, 1, 1); draw(s, s.source.revision, false); }
+    // Stop intentionally releases the product diagnostic bridge. Do not fabricate
+    // a post-stop source status; revision/counts were observed at followup 8.
+    assert(stopped.canvas.id === id && stopped.canvas.connected && stopped.canvas.revision === 8 &&
+      !stopped.canvas.lost && stopped.gl.errors === 0 && stopped.release.status === "PASS", "STOP_NOT_RELEASED");
+    assert(!stopped.rows.some(r => r.kind === "draw") && stopped.raf.live === 0, "DRAW_AFTER_STOP");
+    return { status: "PASS", reason: "SAME_CANVAS_NATIVE_AND_CONTINUOUS_GPU_MATCH",
+      canvasId: id, restoredRevision: restoreRevision, continuedRevisions: wanted };
+  } catch (e) { return { status: "FAIL", reason: String(e) }; }
+}
+export function continuationCases({ evaluate, snap, click, wait, references }) {
+  return LAYERS.flatMap((layer, index) => ["A", "B"].map((scenario, part) => ({
+    name: `E5 ${layer} Scenario ${scenario}`, gate: "core", run: async () => {
+      const selector = `.${layer === "heatmap" ? "hm" : "bb"}-canvas`;
+      await evaluate("window.__canvasContinuationInput.setCeiling(2)");
+      await evaluate(`window.__b2resources.beginSession(${index * 2 + part + 1})`);
+      await click(index === 0 && part === 0 ? "button-unified-start" : "button-unified-restart");
+      await wait(`window.__orderflowMockDiagnostics.progress().status.revision===2 &&
+        document.querySelector('${selector}')?.dataset.revision==="2" &&
+        window.__b2gl.snapshot().totals.${layer}.draws>0`);
+      await wait(`window.__canvasPhaseA.snapshot().then(s=>s.rows.some(r=>r.kind==="draw" &&
+        r.layer==="${layer}" && r.revision===2 && r.tokenRevision===2))`, 5000, true);
+      let cursor = (await snap()).phase.rows.length;
+      const pack = async () => {
+        const s = await snap(), rows = s.phase.rows.slice(cursor).filter(r => r.layer === layer);
+        cursor = s.phase.rows.length;
+        const canvas = s.phase.contexts.find(c => c.layer === layer && c.connected);
+        return { canvas, rows, source: s.progress?.status ?? null, raf: s.phase.totals[layer], gl: s.gl.totals[layer],
+          size: s.layers.find(c => c.layer === layer), inputGate: s.inputGate,
+          release: resourceReleaseGate(s.resources, s.ownership),
+          limited: s.phase.limited || s.gl.limited || !!s.phase.unrecorded };
+      };
+      const before = await pack(), canvasId = before.canvas?.id;
+      assert(Number.isSafeInteger(canvasId), "CONTINUATION_IDENTITY_UNOBSERVED");
+      const requested = await evaluate(`window.__canvasPhaseA.intervene("${layer}","lose")`);
+      if (requested !== "REQUESTED") return { status: requested, reason: "EXTENSION_UNAVAILABLE" };
+      await wait(`document.querySelector('${selector}').dataset.status==="CONTEXT LOST"`);
+      const revision = scenario === "A" ? 2 : 4;
+      if (scenario === "B") {
+        await evaluate("window.__canvasContinuationInput.setCeiling(4)");
+        await wait(`window.__orderflowMockDiagnostics.progress().status.revision===4 &&
+          document.querySelector('${selector}').dataset.revision==="4"`);
+      }
+      const lost = await pack();
+      await evaluate(`window.__canvasPhaseA.intervene("${layer}","restore")`);
+      await wait(`document.querySelector('${selector}').dataset.status==="READY" &&
+        window.__canvasPhaseA`);
+      const restored = await pack(), followups = [];
+      for (let next = revision + 1; next <= 8; next++) {
+        await evaluate(`window.__canvasContinuationInput.setCeiling(${next})`);
+        await wait(`window.__orderflowMockDiagnostics.progress().status.revision===${next} &&
+          document.querySelector('${selector}').dataset.revision==="${next}"`);
+        // DOM commit alone is not a draw: wait for the real observer's GPU draw.
+        await wait(`window.__canvasPhaseA.snapshot().then(s=>s.rows.some(r=>r.kind==="draw" &&
+          r.canvasId===${canvasId} && r.revision===${next}))`, 5000, true);
+        followups.push(await pack());
+      }
+      await click("button-unified-stop");
+      await new Promise(r => setTimeout(r, 350));
+      const stopped = await pack();
+      const result = { layer, scenario, before, lost, restored, followups, stopped };
+      return { ...assessContinuation(result, references), observation: result };
+    },
+  })));
+}
 export async function runCases(cases, record) {
   for (const c of cases) {
     let result;
@@ -188,6 +350,10 @@ export function installPhaseObserver() {
   const layerOf = canvas => canvas.classList.contains("hm-canvas") ? "heatmap" :
     canvas.classList.contains("bb-canvas") ? "bubble" : null;
   const revision = canvas => Number(canvas.dataset.revision || -1);
+  const active = layer => {
+    const c = [...contexts.values()].find(c => c.layer === layer && c.canvas.isConnected);
+    return { canvasId: c?.id ?? null, revision: c ? revision(c.canvas) : null };
+  };
   const originLayer = () => {
     const stack = new Error().stack ?? "";
     return stack.includes("/components/HeatmapCanvas.tsx") ? "heatmap" :
@@ -201,8 +367,14 @@ export function installPhaseObserver() {
       const c = { canvas: this, layer, id: ++serial, buffers: new Set(), invalidated: 0,
         created: 0, deleted: 0, lost: false, upload: null, loss: 0, restore: 0 };
       contexts.set(gl, c);
-      c.onLost = () => { c.lost = true; c.loss++; c.invalidated += c.buffers.size; c.buffers.clear(); };
-      c.onRestore = () => { c.lost = false; c.restore++; };
+      c.onLost = () => {
+        c.lost = true; c.loss++; c.invalidated += c.buffers.size; c.buffers.clear();
+        push({ kind: "contextlost", layer, canvasId: c.id, revision: revision(this) });
+      };
+      c.onRestore = () => {
+        c.lost = false; c.restore++;
+        push({ kind: "contextrestored", layer, canvasId: c.id, revision: revision(this) });
+      };
       this.addEventListener("webglcontextlost", c.onLost);
       this.addEventListener("webglcontextrestored", c.onRestore);
     }
@@ -239,14 +411,14 @@ export function installPhaseObserver() {
     const id = saved.raf.call(window, function (stamp) {
       if (layer) {
         rafs.delete(id); totals[layer].executed++; totals[layer].live--;
-        push({ kind: "execute", layer });
+        push({ kind: "execute", layer, rafId: id, ...active(layer) });
       }
       return fn.call(this, stamp);
     });
     if (layer) {
       if (rafs.size >= 16) { limited = true; unrecorded++; }
       rafs.set(id, layer); totals[layer].reserved++; totals[layer].live++;
-      push({ kind: "reserve", layer });
+      push({ kind: "reserve", layer, rafId: id, ...active(layer) });
     }
     return id;
   };
@@ -254,7 +426,7 @@ export function installPhaseObserver() {
     const layer = rafs.get(id);
     if (layer) {
       rafs.delete(id); totals[layer].cancelled++; totals[layer].live--;
-      push({ kind: "cancel", layer });
+      push({ kind: "cancel", layer, rafId: id, ...active(layer) });
     }
     return saved.cancel.call(window, id);
   };
@@ -317,7 +489,7 @@ async function group(pgid) {
   return { processes, live: processes.filter(p => p.pgid === pgid && !["Z", "X"].includes(p.state)).map(p => p.pid),
     zombies: processes.filter(p => p.pgid === pgid && ["Z", "X"].includes(p.state)).map(p => p.pid) };
 }
-export async function smoke(output) {
+export async function smoke(output, { continuation = false } = {}) {
   const baseline = await loadE2Baseline();
   const driver = await readFile(DRIVER, "utf8"), observer = resourceObserverSource(driver);
   const environment = { node: process.version, cpu: cpus()[0].model.trim(), logicalCpu: cpus().length,
@@ -326,6 +498,12 @@ export async function smoke(output) {
   validateE2ExternalEnvironment(baseline, environment);
   const report = { status: "RUNNING", environment, driverSha256: digest(driver),
     toolSha256: digest(await readFile(fileURLToPath(import.meta.url))), cases: [], phaseBEligible: false };
+  let references;
+  if (continuation) {
+    const path = ".local/diagnostics/task28-c4-e4-r3/phase-a/report.json", bytes = await readFile(path);
+    references = continuationReferences(JSON.parse(bytes));
+    report.reference = { path, sha256: digest(bytes), references, use: "R3_EXPECTATION_ONLY_NOT_CURRENT_OBSERVATION" };
+  }
   // The finite wall includes all interventions, navigation and cleanup.
   const dir = await mkdtemp("/tmp/orderflow-phase-a-");
   const spawnedAt = performance.now();
@@ -394,11 +572,14 @@ export async function smoke(output) {
       if (r.exceptionDetails) throw Error(`PAGE_EVALUATION:${r.exceptionDetails.text}`);
       return r.result.value;
     };
-    const wait = async (expression, ms = 5000) => {
+    const wait = async (expression, ms = 5000, asyncCondition = false) => {
       const end = performance.now() + ms;
       while (performance.now() < end) {
-        const v = await evaluate(`({ok:!!(${expression}),record:window.__orderflowMockDiagnostics?.progress().recording})`);
+        const v = await evaluate(`(async()=>({ok:!!(${asyncCondition ? "await" : ""} (${expression})),
+          record:window.__orderflowMockDiagnostics?.progress().recording,
+          inputFault:window.__canvasContinuationInput?.snapshot().fault}))()`);
         assert(!v.record?.saturated && !v.record?.dropped, "DIAGNOSTIC_RECORD_LIMIT");
+        assert(!v.inputFault, "INPUT_GATE_FAULT");
         if (v.ok) return;
         await new Promise(r => setTimeout(r, 50));
       }
@@ -406,14 +587,16 @@ export async function smoke(output) {
     };
     snap = () => evaluate(`(async()=>({phase:await window.__canvasPhaseA.snapshot(),gl:window.__b2gl.snapshot(),
       resources:window.__b2resources.snapshot(),ownership:window.__b2resources.ownership(),
+       inputGate:window.__canvasContinuationInput?.snapshot(),
       progress:window.__orderflowMockDiagnostics?.progress(),
-      layers:[...document.querySelectorAll('.hm-canvas,.bb-canvas')].map(c=>({revision:Number(c.dataset.revision),
+       layers:[...document.querySelectorAll('.hm-canvas,.bb-canvas')].map(c=>({layer:c.classList.contains("hm-canvas")?"heatmap":"bubble",revision:Number(c.dataset.revision),
         status:c.dataset.status,width:c.getBoundingClientRect().width,height:c.getBoundingClientRect().height}))}))()`);
     const click = testid => evaluate(`document.querySelector('[data-testid="${testid}"]').click()`);
     await page("Page.enable"); await page("Network.enable");
     await page("Network.setBlockedURLs", { urls: ["*tick-stream.xyz*"] });
     await page("Page.addScriptToEvaluateOnNewDocument", {
-      source: `${observer};(${installSafetyGLObserver.toString()})();(${installPhaseObserver.toString()})()` });
+      source: `${observer};(${installSafetyGLObserver.toString()})();(${installPhaseObserver.toString()})()
+        ${continuation ? `;(${installContinuationInputGate.toString()})()` : ""}` });
     await page("Page.navigate", { url: "http://127.0.0.1:80/?mockDiagnostics=1&mockCase=cells128" });
     await wait(`!!document.querySelector('[data-testid="button-unified-start"]')`);
     // Capture only the inspected background identities, before GPU observation or MOCK input.
@@ -430,7 +613,7 @@ export async function smoke(output) {
     const gpu = probe.gpu;
     const dpr = await evaluate("devicePixelRatio");
     report.browser = { chromium: version.product, gpu, dpr, observation: "COMPLETE" };
-    const cases = [
+    const cases = continuation ? continuationCases({ evaluate, snap, click, wait, references }) : [
       { name: "A1 initial and revision drawing / A2 accounting", gate: "core", run: async () => {
         await evaluate("window.__b2resources.beginSession(1)");
         await click("button-unified-start");
@@ -587,6 +770,10 @@ export async function smoke(output) {
       exitPage: async () => {
         await evaluate(`document.querySelector('[data-testid="button-unified-exit"]')?.click()`);
         await new Promise(r => setTimeout(r, 400));
+        if (continuation) {
+          report.inputGate = await evaluate("window.__canvasContinuationInput.snapshot()");
+          await evaluate("window.__canvasContinuationInput.dispose()");
+        }
       },
       snapshot: () => snap(),
       finishBrowser: async () => { try { return await termination.finish(); } finally { clearTimeout(wall); } },
