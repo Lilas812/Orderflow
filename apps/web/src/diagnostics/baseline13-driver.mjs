@@ -105,19 +105,90 @@ export function resolveBrowserMeaning(workload, wire, reference) {
     sha256: createHash("sha256").update(wire).digest("hex"), verified: null };
 }
 
+export function resourceReleaseGate(snapshot, ownership, requireRaf = true) {
+  if (!ownership || !Array.isArray(ownership.records) || !Array.isArray(ownership.initial) ||
+    !snapshot || !Number.isSafeInteger(snapshot.intervals) || !Number.isSafeInteger(snapshot.raf) ||
+    snapshot.intervals !== ownership.records.length)
+    return { status: "HOLD", reason: "RESOURCE_OWNERSHIP_UNAVAILABLE" };
+  const owned = ownership.records.filter(r => r.owner === "APP" || r.owner === "SESSION");
+  if (owned.length) return { status: "FAIL", reason: "OWNED_INTERVAL_REMAINING", tokens: owned.map(r => r.token) };
+  if (!ownership.baselineRecorded || ownership.limited || ownership.unrecorded || ownership.unknownCreations ||
+    ownership.records.some(r => r.owner !== "BACKGROUND" || !r.sameInitialIdentity ||
+      !ownership.initial.some(i => i.token === r.token && i.nativeId === r.nativeId && i.source === r.source &&
+        i.owner === "BACKGROUND" && i.createdBeforeFirstStart)))
+    return { status: "HOLD", reason: "RESOURCE_OWNERSHIP_UNKNOWN" };
+  if (requireRaf && snapshot.raf !== 0) return { status: "HOLD", reason: "RAF_OWNERSHIP_UNKNOWN" };
+  return { status: "PASS", reason: "NO_OWNED_OR_UNKNOWN_INTERVAL_REMAINS",
+    unchangedBackground: ownership.records.map(r => r.token) };
+}
+
 function installResourceObserver() {
-  const names = ["setInterval", "clearInterval", "requestAnimationFrame", "cancelAnimationFrame"];
-  const saved = Object.fromEntries(names.map(k => [k, window[k]])), intervals = new Set(), raf = new Set();
+  const names = ["setInterval", "clearInterval", "clearTimeout", "requestAnimationFrame", "cancelAnimationFrame"];
+  const saved = Object.fromEntries(names.map(k => [k, window[k]])), intervals = new Map(), raf = new Set();
+  // Live identities, not a rolling event trace. Overflow is explicit and permanently HOLD.
+  const limit = 64, sourceLimit = 256, stackLimit = 8192, baseline = new Set();
+  let sequence = 0, session = 0, initial = [], baselineRecorded = false, limited = false, unrecorded = 0;
+  let created = 0, cleared = 0, unknownCreations = 0;
+  function provenance() {
+    const stack = new Error().stack;
+    if (typeof stack !== "string" || stack.length > stackLimit)
+      return { hint: "UNKNOWN", source: null, reason: "STACK_UNAVAILABLE_OR_OVER_BUDGET" };
+    for (const line of stack.split("\n")) {
+      const m = line.match(/(https?:\/\/[^\s)]+):(\d+):(\d+)/);
+      if (!m) continue;
+      try {
+        const url = new URL(m[1]);
+        if (url.origin !== window.location.origin || url.pathname.length > sourceLimit)
+          return { hint: "UNKNOWN", source: null, reason: "SOURCE_OUTSIDE_OBSERVED_ORIGIN_OR_BUDGET" };
+        const source = url.pathname, lineNumber = Number(m[2]), column = Number(m[3]);
+        if (!Number.isSafeInteger(lineNumber) || !Number.isSafeInteger(column))
+          return { hint: "UNKNOWN", source: null, reason: "INVALID_SOURCE_POSITION" };
+        // Only exact, inspected module paths establish ownership; never a callback-name guess.
+        const hint = source === "/@vite/client" ? "VITE_HMR" :
+          source === "/src/lib/mockAnalysisSession.ts" ? "SESSION" :
+          source === "/src/hooks/useMockAnalysisSession.ts" ? "APP" : "UNKNOWN";
+        return { hint, source, line: lineNumber, column, reason: hint === "UNKNOWN" ? "SOURCE_NOT_CLASSIFIED" : "EXACT_MODULE_PATH" };
+      } catch { return { hint: "UNKNOWN", source: null, reason: "SOURCE_PARSE_FAILED" }; }
+    }
+    return { hint: "UNKNOWN", source: null, reason: "NO_MODULE_SOURCE" };
+  }
+  const record = r => ({ ...r, owner: r.hint === "VITE_HMR" ?
+    baseline.has(r.token) && r.createdBeforeFirstStart ? "BACKGROUND" : "UNKNOWN" : r.hint,
+    sameInitialIdentity: baseline.has(r.token) });
   window.setInterval = function (...args) {
-    const id = saved.setInterval.apply(window, args); intervals.add(id); return id;
+    const p = provenance(), id = saved.setInterval.apply(window, args);
+    created++;
+    if (p.hint === "UNKNOWN" || (p.hint === "VITE_HMR" && baselineRecorded)) unknownCreations++;
+    if (intervals.size === limit || intervals.has(id) || !Number.isSafeInteger(sequence + 1)) {
+      limited = true; unrecorded++; return id; // Native execution is untouched; observation is incomplete.
+    }
+    intervals.set(id, { token: ++sequence, nativeId: typeof id === "number" ? id : null, ...p,
+      createdBeforeFirstStart: !baselineRecorded, session });
+    return id;
   };
-  window.clearInterval = function (id) { intervals.delete(id); return saved.clearInterval.call(window, id); };
+  for (const name of ["clearInterval", "clearTimeout"]) window[name] = function (id) {
+    const result = saved[name].call(window, id);
+    if (intervals.delete(id)) cleared++;
+    return result;
+  };
   window.requestAnimationFrame = function (fn) {
     const id = saved.requestAnimationFrame.call(window, function (t) { raf.delete(id); return fn.call(this, t); });
-    raf.add(id); return id;
+    if (raf.size === limit) { limited = true; unrecorded++; } else raf.add(id);
+    return id;
   };
   window.cancelAnimationFrame = function (id) { raf.delete(id); return saved.cancelAnimationFrame.call(window, id); };
   window.__b2resources = { snapshot: () => ({ intervals: intervals.size, raf: raf.size }),
+    beginSession(next) {
+      if (!baselineRecorded) {
+        for (const r of intervals.values()) if (r.hint === "VITE_HMR") baseline.add(r.token);
+        initial = [...intervals.values()].map(record);
+        baselineRecorded = true;
+      }
+      session = next;
+    },
+    ownership: () => ({ limit, sourceLimit, stackLimit, baselineRecorded, limited, unrecorded, unknownCreations,
+      created, cleared, initial: initial.map(r => ({ ...r })), records: [...intervals.values()].map(record),
+      scope: "Top-level window setInterval; clearInterval/clearTimeout shared IDs; RAF live IDs. No workers, child realms, setTimeout callbacks or pre-captured native aliases. Only bounded source path/position, no raw stack/callback/arguments." }),
     dispose() { Object.assign(window, saved); delete window.__b2resources; } };
 }
 async function browserGroup(pgid) {
@@ -291,7 +362,7 @@ async function browserRun(mode, repetition, lifecycle, workload, reference) {
     rescue = async () => evaluate(`({progress:window.__orderflowMockDiagnostics?.progress(),
       inspection:window.__orderflowMockDiagnostics?.inspectMeaning(),
       telemetry:window.__orderflowMockDiagnostics?.snapshot(),gl:window.__b2gl?.snapshot(),
-      resources:window.__b2resources?.snapshot(),
+      resources:window.__b2resources?.snapshot(),resourceOwnership:window.__b2resources?.ownership(),
       viewport:(${captureViewport.toString()})()})`);
     const wait = async (expression, limit = 10000) => {
       const deadline = performance.now() + limit;
@@ -307,7 +378,7 @@ async function browserRun(mode, repetition, lifecycle, workload, reference) {
     await page("Network.enable");
     await page("Network.setBlockedURLs", { urls: ["*tick-stream.xyz*"] });
     if (workload === "cells512") await page("Page.addScriptToEvaluateOnNewDocument", {
-      source: `(${installResourceObserver.toString()})()` });
+      source: `(${installResourceObserver.toString()})()\n//# sourceURL=orderflow-resource-observer.js` });
     if (observeGL) await page("Page.addScriptToEvaluateOnNewDocument", {
       source: `(${installGLObserver.toString()})(${policy.compactGL},${mode !== "on"})` });
     await page("Page.navigate", { url: `http://127.0.0.1:80/?mockDiagnostics=${mode === "on" ? "1" : "control"}&mockCase=${workload}` });
@@ -320,7 +391,8 @@ async function browserRun(mode, repetition, lifecycle, workload, reference) {
         timerExtension:!!g.getExtension('EXT_disjoint_timer_query_webgl2')};
       g.getExtension('WEBGL_lose_context')?.loseContext();return out})()`);
     assert(gpu.webgl2, "WEBGL2_UNAVAILABLE");
-    const start = await evaluate(`(()=>{const t=performance.now();document.querySelector('[data-testid="button-unified-start"]').click();return t})()`);
+    const start = await evaluate(`(()=>{window.__b2resources?.beginSession(1);
+      const t=performance.now();document.querySelector('[data-testid="button-unified-start"]').click();return t})()`);
     await wait(`document.querySelector('[data-testid="status-data"]')?.textContent.includes("COMPLETED")`, completionLimitMs);
     const observedCompletion = await evaluate("performance.now()");
     await new Promise(r => setTimeout(r, 400));
@@ -432,7 +504,7 @@ async function browserRun(mode, repetition, lifecycle, workload, reference) {
       "dfe56d920917807ed5265bae6ba1c3039a36a3729207c4d1ae38da2c0dc54d27", "BASELINE_HASH_REGRESSION");
     if (lifecycle) {
       // The existing UI intentionally disables Stop after COMPLETED. Exercise it while RUNNING.
-      await evaluate(`document.querySelector('[data-testid="button-unified-restart"]').click()`);
+      await evaluate(`window.__b2resources?.beginSession(2);document.querySelector('[data-testid="button-unified-restart"]').click()`);
       await wait("window.__orderflowMockDiagnostics?.snapshot()?.sessionId===2");
       const fresh = await evaluate("window.__orderflowMockDiagnostics.snapshot()");
       assert(!fresh.rows.some(r => r.stage === "ingest")); // before the first 300ms input
@@ -442,9 +514,11 @@ async function browserRun(mode, repetition, lifecycle, workload, reference) {
       result.stopReleased = true;
       if (workload === "cells512") {
         result.afterStopResources = await evaluate("window.__b2resources.snapshot()");
-        assert.equal(result.afterStopResources.intervals, 0, "STOP_INTERVAL_REMAINING");
+        result.afterStopOwnership = await evaluate("window.__b2resources.ownership()");
+        result.afterStopGate = resourceReleaseGate(result.afterStopResources, result.afterStopOwnership, false);
+        assert.equal(result.afterStopGate.status, "PASS", result.afterStopGate.reason);
       }
-      await evaluate(`document.querySelector('[data-testid="button-unified-restart"]').click()`);
+      await evaluate(`window.__b2resources?.beginSession(3);document.querySelector('[data-testid="button-unified-restart"]').click()`);
       await wait("window.__orderflowMockDiagnostics?.snapshot()?.sessionId===3");
       await evaluate(`window.dispatchEvent(new Event("orderflow:diagnostic-unmount"))`);
       await wait("!window.__orderflowMockDiagnostics && !document.querySelector('.shell')");
@@ -464,7 +538,9 @@ async function browserRun(mode, repetition, lifecycle, workload, reference) {
     }
     if (workload === "cells512") {
       result.afterReleaseResources = await evaluate("window.__b2resources.snapshot()");
-      assert.deepEqual(result.afterReleaseResources, { intervals: 0, raf: 0 }, "APP_TIMER_REMAINING");
+      result.afterReleaseOwnership = await evaluate("window.__b2resources.ownership()");
+      result.afterReleaseGate = resourceReleaseGate(result.afterReleaseResources, result.afterReleaseOwnership);
+      assert.equal(result.afterReleaseGate.status, "PASS", result.afterReleaseGate.reason);
       await evaluate("window.__b2resources.dispose()");
     }
     return result;

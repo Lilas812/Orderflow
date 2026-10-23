@@ -553,3 +553,106 @@ it("driver resource observer forwards native timers and releases one-shot RAF ID
   expect(nativeCancel).toHaveBeenCalledWith(cancelled);
   win.__b2resources.dispose(); expect(win.setInterval).toBe(nativeSet); expect(win.__b2resources).toBeUndefined();
 });
+
+function ownerHarness() {
+  const text = readFileSync(new URL("./baseline13-driver.mjs", import.meta.url), "utf8");
+  const source = text.slice(text.indexOf("function installResourceObserver("), text.indexOf("async function browserGroup("));
+  let path = "/@vite/client", id = 0, reused: number | undefined, noStack = false, oversized = false;
+  const callbacks = new Map<number, (...args: unknown[]) => void>();
+  const nativeSet = vi.fn((fn: (...args: unknown[]) => void) => {
+    const next = reused ?? ++id; reused = undefined; callbacks.set(next, fn); return next;
+  });
+  const nativeClear = vi.fn((n: number) => { callbacks.delete(n); });
+  const win: Record<string, any> = { location: { origin: new URL("http://127.0.0.1:80").origin },
+    setInterval: nativeSet, clearInterval: nativeClear, clearTimeout: nativeClear,
+    requestAnimationFrame: () => ++id, cancelAnimationFrame: vi.fn() };
+  class Stack {
+    stack = noStack ? undefined : oversized ? "x".repeat(8193) :
+      `Error\n at provenance (orderflow-resource-observer.js:1:1)\n at caller (http://127.0.0.1:80${path}:123:4)`;
+  }
+  runInNewContext(`(${source})()`, { window: win, Error: Stack, URL });
+  return { win, observer: win.__b2resources, nativeSet, nativeClear, callbacks,
+    path: (value: string) => { path = value; }, noStack: () => { noStack = true; },
+    oversized: () => { oversized = true; }, reuse: (value: number) => { reused = value; } };
+}
+it("same pre-start Vite interval remains background, without cancelling or running it", async () => {
+  const { resourceReleaseGate } = await import(driverUrl), h = ownerHarness(), fn = vi.fn();
+  const background = h.win.setInterval(fn, 30000, "native argument");
+  h.observer.beginSession(1); h.path("/src/lib/mockAnalysisSession.ts?t=ignored");
+  const owned = h.win.setInterval(fn, 300); h.win.clearInterval(owned);
+  expect(resourceReleaseGate(h.observer.snapshot(), h.observer.ownership()).status).toBe("PASS");
+  expect(h.observer.ownership().records[0]).toMatchObject({ owner: "BACKGROUND", source: "/@vite/client",
+    sameInitialIdentity: true, createdBeforeFirstStart: true, nativeId: background });
+  expect(h.callbacks.has(background)).toBe(true); expect(fn).not.toHaveBeenCalled();
+  expect(h.nativeSet.mock.calls[0]).toEqual([fn, 30000, "native argument"]);
+  h.observer.dispose(); expect(h.callbacks.has(background)).toBe(true);
+});
+it.each([["/src/lib/mockAnalysisSession.ts", "SESSION"], ["/src/hooks/useMockAnalysisSession.ts", "APP"]])(
+  "%s remaining interval is FAIL, not a background allowance", async (path, owner) => {
+    const { resourceReleaseGate } = await import(driverUrl), h = ownerHarness();
+    h.observer.beginSession(1); h.path(path); h.win.setInterval(() => {}, 250);
+    expect(h.observer.ownership().records[0]).toMatchObject({ owner, session: 1, createdBeforeFirstStart: false });
+    expect(resourceReleaseGate(h.observer.snapshot(), h.observer.ownership())).toMatchObject({
+      status: "FAIL", reason: "OWNED_INTERVAL_REMAINING" });
+  });
+it("unknown source is HOLD even if its interval has already been cleared", async () => {
+  const { resourceReleaseGate } = await import(driverUrl), h = ownerHarness();
+  h.observer.beginSession(1); h.path("/unclassified/module.js?key=do-not-store");
+  const id = h.win.setInterval(() => {}, 1);
+  expect(h.observer.ownership().records[0].source).toBe("/unclassified/module.js");
+  expect(resourceReleaseGate(h.observer.snapshot(), h.observer.ownership()).status).toBe("HOLD");
+  h.win.clearInterval(id);
+  expect(resourceReleaseGate(h.observer.snapshot(), h.observer.ownership()).status).toBe("HOLD");
+  expect(JSON.stringify(h.observer.ownership())).not.toContain("do-not-store");
+});
+it("post-start Vite interval and a reused native ID are not the original background identity", async () => {
+  const { resourceReleaseGate } = await import(driverUrl), h = ownerHarness();
+  const first = h.win.setInterval(() => {}, 30000); h.observer.beginSession(1);
+  const oldToken = h.observer.ownership().records[0].token;
+  h.win.clearTimeout(first); h.reuse(first); h.win.setInterval(() => {}, 30000);
+  expect(h.observer.ownership().records[0].token).not.toBe(oldToken);
+  expect(h.observer.ownership().records[0]).toMatchObject({ nativeId: first, owner: "UNKNOWN", sameInitialIdentity: false });
+  expect(resourceReleaseGate(h.observer.snapshot(), h.observer.ownership()).status).toBe("HOLD");
+});
+it("start timing alone never classifies an unknown pre-start interval as background", async () => {
+  const { resourceReleaseGate } = await import(driverUrl), h = ownerHarness();
+  h.path("/third-party.js"); h.win.setInterval(() => {}, 1); h.observer.beginSession(1);
+  expect(h.observer.ownership().records[0].createdBeforeFirstStart).toBe(true);
+  expect(resourceReleaseGate(h.observer.snapshot(), h.observer.ownership()).status).toBe("HOLD");
+});
+it.each(["missing", "oversized"])("unavailable bounded provenance (%s) is HOLD", async mode => {
+  const { resourceReleaseGate } = await import(driverUrl), h = ownerHarness();
+  h.observer.beginSession(1); if (mode === "missing") h.noStack(); else h.oversized();
+  h.win.setInterval(() => {}, 1);
+  expect(resourceReleaseGate(h.observer.snapshot(), h.observer.ownership()).status).toBe("HOLD");
+  expect(h.observer.ownership().records[0].source).toBeNull();
+});
+it("observation overflow is explicit, bounded and does not suppress native interval execution", async () => {
+  const { resourceReleaseGate } = await import(driverUrl), h = ownerHarness();
+  h.observer.beginSession(1); h.path("/src/lib/mockAnalysisSession.ts");
+  const ids = Array.from({ length: 65 }, () => h.win.setInterval(() => {}, 1));
+  expect(h.nativeSet).toHaveBeenCalledTimes(65); expect(h.callbacks.size).toBe(65);
+  expect(h.observer.ownership()).toMatchObject({ limited: true, unrecorded: 1 });
+  expect(h.observer.ownership().records).toHaveLength(64);
+  for (const id of ids) h.win.clearInterval(id);
+  expect(resourceReleaseGate(h.observer.snapshot(), h.observer.ownership()).status).toBe("HOLD");
+});
+it("restart ownership generations, shared clearTimeout IDs and defensive snapshots are retained", async () => {
+  const { resourceReleaseGate } = await import(driverUrl), h = ownerHarness();
+  h.win.setInterval(() => {}, 30000); h.observer.beginSession(1); h.path("/src/hooks/useMockAnalysisSession.ts");
+  const first = h.win.setInterval(() => {}, 250); h.win.clearTimeout(first);
+  h.observer.beginSession(2); const second = h.win.setInterval(() => {}, 250);
+  expect(h.observer.ownership().records.find((r: { owner: string }) => r.owner === "APP").session).toBe(2);
+  h.win.clearInterval(second);
+  h.observer.ownership().initial[0].source = "/forged";
+  expect(h.observer.ownership().initial[0].source).toBe("/@vite/client");
+  expect(resourceReleaseGate(h.observer.snapshot(), h.observer.ownership()).status).toBe("PASS");
+});
+it("release without a recorded baseline or with unmatched identities is HOLD", async () => {
+  const { resourceReleaseGate } = await import(driverUrl), h = ownerHarness();
+  expect(resourceReleaseGate(h.observer.snapshot(), h.observer.ownership()).status).toBe("HOLD");
+  h.win.setInterval(() => {}, 30000); h.observer.beginSession(1);
+  const changed = h.observer.ownership(); changed.initial[0].token++;
+  expect(resourceReleaseGate(h.observer.snapshot(), changed).status).toBe("HOLD");
+  expect(resourceReleaseGate({ intervals: 999, raf: 0 }, h.observer.ownership()).status).toBe("HOLD");
+});
