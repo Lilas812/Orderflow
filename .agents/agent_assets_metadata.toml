@@ -560,3 +560,17 @@ mtime_ms = 1792767101331
 storage_uri = "gcs://replit-rams-assets-pike/rams/assets/repl:396298eb-318f-4ad8-9c4e-13a5b19e25a9/65842faf-dc07-43aa-bc50-572b76631f96/d01aab8b-a9d0-4058-8de6-88f9ce5b8d3f"
 storage_version_token = "1792767266441492"
 content_type = "text/csv"
+
+[[outputs]]
+id = "6uCtZeyrljLECU7Ry_OOT"
+uri = "file://.local/diagnostics/task28-c4-c5-r1/report.md"
+type = "text"
+title = "C5-R1 正式12試行・E2比較報告"
+description = "全12試行の正確性・frame MISS・revision別比較・CPU/GL・容量・解放結果と制約をまとめた報告です。"
+logical_id = "8608cff2-e61f-47e9-9f6b-21129f36dfba"
+content_hash = "sha256:e320474943ffe0be14bea175165e46a3c969aa7d235e37c93eb35bf6b7ee2bac"
+size = 7426
+mtime_ms = 1792775996523
+storage_uri = "gcs://replit-rams-assets-pike/rams/assets/repl:396298eb-318f-4ad8-9c4e-13a5b19e25a9/8608cff2-e61f-47e9-9f6b-21129f36dfba/cc9a21b4-9808-4142-8c09-f61c16d55989"
+storage_version_token = "1792776018188265"
+content_type = "text/markdown"
