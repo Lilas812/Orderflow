@@ -138,34 +138,167 @@ export async function isolatedB2<T>(input: {
     try { child.send({ type: "START" }, () => {}); } catch { stop("B2_IPC_INVALID"); }
   });
 }
-/** Probes ONLY artificial canary bytes, never a market-data path. A successful
- * HTTP read (including a SPA fallback) is conservatively rejected. */
-export async function privateProbe(root = DEFAULT_LIVE_ROOT,
-  request: (url: string) => Promise<number> = async url => {
-    const r = await fetch(url, { redirect: "manual", signal: AbortSignal.timeout(3000) });
-    await r.body?.cancel(); return r.status;
-  }): Promise<{ passed: true; probes: number; remainingFiles: 0 }> {
-  const id = randomUUID(), p = createTrial(root, id, "ARTIFICIAL_PROTOCOL_TEST");
-  const canary = join(p.data, "privacy-canary");
-  let probes = 0;
+type ProbeRequest = (url: string) => Promise<Response | number>;
+type PrivacyOutcome = "PASS" | "FAIL" | "UNKNOWN";
+export interface CanaryRouteResult {
+  outcome: PrivacyOutcome; reason: string; initialStatus: number | null; finalStatus: number | null;
+  contentType: string | null; redirects: number; externalRedirectsBlocked: number;
+  bodyMatch: boolean; identifierExposed: boolean; spaFallback: boolean;
+}
+const probeRequest: ProbeRequest = url => fetch(url, {
+  redirect: "manual", credentials: "omit", referrerPolicy: "no-referrer", signal: AbortSignal.timeout(3000),
+});
+const MAX_PROBE_BODY = 1024 * 1024;
+/** Exact origins, not suffix matching. No credentials, query parameters, cookies,
+ * Authorization headers, automatic redirects, or non-HTTP protocols. */
+function probeUrlAllowed(url: URL, previewOrigin?: string): boolean {
+  return ["http:", "https:"].includes(url.protocol) && !url.username && !url.password && !url.search &&
+    (["localhost", "127.0.0.1", "[::1]"].includes(url.hostname) || url.origin === previewOrigin);
+}
+async function probeBody(response: Response): Promise<string> {
+  const reader = response.body?.getReader();
+  if (!reader) return "";
+  const chunks: Uint8Array[] = []; let size = 0;
+  let timedOut = false;
+  const timer = setTimeout(() => { timedOut = true; void reader.cancel().catch(() => {}); }, 3000);
   try {
-    writeFileSync(canary, "ARTIFICIAL_PRIVACY_CANARY", { flag: "wx", mode: 0o600 });
-    // These are the existing artifact preview mounts; not guessed SPA routes.
-    for (const prefix of ["", "/__mockup", "/api"]) {
-      for (const slash of ["", "/"]) {
-        const status = await request(`http://127.0.0.1:80${prefix}/@fs/${slash}${canary.slice(1)}`);
-        if (![403, 404].includes(status)) throw Object.assign(Error("B2_PRIVATE_PROBE_FAILED"), { code: "B2_PRIVATE_PROBE_FAILED" });
-        probes++;
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      size += value.byteLength;
+      if (size > MAX_PROBE_BODY) throw Error("PROBE_BODY_LIMIT");
+      chunks.push(value);
+    }
+    if (timedOut) throw Error("PROBE_BODY_TIMEOUT");
+    return new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(chunks));
+  } finally { clearTimeout(timer); await reader.cancel().catch(() => {}); reader.releaseLock(); }
+}
+/** Response bodies/Location/URLs and artificial identifiers NEVER enter reports. */
+export async function inspectCanaryRoute(input: {
+  url: string; baselineUrl: string; previewOrigin?: string; canary: string; identifiers: readonly string[];
+}, request: ProbeRequest = probeRequest): Promise<CanaryRouteResult> {
+  const result: CanaryRouteResult = { outcome: "UNKNOWN", reason: "PROBE_UNAVAILABLE",
+    initialStatus: null, finalStatus: null, contentType: null, redirects: 0, externalRedirectsBlocked: 0,
+    bodyMatch: false, identifierExposed: false, spaFallback: false };
+  const finish = (outcome: PrivacyOutcome, reason: string) => Object.assign(result, { outcome, reason });
+  const exposed = (body: string) => {
+    result.bodyMatch ||= body === input.canary;
+    result.identifierExposed ||= body.includes(input.canary) || input.identifiers.some(id => body.includes(id));
+    return result.bodyMatch || result.identifierExposed;
+  };
+  try {
+    let url = new URL(input.url); const visited = new Set<string>();
+    for (;;) {
+      url.hash = "";
+      if (!probeUrlAllowed(url, input.previewOrigin)) {
+        result.externalRedirectsBlocked++;
+        return finish("FAIL", "DESTINATION_FORBIDDEN");
+      }
+      if (visited.has(url.href)) return finish("FAIL", "REDIRECT_LOOP");
+      visited.add(url.href);
+      const raw = await request(url.href);
+      // Legacy numeric injection can prove ONLY explicit denial, never a 200.
+      const response = typeof raw === "number" ? new Response(null, { status: raw }) : raw;
+      const body = await probeBody(response);
+      result.initialStatus ??= response.status; result.finalStatus = response.status;
+      const mediaType = (response.headers.get("content-type") ?? "").split(";")[0].trim().toLowerCase();
+      result.contentType = ["text/html", "application/xhtml+xml", "text/plain", "application/octet-stream",
+        "application/json"].includes(mediaType) ? mediaType : mediaType ? "OTHER" : null;
+      if (exposed(body)) return finish("FAIL", "CANARY_EXPOSED");
+      let headerExposure = false;
+      response.headers.forEach(value => { if (exposed(value)) headerExposure = true; });
+      if (headerExposure) return finish("FAIL", "CANARY_IDENTIFIER_IN_HEADERS");
+      if ([301, 302, 303, 307, 308].includes(response.status)) {
+        const location = response.headers.get("location");
+        if (!location) return finish("UNKNOWN", "REDIRECT_LOCATION_MISSING");
+        const next = new URL(location, url);
+        if (exposed(location)) return finish("FAIL", "CANARY_IDENTIFIER_IN_LOCATION");
+        if (!probeUrlAllowed(next, input.previewOrigin)) {
+          result.externalRedirectsBlocked++;
+          return finish("FAIL", "DESTINATION_FORBIDDEN");
+        }
+        next.hash = "";
+        if (visited.has(next.href)) return finish("FAIL", "REDIRECT_LOOP");
+        if (result.redirects >= 3) return finish("UNKNOWN", "REDIRECT_LIMIT");
+        result.redirects++; url = next; continue;
+      }
+      if ([403, 404].includes(response.status)) return finish("PASS", "EXPLICIT_DENIAL");
+      if (response.status !== 200 || mediaType !== "text/html" ||
+        response.headers.has("content-disposition") ||
+        !/<!doctype\s+html\b/i.test(body) || !/<html[\s>]/i.test(body) || !/<\/html\s*>/i.test(body)) {
+        return finish("UNKNOWN", "UNCLASSIFIED_RESPONSE");
+      }
+      const baselineUrl = new URL(input.baselineUrl);
+      if (!probeUrlAllowed(baselineUrl, input.previewOrigin)) return finish("UNKNOWN", "BASELINE_FORBIDDEN");
+      const rawBaseline = await request(baselineUrl.href);
+      const baseline = typeof rawBaseline === "number" ? new Response(null, { status: rawBaseline }) : rawBaseline;
+      const baselineBody = await probeBody(baseline);
+      if (exposed(baselineBody)) return finish("FAIL", "CANARY_EXPOSED");
+      baseline.headers.forEach(value => { if (exposed(value)) headerExposure = true; });
+      if (headerExposure) return finish("FAIL", "CANARY_IDENTIFIER_IN_HEADERS");
+      if (baseline.status !== 200 || baseline.headers.has("content-disposition") ||
+        !/^text\/html(?:;|$)/i.test(baseline.headers.get("content-type") ?? "") || body !== baselineBody) {
+        return finish("UNKNOWN", "HTML_BASELINE_MISMATCH");
+      }
+      result.spaFallback = true;
+      return finish("PASS", "MATCHED_NORMAL_HTML");
+    }
+  } catch { return finish("UNKNOWN", "PROBE_UNAVAILABLE"); }
+}
+interface PrivacyReport {
+  outcome: PrivacyOutcome; routes: (CanaryRouteResult & { group: string; mount: string; form: string })[];
+  canaryRetrievals: number; identifierExposures: number; unknown: number;
+  externalRedirectsBlocked: number; externalRequests: 0;
+}
+class PrivacyProbeFailure extends Error {
+  readonly code = "B2_PRIVATE_PROBE_FAILED";
+  constructor(readonly privacy: PrivacyReport) { super("B2_PRIVATE_PROBE_FAILED"); }
+}
+/** Original six plus the previous 24 extended routes. Only one artificial trial
+ * is created. A proof is issued only after ALL routes pass AND deletion succeeds. */
+export async function privateProbe(root = DEFAULT_LIVE_ROOT, request: ProbeRequest = probeRequest,
+  previewOrigin = process.env.REPLIT_DEV_DOMAIN ? `https://${process.env.REPLIT_DEV_DOMAIN}` : undefined) {
+  const id = randomUUID(), p = createTrial(root, id, "ARTIFICIAL_PROTOCOL_TEST");
+  const token = randomUUID(), canary = join(p.data, "privacy-canary");
+  const content = `ARTIFICIAL_PRIVACY_CANARY_${token}`;
+  const routes: PrivacyReport["routes"] = [];
+  try {
+    writeFileSync(canary, content, { flag: "wx", mode: 0o600 });
+    const check = async (origin: string, group: string, mount: string, form: string, suffix: string) => {
+      routes.push({ ...await inspectCanaryRoute({ url: `${origin}${mount}${suffix}`,
+        baselineUrl: `${origin}${mount}/`, previewOrigin, canary: content, identifiers: [token] }, request),
+      group, mount: mount || "/", form });
+    };
+    for (const mount of ["", "/__mockup", "/api"]) {
+      for (const slash of ["", "/"]) await check("http://127.0.0.1:80", "existing", mount,
+        slash ? "fs-double" : "fs-single", `/@fs/${slash}${canary.slice(1)}`);
+    }
+    for (const [group, origin] of [["local-proxy", "http://127.0.0.1:80"], ["public-preview", previewOrigin]]) {
+      for (const mount of ["", "/__mockup", "/api"]) {
+        for (const [form, suffix] of [["fs-single", `/@fs/${canary.slice(1)}`], ["fs-double", `/@fs/${canary}`],
+          ["fs-encoded", `/@fs/${encodeURIComponent(canary)}`], ["ordinary", canary]]) {
+          if (origin) await check(origin, group!, mount, form!, suffix!);
+          else routes.push({ outcome: "UNKNOWN", reason: "PREVIEW_ORIGIN_MISSING", initialStatus: null,
+            finalStatus: null, contentType: null, redirects: 0, externalRedirectsBlocked: 0,
+            bodyMatch: false, identifierExposed: false, spaFallback: false, group: group!, mount: mount || "/", form: form! });
+        }
       }
     }
-    const proof = { passed: true as const, probes, remainingFiles: 0 as const };
-    if (root === DEFAULT_LIVE_ROOT) privateProofs.add(proof);
-    return proof;
   } finally {
-    // Constant basename within a newly created owned directory, not rm -rf.
     if (existsSync(canary)) unlinkSync(canary);
     purgeTrial(root, id);
   }
+  const privacy: PrivacyReport = {
+    outcome: routes.some(r => r.outcome === "FAIL") ? "FAIL" : routes.some(r => r.outcome === "UNKNOWN") ? "UNKNOWN" : "PASS",
+    routes, canaryRetrievals: routes.filter(r => r.reason === "CANARY_EXPOSED").length,
+    identifierExposures: routes.filter(r => r.identifierExposed).length,
+    unknown: routes.filter(r => r.outcome === "UNKNOWN").length,
+    externalRedirectsBlocked: routes.reduce((n, r) => n + r.externalRedirectsBlocked, 0), externalRequests: 0,
+  };
+  if (privacy.outcome !== "PASS") throw new PrivacyProbeFailure(privacy);
+  const proof = { passed: true as const, probes: routes.length, remainingFiles: 0 as const, privacy };
+  if (root === DEFAULT_LIVE_ROOT) privateProofs.add(proof);
+  return proof;
 }
 const privateProofs = new WeakSet<object>();
 function resolution(): void {
@@ -346,6 +479,7 @@ async function main(): Promise<void> {
 if (isEntry) {
   void main().catch(error => {
     process.stdout.write(JSON.stringify({ phase: "HOLD", reason: b2FailureReason(error, "B2_CHILD_FAILURE"),
+      ...(error instanceof PrivacyProbeFailure ? { privacy: error.privacy, remainingFiles: 0 } : {}),
       cleanup: null, deletionWhileStopped: "NOT_GUARANTEED_MANUAL_CONFIRMATION_REQUIRED" }) + "\n");
     process.exitCode = 1;
   });

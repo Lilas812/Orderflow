@@ -3,8 +3,9 @@ import { spawn } from "node:child_process";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
+import { createServer } from "node:http";
 import { DEFAULT_LIVE_ROOT, createTrial, purgeTrial, scanExpiredTrials } from "@workspace/tickstream-storage/live-trial-directory";
-import { isolatedB2, privateProbe, runB2Trial } from "./gateB2Process";
+import { isolatedB2, inspectCanaryRoute, privateProbe, runB2Trial } from "./gateB2Process";
 import { LIVE_FLAGS } from "./gateB2Config";
 
 const ids: string[] = [];
@@ -27,10 +28,14 @@ describe("B-2B independent supervisor, restart verification and immediate purge"
   });
   it("makes artificial canary-only probes, purges on success and refuses a 200 response", async () => {
     const before = existsSync(DEFAULT_LIVE_ROOT) ? readdirSync(DEFAULT_LIVE_ROOT) : [], urls: string[] = [];
-    const result = await privateProbe(DEFAULT_LIVE_ROOT, async url => { urls.push(url); return 403; });
-    expect(result).toEqual({ passed: true, probes: 6, remainingFiles: 0 });
-    expect(urls.every(url => url.startsWith("http://127.0.0.1:80/") && url.includes("privacy-canary"))).toBe(true);
-    await expect(privateProbe(DEFAULT_LIVE_ROOT, async () => 200)).rejects.toThrow("B2_PRIVATE_PROBE_FAILED");
+    const result = await privateProbe(DEFAULT_LIVE_ROOT, async url => { urls.push(url); return 403; }, "https://preview.test");
+    expect(result).toMatchObject({ passed: true, probes: 30, remainingFiles: 0,
+      privacy: { outcome: "PASS", canaryRetrievals: 0, identifierExposures: 0, unknown: 0, externalRequests: 0 } });
+    expect(result.privacy.routes).toHaveLength(30);
+    expect(urls.every(url => ["127.0.0.1", "preview.test"].includes(new URL(url).hostname) && url.includes("privacy-canary"))).toBe(true);
+    expect(result.privacy.routes.filter(r => r.group === "existing")).toHaveLength(6);
+    expect(result.privacy.routes.filter(r => r.group !== "existing")).toHaveLength(24);
+    await expect(privateProbe(DEFAULT_LIVE_ROOT, async () => 200, "https://preview.test")).rejects.toThrow("B2_PRIVATE_PROBE_FAILED");
     expect(readdirSync(DEFAULT_LIVE_ROOT)).toEqual(before);
   });
   it("requires an in-process privacy proof before even considering a production run", async () => {
@@ -133,5 +138,158 @@ describe("B-2B independent supervisor, restart verification and immediate purge"
     expect(scanExpiredTrials()).toContain(p.trialId);
     await expect(runB2Trial("ARTIFICIAL_PROTOCOL_TEST")).rejects.toMatchObject({ code: "TRIAL_EXPIRED_CLEANUP_REQUIRED" });
     expect(existsSync(p.directory)).toBe(true);
+  });
+});
+
+describe("B-2B artificial canary body classification and bounded redirects", () => {
+  const html = "<!DOCTYPE html><html><head><title>ARTIFICIAL SPA</title></head><body><div id=\"root\"></div></body></html>";
+  const token = "ARTIFICIAL_PRIVATE_IDENTIFIER";
+  const canary = `ARTIFICIAL_CANARY_${token}`;
+  const input = { url: "http://127.0.0.1/canary", baselineUrl: "http://127.0.0.1/",
+    previewOrigin: "https://preview.test", canary, identifiers: [token] };
+  const response = (body: string, status = 200, type = "text/html", headers: Record<string, string> = {}) =>
+    new Response(body, { status, headers: { "content-type": type, ...headers } });
+  it.each([403, 404])("accepts denial only after checking its body (%s)", async status => {
+    const r = await inspectCanaryRoute(input, async () => response("denied", status, "text/plain"));
+    expect(r).toMatchObject({ outcome: "PASS", reason: "EXPLICIT_DENIAL", bodyMatch: false, identifierExposed: false });
+  });
+  it("accepts a 200 ONLY when it matches the normal mount HTML", async () => {
+    let calls = 0;
+    const r = await inspectCanaryRoute(input, async () => { calls++; return response(html); });
+    expect(r).toMatchObject({ outcome: "PASS", reason: "MATCHED_NORMAL_HTML", contentType: "text/html",
+      spaFallback: true, bodyMatch: false, identifierExposed: false });
+    expect(calls).toBe(2);
+  });
+  it.each(["text/plain", "application/octet-stream", "application/json", ""])(
+    "does not mistake non-HTML content for an SPA (%s)", async type => {
+      expect(await inspectCanaryRoute(input, async () => response(html, 200, type)))
+        .toMatchObject({ outcome: "UNKNOWN", reason: "UNCLASSIFIED_RESPONSE" });
+    });
+  it.each([200, 403, 404, 307])("rejects canary bytes even with status %s", async status => {
+    expect(await inspectCanaryRoute(input, async () => response(canary, status, "text/plain", { location: "/denied" })))
+      .toMatchObject({ outcome: "FAIL", reason: "CANARY_EXPOSED", bodyMatch: true, identifierExposed: true });
+  });
+  it("rejects a partial identifier inside ordinary-looking HTML and redacts reports", async () => {
+    const r = await inspectCanaryRoute(input, async () => response(html.replace("</body>", `${token}</body>`)));
+    expect(r).toMatchObject({ outcome: "FAIL", identifierExposed: true });
+    expect(JSON.stringify(r)).not.toContain(token); expect(JSON.stringify(r)).not.toContain(input.url);
+  });
+  it("rejects downloads even when content-type says HTML", async () => {
+    expect(await inspectCanaryRoute(input, async () => response(html, 200, "text/html", { "content-disposition": "attachment" })))
+      .toMatchObject({ outcome: "UNKNOWN", reason: "UNCLASSIFIED_RESPONSE" });
+  });
+  it("does not trust unrelated HTML or a baseline redirect", async () => {
+    for (const baseline of [() => response(html.replace("SPA", "OTHER")),
+      () => response("", 307, "text/html", { location: "https://external.test" })]) {
+      expect(await inspectCanaryRoute(input, async url => url.endsWith("/canary") ? response(html) : baseline()))
+        .toMatchObject({ outcome: "UNKNOWN", reason: "HTML_BASELINE_MISMATCH" });
+    }
+  });
+  it("detects a canary exposed by the baseline too", async () => {
+    expect(await inspectCanaryRoute(input, async url => response(url.endsWith("/canary") ? html : canary)))
+      .toMatchObject({ outcome: "FAIL", reason: "CANARY_EXPOSED" });
+  });
+  it("follows at most three allowed redirects, checking every body", async () => {
+    const urls: string[] = [];
+    const r = await inspectCanaryRoute(input, async url => {
+      urls.push(url);
+      return urls.length <= 3 ? response("", 307, "text/plain", { location: `/hop-${urls.length}` }) : response("denied", 404);
+    });
+    expect(r).toMatchObject({ outcome: "PASS", initialStatus: 307, finalStatus: 404, redirects: 3 });
+    expect(urls).toHaveLength(4);
+  });
+  it("does not send a fourth redirect request", async () => {
+    let calls = 0;
+    const r = await inspectCanaryRoute(input, async () => response("", 307, "text/plain", { location: `/hop-${++calls}` }));
+    expect(r).toMatchObject({ outcome: "UNKNOWN", reason: "REDIRECT_LIMIT", redirects: 3 });
+    expect(calls).toBe(4);
+  });
+  it.each(["https://external.test/canary", "https://preview.test.evil.test/canary", "file:///tmp/canary",
+    "ftp://127.0.0.1/canary", "http://user:password@localhost/canary", "http://localhost/canary?key=ARTIFICIAL"])(
+    "blocks a forbidden destination before requesting it (%s)", async location => {
+      let calls = 0;
+      const r = await inspectCanaryRoute(input, async () => { calls++; return response("", 307, "text/plain", { location }); });
+      expect(r).toMatchObject({ outcome: "FAIL", reason: "DESTINATION_FORBIDDEN", externalRedirectsBlocked: 1 });
+      expect(calls).toBe(1);
+    });
+  it("allows only the exact explicitly selected preview origin", async () => {
+    const urls: string[] = [];
+    const r = await inspectCanaryRoute(input, async url => {
+      urls.push(url); return urls.length === 1 ? response("", 307, "text/plain", { location: "https://preview.test/denied" }) : response("", 403);
+    });
+    expect(r).toMatchObject({ outcome: "PASS", redirects: 1 });
+    expect(urls).toEqual([input.url, "https://preview.test/denied"]);
+  });
+  it("fails a redirect loop without sending the repeated request", async () => {
+    let calls = 0;
+    expect(await inspectCanaryRoute(input, async () => {
+      calls++; return response("", 307, "text/plain", { location: input.url });
+    })).toMatchObject({ outcome: "FAIL", reason: "REDIRECT_LOOP" });
+    expect(calls).toBe(1);
+  });
+  it("keeps missing or invalid redirect targets UNKNOWN", async () => {
+    const targets: Record<string, string>[] = [{}, { location: "http://[" }];
+    for (const headers of targets) {
+      expect((await inspectCanaryRoute(input, async () => response("", 307, "text/plain", headers))).outcome).toBe("UNKNOWN");
+    }
+  });
+  it("detects an identifier in Location without following it", async () => {
+    let calls = 0;
+    expect(await inspectCanaryRoute(input, async () => {
+      calls++; return response("", 307, "text/plain", { location: `/reflect/${token}` });
+    })).toMatchObject({ outcome: "FAIL", reason: "CANARY_IDENTIFIER_IN_HEADERS", identifierExposed: true });
+    expect(calls).toBe(1);
+  });
+  it("rejects identifier exposure in headers even on explicit denial", async () => {
+    expect(await inspectCanaryRoute(input, async () => response("", 403, "text/plain", { "x-artificial": token })))
+      .toMatchObject({ outcome: "FAIL", reason: "CANARY_IDENTIFIER_IN_HEADERS", identifierExposed: true });
+  });
+  it("fails fragment-only loops before repeating a request", async () => {
+    let calls = 0;
+    expect(await inspectCanaryRoute(input, async () => {
+      calls++; return response("", 307, "text/plain", { location: "#fragment" });
+    })).toMatchObject({ outcome: "FAIL", reason: "REDIRECT_LOOP" });
+    expect(calls).toBe(1);
+  });
+  it("checks the final redirected body for exposure", async () => {
+    let calls = 0;
+    expect(await inspectCanaryRoute(input, async () => ++calls === 1
+      ? response("", 307, "text/plain", { location: "/target" }) : response(canary, 200, "text/plain")))
+      .toMatchObject({ outcome: "FAIL", reason: "CANARY_EXPOSED", redirects: 1 });
+  });
+  it("bounds response memory and refuses incomplete/unavailable bodies", async () => {
+    expect((await inspectCanaryRoute(input, async () => response("x".repeat(1024 * 1024 + 1)))).outcome).toBe("UNKNOWN");
+    expect((await inspectCanaryRoute(input, async () => { throw Error("ARTIFICIAL_IO"); })).outcome).toBe("UNKNOWN");
+  });
+  it("requires an explicit preview origin and deletes the artificial trial on UNKNOWN", async () => {
+    const before = readdirSync(DEFAULT_LIVE_ROOT);
+    await expect(privateProbe(DEFAULT_LIVE_ROOT, async () => 403, ""))
+      .rejects.toMatchObject({ code: "B2_PRIVATE_PROBE_FAILED", privacy: { outcome: "UNKNOWN", unknown: 12 } });
+    expect(readdirSync(DEFAULT_LIVE_ROOT)).toEqual(before);
+  });
+  it("deletes only its artificial trial on FAIL, preserving other trials", async () => {
+    const other = createTrial(DEFAULT_LIVE_ROOT, randomUUID(), "ARTIFICIAL_PROTOCOL_TEST"); ids.push(other.trialId);
+    const before = readdirSync(DEFAULT_LIVE_ROOT), marker = readFileSync(`${other.directory}/trial.json`, "utf8");
+    await expect(privateProbe(DEFAULT_LIVE_ROOT, async url => {
+      const path = decodeURIComponent(new URL(url).pathname.replace(/^\/@fs\/?/, "/"));
+      return response(readFileSync(path, "utf8"), 200, "text/plain");
+    }, "https://preview.test")).rejects.toMatchObject({ privacy: { outcome: "FAIL" } });
+    expect(readdirSync(DEFAULT_LIVE_ROOT)).toEqual(before);
+    expect(readFileSync(`${other.directory}/trial.json`, "utf8")).toBe(marker);
+  });
+  it("uses real loopback HTTP with manual redirects and no credentials or cookies", async () => {
+    const received: { url: string; auth: string | undefined; cookie: string | undefined }[] = [];
+    const server = createServer((req, res) => {
+      received.push({ url: req.url!, auth: req.headers.authorization, cookie: req.headers.cookie });
+      if (req.url === "/canary") { res.writeHead(307, { location: "/normal", "set-cookie": "ARTIFICIAL=1" }); res.end(); }
+      else { res.writeHead(200, { "content-type": "text/html" }); res.end(html); }
+    });
+    try {
+      await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+      const origin = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+      const r = await inspectCanaryRoute({ ...input, url: `${origin}/canary`, baselineUrl: `${origin}/` });
+      expect(r).toMatchObject({ outcome: "PASS", initialStatus: 307, finalStatus: 200, redirects: 1, spaFallback: true });
+      expect(received).toEqual(["/canary", "/normal", "/"].map(url => ({ url, auth: undefined, cookie: undefined })));
+    } finally { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); }
   });
 });
