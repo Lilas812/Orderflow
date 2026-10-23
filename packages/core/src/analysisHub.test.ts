@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   F01_BOOK as F01, F02_TWO_TICKS as F02, F04_TRADES as F04,
   F05_TRADES as F05, F07_SEQUENCE_GAP as F07,
+  UNIFIED_MOCK_STREAM as unified,
 } from "../../fixtures/src/index";
 import {
   createAnalysisHub, analysisInputBytes, type AnalysisScope, type AnalysisInput,
@@ -15,6 +16,11 @@ import { createTradeStore, ingestTrade } from "./tradeStore";
 import { calculateTimeWeightedDepth } from "./timeWeightedDepth";
 import { aggregateTrades } from "./bubbleAggregate";
 import { VolumeProfileAccumulator } from "./volumeProfile";
+import * as sharedBubbleModule from "./bubbleFinality";
+import * as sharedDeltaModule from "./deltaTimeline";
+import { type AnalysisScope as SharedScope } from "./analysisHub";
+import { VolumeProfileAccumulator as ProfileOracle } from "./volumeProfile";
+import * as twaModule from "./timeWeightedDepth";
 
 const alignment = "MOCK-only explicit event/quality axis alignment; not vendor evidence";
 const limits: AnalysisBudget = {
@@ -22,6 +28,281 @@ const limits: AnalysisBudget = {
   trades: 100, rawDeliveries: 100, qualityNotifications: 100,
   qualityIntervals: 300, dedupEntries: 200, bookLevels: 100,
 };
+
+describe("single-stream lightweight projection boundary", () => {
+  const create = (patch: Partial<SharedScope> = {}, clock = () => 0) =>
+    createAnalysisHub({ ...unified.scope, ...patch }, clock);
+  const run = (hub: ReturnType<typeof create>) => unified.inputs.forEach(input =>
+    expect(hub.ingest(input).disposition).toBe("ACCEPTED"));
+  const assertNoHistory = (value: unknown) => {
+    if (!value || typeof value !== "object") return;
+    expect(value).not.toBeInstanceOf(Map);
+    expect(value).not.toHaveProperty("rawEvents");
+    expect(value).not.toHaveProperty("trades");
+    expect(value).not.toHaveProperty("kind", "TRADE");
+    for (const [key, child] of Object.entries(value)) {
+      // usage.trades is a bounded scalar count, never a retained Trade array.
+      if (key === "usage") continue;
+      assertNoHistory(child);
+    }
+  };
+  it("uses one scope/session/time axis and reproduces all independent expected values", () => {
+    const hub = create(); run(hub);
+    const frame = hub.readRenderFrame(unified.query), expected = unified.expected;
+    expect(frame.counts).toEqual({ inputs: 13, accepted: 13, duplicate: 0, rejected: 0 });
+    expect(frame.usage.trades).toBe(expected.acceptedTrades);
+    expect(frame.volumeProfile.value).toMatchObject({ pocTick: expected.pocTick,
+      totals: { buyVolume: expected.B, sellVolume: expected.S, unknownVolume: expected.U, totalVolume: expected.volume },
+      valueArea: { valTick: expected.valTick, vahTick: expected.vahTick, includedVolume: expected.valueAreaVolume } });
+    expect(frame.heatmap.cells.map(cell => cell.twa)).toEqual(expected.bidTwa);
+    expect(frame.heatmap.cells.map(cell => cell.coverageRatio)).toEqual(expected.coverage);
+    expect(frame.delta.items.map(bin => bin.delta)).toEqual(expected.delta);
+    expect(frame.bubbles.items.every(b => b.bucket.scope.sessionId === frame.scope.sessionId)).toBe(true);
+    expect(frame.delta.items.every(b => b.scope.sessionId === frame.scope.sessionId)).toBe(true);
+    assertNoHistory(frame);
+  });
+  it("shares the exact authoritative Store with BOTH sequential projections", () => {
+    const bubbleSpy = vi.spyOn(sharedBubbleModule, "projectAcceptedBubbleState");
+    const deltaSpy = vi.spyOn(sharedDeltaModule, "projectAcceptedDeltaState");
+    try {
+      const hub = create(); run(hub);
+      expect(bubbleSpy).toHaveBeenCalledTimes(unified.inputs.length);
+      expect(deltaSpy).toHaveBeenCalledTimes(unified.inputs.length);
+      for (let i = 0; i < bubbleSpy.mock.calls.length; i++) {
+        const store = bubbleSpy.mock.calls[i][1];
+        expect(deltaSpy.mock.calls[i][1].store).toBe(store);
+      }
+    } finally { bubbleSpy.mockRestore(); deltaSpy.mockRestore(); }
+  });
+  it("continues Trades during L2 GAP and Snapshot recovers L2 only", () => {
+    const hub = create();
+    unified.inputs.slice(0, 7).forEach(input => hub.ingest(input));
+    expect(hub.readRenderFrame(unified.query).quality.channels.L2_MBP.status).toBe("GAP");
+    expect(hub.ingest(unified.inputs[7]).tradeDisposition).toBe("ACCEPTED");
+    const gap = hub.readRenderFrame(unified.query);
+    expect(gap.volumeProfile.value!.totals.totalVolume).toBe(27n);
+    expect(gap.quality.channels.TRADES.status).toBe("VALID");
+    hub.ingest(unified.inputs[8]);
+    const recovered = hub.readRenderFrame(unified.query);
+    expect(recovered.quality.channels.L2_MBP.status).toBe("VALID");
+    expect(recovered.quality.channels.TRADES).toEqual(gap.quality.channels.TRADES);
+    expect(recovered.volumeProfile.value!.totals).toEqual(gap.volumeProfile.value!.totals);
+  });
+  it("an L2 Snapshot cannot recover an invalid TRADES channel", () => {
+    const hub = create();
+    unified.inputs.slice(0, 9).forEach(input => hub.ingest(input));
+    const at = (BigInt(unified.scope.startNs) + 8_000_000_000n).toString();
+    hub.ingest({ type: "CONDITION", channel: "TRADES", atNs: at, status: "GAP", reason: "Artificial Trade interruption" });
+    const before = hub.readRenderFrame(unified.query);
+    const snap = unified.inputs[8].event;
+    expect(hub.ingest({ type: "EVENT", event: { ...snap, snapshotCoversSequence: "5",
+      header: { ...snap.header, sequence: "5", eventId: "MOCK-UNIFIED-RECOVERY-5",
+        exchangeTimeNs: at, receiveTimeNs: at } } }).disposition).toBe("ACCEPTED");
+    const after = hub.readRenderFrame(unified.query);
+    expect(after.quality.channels.L2_MBP.status).toBe("VALID");
+    expect(after.quality.channels.TRADES.status).toBe("GAP");
+    expect(after.volumeProfile.value!.totals).toEqual(before.volumeProfile.value!.totals);
+    expect(after.delta.items.every(bin => bin.delta === null)).toBe(true);
+  });
+  it("does not double count a duplicate Trade or reinterpret UNKNOWN Delta as zero", () => {
+    const hub = create();
+    unified.inputs.forEach((input, i) => {
+      hub.ingest(input);
+      if (i === 2) expect(hub.ingest(input).disposition).toBe("DUPLICATE");
+    });
+    const frame = hub.readRenderFrame(unified.query);
+    expect(frame.volumeProfile.value!.totals.totalVolume).toBe(43n);
+    expect(frame.counts.duplicate).toBe(1);
+    expect(frame.delta.items[4]).toMatchObject({ delta: null, U: 3n, quality: "INCOMPLETE" });
+  });
+  it("keeps a known zero interval distinct from an adjacent L2 GAP", () => {
+    const hub = create(); run(hub);
+    const at = (s: number) => (BigInt(unified.scope.startNs) + BigInt(s) * 1_000_000_000n).toString();
+    const frame = hub.readRenderFrame({ ...unified.query, cells: [4, 5].map(s => ({
+      side: "BID", priceTicks: 80000, width: 1, startNs: at(s), endNs: at(s + 1),
+    })) });
+    expect(frame.heatmap.cells[0]).toMatchObject({ status: "VALID", twa: 0, coverageRatio: 1 });
+    expect(frame.heatmap.cells[1]).toMatchObject({ status: "NO DATA", twa: null, coverageRatio: 0 });
+  });
+  it("matches existing R08/R09/R11/VP computations, not a second acceptance path", () => {
+    const hub = create(); run(hub);
+    const legacy = hub.read(), frame = hub.readRenderFrame(unified.query);
+    expect(frame.bubbles.items.map(b => b.bucket)).toEqual(aggregateTrades(legacy.tradeStore));
+    const vp = new ProfileOracle(unified.scope.config.identity, { maxPriceLevels: 64 });
+    legacy.tradeStore.trades.forEach(t => vp.prepareAccepted(t)());
+    expect(frame.volumeProfile.value!.valueArea).toEqual(vp.read().valueArea);
+    const bubble = sharedBubbleModule.projectAcceptedBubbleState(null, legacy.tradeStore, "VALID");
+    const delta = sharedDeltaModule.projectAcceptedDeltaState(null, bubble, {
+      scope: legacy.tradeStore.scope, timeAxis: "EXCHANGE_TIME_NS", evidence: alignment,
+    });
+    expect(frame.delta.items.map(b => [b.B, b.S, b.U, b.delta]))
+      .toEqual(sharedDeltaModule.queryDeltaTimeline(delta, unified.query.startNs, unified.query.endNs)
+        .map(b => [b.B, b.S, b.U, b.delta]));
+  });
+  it("publishes at most once per 250ms without affecting final accepted results", () => {
+    let clock = 0;
+    const a = create({}, () => clock), b = create();
+    const revisions: number[] = [];
+    unified.inputs.forEach((input, i) => {
+      expect(a.ingest(input)).toEqual(b.ingest(input));
+      clock = i * 25;
+      const n = a.pollNotice();
+      if (n) revisions.push(n.revision);
+    });
+    expect(revisions).toEqual([1, 11]);
+    clock += 250;
+    expect(a.pollNotice()!.revision).toBe(13);
+    expect(a.readRenderFrame(unified.query)).toEqual(b.readRenderFrame(unified.query));
+  });
+  it("keeps the legacy full notification cursor independent and unchanged", () => {
+    const hub = create(); hub.ingest(unified.inputs[0]);
+    expect(hub.pollNotice()!.revision).toBe(1);
+    expect(hub.pollNotification()!.revision).toBe(1);
+    expect(hub.pollNotice()).toBeNull();
+    expect(hub.pollNotification()).toBeNull();
+  });
+  it("never replays shared Trade aggregation or finality during reads/notifications", () => {
+    const hub = create(); run(hub);
+    const bubbles = vi.spyOn(sharedBubbleModule, "projectAcceptedBubbleState");
+    const delta = vi.spyOn(sharedDeltaModule, "projectAcceptedDeltaState");
+    const query = vi.spyOn(sharedDeltaModule, "queryDeltaTimeline");
+    try {
+      hub.pollNotice();
+      hub.readRenderFrame(unified.query);
+      hub.readRenderFrame({ ...unified.query, cells: [] });
+      expect(bubbles).not.toHaveBeenCalled();
+      expect(delta).not.toHaveBeenCalled();
+      expect(query).not.toHaveBeenCalled();
+    } finally { bubbles.mockRestore(); delta.mockRestore(); query.mockRestore(); }
+  });
+  it("does not clone historical Trade Maps when lightweight notification/frame is requested", () => {
+    const hub = createAnalysisHub(definition(F04.events[0], {
+      volumeProfile: { maxPriceLevels: 64 }, derivedViews: unified.scope.derivedViews,
+    }), () => 0);
+    F04.events.forEach(t => hub.ingest(envelope(t)));
+    const iterator = vi.spyOn(Map.prototype, Symbol.iterator).mockImplementation(() => {
+      throw new Error("Artificial historical Map copy trap");
+    });
+    try {
+      expect(hub.pollNotice()!.revision).toBe(3);
+      const frame = hub.readRenderFrame({ startNs: F04.expected.startNs, endNs: F04.expected.endNs, cells: [] });
+      expect(frame.volumeProfile.value!.totals.totalVolume).toBe(27n);
+      expect(() => hub.read()).toThrow("Artificial historical Map copy trap");
+    } finally { iterator.mockRestore(); }
+  });
+  it("caches one immutable revision/query result and reprojects a new range without input", () => {
+    const hub = create(); run(hub);
+    const before = hub.readRenderFrame(unified.query);
+    expect(hub.readRenderFrame(unified.query)).toBe(before);
+    const changed = hub.readRenderFrame({ ...unified.query, cells: [] });
+    expect(changed.revision).toBe(before.revision);
+    expect(changed.heatmap.cells).toEqual([]);
+    for (const part of [before.book, before.heatmap, before.bubbles, before.delta, before.volumeProfile, before.quality]) {
+      expect(part.revision).toBe(before.revision);
+    }
+    expect(Object.isFrozen(before)).toBe(true);
+    expect(() => { (before.bubbles.items as unknown[]).push({}); }).toThrow();
+    expect(hub.readRenderFrame(unified.query)).toEqual(before);
+  });
+  it("a TWA projection exception publishes no partial frame or cache entry", () => {
+    const hub = create(); run(hub);
+    const before = hub.readRenderFrame(unified.query);
+    const spy = vi.spyOn(twaModule, "calculateTimeWeightedDepth").mockImplementationOnce(() => {
+      throw new Error("Artificial TWA failure");
+    });
+    try {
+      expect(() => hub.readRenderFrame({ ...unified.query, cells: [unified.query.cells[0]] })).toThrow("Artificial TWA failure");
+    } finally { spy.mockRestore(); }
+    expect(hub.readRenderFrame(unified.query)).toBe(before);
+  });
+  it("rejects a reentrant revision change rather than publishing mixed derived results", () => {
+    const hub = create();
+    unified.inputs.slice(0, 3).forEach(input => hub.ingest(input));
+    const original = twaModule.calculateTimeWeightedDepth;
+    const spy = vi.spyOn(twaModule, "calculateTimeWeightedDepth").mockImplementationOnce((...args) => {
+      hub.ingest(unified.inputs[3]);
+      return original(...args);
+    });
+    try {
+      expect(() => hub.readRenderFrame(unified.query)).toThrow("Analysis revision changed");
+    } finally { spy.mockRestore(); }
+    expect(hub.readRenderFrame(unified.query).revision).toBe(4);
+  });
+  it("VP commit failure cannot publish already prepared bubble/Delta candidates", () => {
+    const hub = create();
+    unified.inputs.slice(0, 2).forEach(input => hub.ingest(input));
+    const before = hub.readRenderFrame(unified.query);
+    const spy = vi.spyOn(VolumeProfileAccumulator.prototype, "prepareAccepted")
+      .mockImplementationOnce(() => () => { throw new Error("Artificial VP commit failure"); });
+    try { expect(hub.ingest(unified.inputs[2]).outcome).toBe("INVALID_INPUT"); }
+    finally { spy.mockRestore(); }
+    const after = hub.readRenderFrame(unified.query);
+    expect(after.stateRevision).toBe(before.stateRevision);
+    expect(after.bubbles.items).toEqual(before.bubbles.items);
+    expect(after.delta.items).toEqual(before.delta.items);
+    expect(after.volumeProfile.value!.totals).toEqual(before.volumeProfile.value!.totals);
+    expect(hub.ingest(unified.inputs[2]).disposition).toBe("ACCEPTED");
+  });
+  it.each(["projectAcceptedBubbleState", "projectAcceptedDeltaState"] as const)(
+    "%s failure publishes no partial Store, VP, quality or derived result", method => {
+      const hub = create();
+      unified.inputs.slice(0, 3).forEach(input => hub.ingest(input));
+      const legacy = hub.read(), frame = hub.readRenderFrame(unified.query);
+      const fail = () => { throw new Error("Artificial shared projection failure"); };
+      const spy = method === "projectAcceptedBubbleState" ?
+        vi.spyOn(sharedBubbleModule, "projectAcceptedBubbleState").mockImplementationOnce(fail) :
+        vi.spyOn(sharedDeltaModule, "projectAcceptedDeltaState").mockImplementationOnce(fail);
+      try {
+        expect(hub.ingest(unified.inputs[3])).toMatchObject({ disposition: "REJECTED", outcome: "PROJECTION_FAILED" });
+      } finally { spy.mockRestore(); }
+      const failed = hub.readRenderFrame(unified.query);
+      expect(failed.status).toBe("STOPPED");
+      expect(failed.stateRevision).toBe(frame.stateRevision);
+      expect(failed.bubbles.items).toEqual(frame.bubbles.items);
+      expect(failed.delta.items).toEqual(frame.delta.items);
+      expect(failed.volumeProfile.value!.totals).toEqual(frame.volumeProfile.value!.totals);
+      expect(hub.read().tradeStore).toEqual(legacy.tradeStore);
+      expect(hub.read().qualityState).toEqual(legacy.qualityState);
+    },
+  );
+  it.each(["maxBubbles", "maxDeltaBins"] as const)("bounds %s before publishing candidates", key => {
+    const hub = create({ derivedViews: { ...unified.scope.derivedViews!, [key]: 0 } });
+    hub.ingest(unified.inputs[0]); hub.ingest(unified.inputs[1]);
+    const before = hub.read();
+    expect(hub.ingest(unified.inputs[2]).outcome).toBe("BUDGET_EXCEEDED");
+    expect(hub.read().tradeStore).toEqual(before.tradeStore);
+    expect(hub.readVolumeProfile()!.totals.totalVolume).toBe(0n);
+  });
+  it("bounds read queries before allocating, without advancing input state", () => {
+    const hub = create(); run(hub);
+    const before = hub.readRenderFrame(unified.query);
+    expect(() => hub.readRenderFrame({ ...unified.query, cells: Array(513).fill(unified.query.cells[0]) })).toThrow();
+    expect(() => hub.readRenderFrame({ startNs: unified.query.startNs,
+      endNs: (BigInt(unified.query.startNs) + 61_000_000_000n).toString(), cells: [] })).toThrow();
+    expect(hub.readRenderFrame(unified.query)).toBe(before);
+  });
+  it("does not turn unobserved future depth/Delta into held liquidity or zeros", () => {
+    const hub = create(); hub.ingest(unified.inputs[0]);
+    const frame = hub.readRenderFrame(unified.query);
+    expect(frame.heatmap.cells.every(cell => cell.status === "NO DATA")).toBe(true);
+    expect(frame.delta.items).toEqual([]);
+  });
+  it("exposes unknown alignment conservatively without reusing another fixture's clock", () => {
+    const hub = create({ depthTimeAlignmentEvidence: null, tradeTimeAlignmentEvidence: null });
+    run(hub);
+    const frame = hub.readRenderFrame(unified.query);
+    expect(frame.heatmap).toMatchObject({ status: "ALIGNMENT_UNKNOWN", cells: [] });
+    expect(frame.delta.items.every(bin => bin.delta === null)).toBe(true);
+    expect(frame.volumeProfile.value!.marketCompleteness).toBe("NOT_ASSERTED");
+  });
+  it("legacy disabled-derived scopes keep acceptance and VP quantities unchanged", () => {
+    const a = create(), b = create({ derivedViews: undefined });
+    unified.inputs.forEach(input => expect(a.ingest(input)).toEqual(b.ingest(input)));
+    expect(a.read()).toMatchObject({ tradeStore: b.read().tradeStore, qualityState: b.read().qualityState });
+    expect(a.readVolumeProfile()).toEqual(b.readVolumeProfile());
+    expect(() => b.readRenderFrame(unified.query)).toThrow("Derived views are not enabled");
+  });
+});
 
 describe("read-time Value Area through the analysis hub", () => {
   it("exposes F04 VA through the existing API and preserves observed-only quality", () => {

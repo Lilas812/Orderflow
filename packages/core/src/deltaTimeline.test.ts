@@ -6,11 +6,40 @@ import { createViewport, resizeViewport, zoomTime, panTime, timeToX, type Viewpo
 import {
   createDeltaTimeline, ingestDeltaTrade, advanceDeltaWatermark, setDeltaCondition,
   queryDeltaBin, queryDeltaTimeline, projectDeltaTimeline, type DeltaTimeline,
+  projectAcceptedDeltaState,
 } from "./deltaTimeline";
 
 const T0 = 1767261600000000000n, S = 1_000_000_000n, at = (offset = 0n) => (T0 + offset).toString();
 const pair = R11_DELTA_CASES.find(c => c.id === "PAIR")!;
 const source = pair.sources[0], snapshot = (s: unknown) => JSON.stringify(s, (_, n) => typeof n === "bigint" ? `${n}n` : n);
+describe("Delta projection over shared finality", () => {
+  it("reuses the exact finality/Store and matches every legacy sequential Delta result", () => {
+    let shared: DeltaTimeline | null = null, legacy = empty();
+    for (const event of source.events) {
+      legacy = ingestDeltaTrade(legacy, event);
+      shared = projectAcceptedDeltaState(shared, legacy.tradeState, legacy.alignment);
+      expect(shared.tradeState).toBe(legacy.tradeState);
+      expect(shared.tradeState.store).toBe(legacy.tradeState.store);
+      expect(shared).toEqual(legacy);
+    }
+  });
+  it("preserves finalization and revised Delta from the original R11 state", () => {
+    for (const state of replay("PAIR", 1)) {
+      const before = projectAcceptedDeltaState(null, state.tradeState, state.alignment);
+      const advanced = advanceDeltaWatermark(state, { exchangeTimeNs: at(10n * S), trusted: true,
+        scope: state.tradeState.store.scope, evidence: "Explicit MOCK progress" });
+      const after = projectAcceptedDeltaState(before, advanced.tradeState, advanced.alignment);
+      expect(after).toEqual(advanced);
+    }
+  });
+  it("rejects a foreign previous Store or alignment scope", () => {
+    const [a, b] = replay();
+    expect(() => projectAcceptedDeltaState(a, b.tradeState, b.alignment)).toThrow();
+    expect(() => projectAcceptedDeltaState(null, a.tradeState, {
+      ...a.alignment!, scope: b.tradeState.store.scope,
+    })).toThrow();
+  });
+});
 function empty(): DeltaTimeline { return createDeltaTimeline(source.header, source.quality, source.alignment); }
 function replay(id = "PAIR", count = 1): readonly DeltaTimeline[] {
   const fixture = R11_DELTA_CASES.find(c => c.id === id)!;

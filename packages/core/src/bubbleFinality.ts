@@ -1,4 +1,4 @@
-import type { DataQualityInterval, EventHeader } from "./events";
+import type { DataQualityInterval, EventHeader, Trade } from "./events";
 import { aggregateTrades, type TradeBucket } from "./bubbleAggregate";
 import {
   createTradeStore, ingestTrade, tradeScopeKey, withTradeQuality,
@@ -82,6 +82,34 @@ export function createBubbleFinality(
     store: withTradeQuality(createTradeStore(header), quality), bubbles: [],
     condition: "VALID", maxSeenValidExchangeNs: null, watermarkNs: null,
   });
+}
+/**
+ * Projection-only boundary for an authoritative, already accepted Store.
+ * Never creates/ingests a TradeStore. The caller owns acceptance and publishes
+ * this immutable candidate atomically with that Store.
+ */
+export function projectAcceptedBubbleState(
+  previous: BubbleFinality | null, store: TradeStore,
+  condition: BubbleCondition, acceptedTrade?: Trade,
+): BubbleFinality {
+  if (store.scope.environment !== "MOCK" || store.scope.source !== "MOCK_DETERMINISTIC" ||
+      previous && tradeScopeKey(previous.store.scope) !== tradeScopeKey(store.scope)) {
+    throw new TypeError("Shared bubble projection requires the exact MOCK scope");
+  }
+  if (!["VALID", "GAP", "RESYNCING"].includes(condition)) throw new TypeError("Invalid bubble condition");
+  if (acceptedTrade && store.trades.at(-1) !== acceptedTrade) {
+    throw new TypeError("Progress must use the authoritative Store's last accepted Trade");
+  }
+  let next: BubbleFinality = {
+    ...(previous ?? { bubbles: [], maxSeenValidExchangeNs: null, watermarkNs: null }),
+    store, condition,
+  };
+  if (acceptedTrade && acceptedTrade.header.quality === "VALID" &&
+      acceptedTrade.header.sourceTimePrecision !== "unknown" &&
+      acceptedTrade.aggressor !== "UNKNOWN" && acceptedTrade.classification !== "UNKNOWN") {
+    next = progress(next, acceptedTrade.header.exchangeTimeNs!);
+  }
+  return refresh(next);
 }
 /** No wall-clock parameter: only R08-accepted, valid classified event times advance WM. */
 export function ingestBubbleTrade(state: BubbleFinality, input: unknown): BubbleFinality {

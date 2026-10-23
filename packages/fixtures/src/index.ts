@@ -12,3 +12,4 @@ export { F05_TRADES } from "./f05-trades";
 export { F08_DUPLICATE_TRADES } from "./f08-duplicate-trades";
 export { F09_UNKNOWN_TRADES } from "./f09-unknown-trades";
 export { F10_TRADE_BOUNDARY } from "./f10-trade-boundary";
+export { UNIFIED_MOCK_STREAM } from "./unifiedMockStream";

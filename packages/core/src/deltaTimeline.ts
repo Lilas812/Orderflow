@@ -128,6 +128,19 @@ export function createDeltaTimeline(
   }
   return refresh(state, alignment ? Object.freeze({ ...alignment, scope: state.store.scope }) : null);
 }
+/** R11 projection over a shared authoritative Store; never creates or ingests one. */
+export function projectAcceptedDeltaState(
+  previous: DeltaTimeline | null, tradeState: BubbleFinality, alignment: DeltaAlignment | null,
+): DeltaTimeline {
+  if (previous && tradeScopeKey(previous.tradeState.store.scope) !== tradeScopeKey(tradeState.store.scope)) {
+    throw new TypeError("Shared Delta projection requires the exact previous scope");
+  }
+  if (alignment && (alignment.timeAxis !== "EXCHANGE_TIME_NS" || !alignment.evidence?.trim() ||
+      tradeScopeKey(alignment.scope) !== tradeScopeKey(tradeState.store.scope))) {
+    throw new TypeError("Explicit same-scope event-time alignment required");
+  }
+  return refresh(tradeState, alignment, previous ?? undefined);
+}
 export function ingestDeltaTrade(state: DeltaTimeline, input: unknown): DeltaTimeline {
   return refresh(ingestBubbleTrade(state.tradeState, input), state.alignment, state);
 }

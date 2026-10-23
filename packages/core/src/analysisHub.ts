@@ -10,8 +10,15 @@ import {
   createTradeStore, ingestTrade, withTradeQuality, tradeScopeKey,
   type TradeStore, type TradeIngestResult,
 } from "./tradeStore";
-import type { DepthHistory, DepthRecord } from "./timeWeightedDepth";
+import {
+  calculateTimeWeightedDepth, type DepthHistory, type DepthRecord,
+  type DepthQuery, type TimeWeightedDepth,
+} from "./timeWeightedDepth";
 import type { MbpBook } from "./mbpBook";
+import { projectAcceptedBubbleState, type BubbleFinality, type BubbleState } from "./bubbleFinality";
+import {
+  projectAcceptedDeltaState, queryDeltaTimeline, type DeltaTimeline, type DeltaBin,
+} from "./deltaTimeline";
 import {
   VolumeProfileAccumulator, VolumeProfileCapacityError,
   type VolumeProfileOptions, type VolumeProfileSnapshot,
@@ -42,6 +49,12 @@ export interface AnalysisScope {
   readonly tradeTimeAlignmentEvidence: string | null;
   /** Opt-in only; existing scopes retain their original behavior and budgets. */
   readonly volumeProfile?: VolumeProfileOptions;
+  /** Opt-in finite projection bounds; legacy acceptance/reads stay unchanged. */
+  readonly derivedViews?: {
+    readonly maxHeatmapCells: number;
+    readonly maxBubbles: number;
+    readonly maxDeltaBins: number;
+  };
 }
 export type AnalysisInput =
   | { readonly type: "EVENT"; readonly event: MarketEvent }
@@ -61,7 +74,8 @@ export interface AnalysisCounts {
 export interface AnalysisUsage extends AnalysisBudget {}
 export interface AnalysisStop {
   readonly reason: string;
-  readonly limit: keyof AnalysisBudget | "volumeProfilePriceLevels";
+  readonly limit: keyof AnalysisBudget | "volumeProfilePriceLevels" |
+    "derivedBubbles" | "derivedDeltaBins" | "derivedProjection";
   readonly maximum: number;
   readonly attempted: number;
 }
@@ -110,6 +124,49 @@ export interface AnalysisVolumeProfileView extends VolumeProfileSnapshot {
     readonly intervals: readonly DataQualityInterval[];
     readonly issues: TradeStore["issues"];
   };
+}
+
+export interface AnalysisNotice {
+  readonly label: "MOCK / SIMULATED";
+  readonly revision: number;
+  readonly stateRevision: number;
+  readonly observedThroughNs: string;
+  readonly status: "RUNNING" | "STOPPED";
+  readonly stop: AnalysisStop | null;
+  readonly counts: AnalysisCounts;
+  readonly usage: AnalysisUsage;
+}
+export interface AnalysisRenderQuery {
+  readonly startNs: string;
+  readonly endNs: string;
+  readonly cells: readonly DepthQuery[];
+}
+export interface AnalysisRenderFrame extends AnalysisNotice {
+  readonly scope: Readonly<import("./tradeStore").TradeScope>;
+  readonly book: {
+    readonly revision: number;
+    readonly levels: readonly { readonly side: "BID" | "ASK"; readonly priceTicks: number; readonly qty: number }[];
+  };
+  readonly heatmap: {
+    readonly revision: number;
+    readonly status: "AVAILABLE" | "ALIGNMENT_UNKNOWN";
+    readonly cells: readonly TimeWeightedDepth[];
+  };
+  readonly bubbles: { readonly revision: number; readonly items: readonly BubbleState[] };
+  readonly delta: { readonly revision: number; readonly items: readonly DeltaBin[] };
+  readonly volumeProfile: { readonly revision: number; readonly value: AnalysisVolumeProfileView | null };
+  readonly quality: {
+    readonly revision: number;
+    readonly channels: Readonly<Record<QualityChannel, MarketQualityState["timeline"]["TRADES"][number]>>;
+    readonly tradeIssues: TradeStore["issues"];
+  };
+}
+class DerivedFailure extends Error {}
+class DerivedCapacity extends RangeError {
+  constructor(readonly limit: "derivedBubbles" | "derivedDeltaBins",
+    readonly maximum: number, readonly attempted: number) {
+    super(`Finite MOCK budget exceeded: ${limit}`);
+  }
 }
 
 function ensure(value: unknown, reason: string): asserts value {
@@ -161,6 +218,10 @@ export function createAnalysisHub(definition: AnalysisScope, monotonicNowMs: () 
     scope.config.identity.source === "MOCK_DETERMINISTIC", "Only normalized MOCK is allowed");
   for (const key of budgetKeys) ensure(Number.isSafeInteger(scope.budget[key]) &&
     scope.budget[key] >= 0, `Finite nonnegative budget required: ${key}`);
+  if (scope.derivedViews) for (const key of ["maxHeatmapCells", "maxBubbles", "maxDeltaBins"] as const) {
+    ensure(Number.isSafeInteger(scope.derivedViews[key]) && scope.derivedViews[key] >= 0,
+      `Finite projection budget required: ${key}`);
+  }
   for (const evidence of [scope.depthTimeAlignmentEvidence, scope.tradeTimeAlignmentEvidence]) {
     ensure(evidence === null || typeof evidence === "string" && !!evidence.trim(),
       "Alignment must be explicit evidence or null");
@@ -187,6 +248,12 @@ export function createAnalysisHub(definition: AnalysisScope, monotonicNowMs: () 
   let lastPoll: number | null = null;
   let lastNotification: number | null = null;
   let published = 0;
+  let bubbleState: BubbleFinality | null = null;
+  let deltaState: DeltaTimeline | null = null;
+  let displayDeltaBins: readonly DeltaBin[] = [];
+  let stateRevision = 0, observedThroughNs = scope.startNs;
+  let noticePublished = 0, noticeLastPoll: number | null = null, noticeLastSent: number | null = null;
+  let renderCache: { key: string; frame: AnalysisRenderFrame } | null = null;
 
   function view(): AnalysisView {
     const state = copy(quality);
@@ -318,6 +385,50 @@ export function createAnalysisHub(definition: AnalysisScope, monotonicNowMs: () 
           };
           stop = overflow(pending);
           if (!stop) {
+            const observation = value.type === "CONDITION" ? value.atNs :
+              value.type === "QUALITY_INTERVAL" ? value.observedAtNs :
+              events[events.length - 1].header.receiveTimeNs;
+            const nextObservedThroughNs = BigInt(observation) > BigInt(observedThroughNs) ?
+              observation : observedThroughNs;
+            let nextBubbles = bubbleState, nextDelta = deltaState, nextDisplayDelta = displayDeltaBins;
+            if (scope.derivedViews) {
+              try {
+                const lane = nextQuality.timeline.TRADES.at(-1)!;
+                const condition = lane.status === "RESYNCING" ? "RESYNCING" :
+                  lane.status === "VALID" && scope.tradeTimeAlignmentEvidence !== null ? "VALID" : "GAP";
+                const accepted = applied && tradeDisposition === "ACCEPTED" ?
+                  nextStore.trades.at(-1) : undefined;
+                nextBubbles = projectAcceptedBubbleState(bubbleState, nextStore, condition, accepted);
+                nextDelta = projectAcceptedDeltaState(deltaState, nextBubbles,
+                  scope.tradeTimeAlignmentEvidence === null ? null : {
+                    scope: scope.config.identity, timeAxis: "EXCHANGE_TIME_NS",
+                    evidence: scope.tradeTimeAlignmentEvidence,
+                  });
+              } catch (error) {
+                throw new DerivedFailure(error instanceof Error ? error.message : "Projection failed");
+              }
+              if (nextBubbles.bubbles.length > scope.derivedViews.maxBubbles) {
+                throw new DerivedCapacity("derivedBubbles", scope.derivedViews.maxBubbles, nextBubbles.bubbles.length);
+              }
+              if (nextDelta.bins.length > scope.derivedViews.maxDeltaBins) {
+                throw new DerivedCapacity("derivedDeltaBins", scope.derivedViews.maxDeltaBins, nextDelta.bins.length);
+              }
+              const begin = BigInt(scope.startNs), finish = BigInt(nextObservedThroughNs);
+              const count = finish > begin ?
+                (finish - 1n) / 2_000_000_000n - begin / 2_000_000_000n + 1n : 0n;
+              if (count > BigInt(scope.derivedViews.maxDeltaBins)) {
+                throw new DerivedCapacity("derivedDeltaBins", scope.derivedViews.maxDeltaBins,
+                  count > BigInt(Number.MAX_SAFE_INTEGER) ? Number.MAX_SAFE_INTEGER : Number(count));
+              }
+              try {
+                // Include observed empty bins at INPUT time. Reads only slice this
+                // bounded result; queryDeltaTimeline must not scan Trades on notification.
+                nextDisplayDelta = finish > begin ?
+                  queryDeltaTimeline(nextDelta, scope.startNs, nextObservedThroughNs) : [];
+              } catch (error) {
+                throw new DerivedFailure(error instanceof Error ? error.message : "Delta projection failed");
+              }
+            }
             // R03 and R08 must BOTH accept, and every existing budget must pass.
             // Prepare/commit VP before publishing reducer candidates; a failed VP
             // write cannot advance the hub's Trade/guard/quality state alone.
@@ -326,12 +437,23 @@ export function createAnalysisHub(definition: AnalysisScope, monotonicNowMs: () 
               volumeProfile.prepareAccepted(value.event)();
             }
             quality = nextQuality; store = nextStore; depth = nextDepth; evidence = nextEvidence;
+            bubbleState = nextBubbles; deltaState = nextDelta;
+            displayDeltaBins = nextDisplayDelta;
+            stateRevision = revision + 1;
+            observedThroughNs = nextObservedThroughNs;
             disposition = applied ? "ACCEPTED" : duplicate ? "DUPLICATE" : "REJECTED";
           }
         }
         if (stop) { outcome = "BUDGET_EXCEEDED"; reason = stop.reason; tradeDisposition = null; }
       } catch (error) {
-        if (error instanceof VolumeProfileCapacityError) {
+        if (error instanceof DerivedCapacity) {
+          stop = { reason: error.message, limit: error.limit, maximum: error.maximum, attempted: error.attempted };
+          outcome = "BUDGET_EXCEEDED"; reason = stop.reason;
+        } else if (error instanceof DerivedFailure) {
+          stop = { reason: `Derived projection failed: ${error.message}`,
+            limit: "derivedProjection", maximum: 0, attempted: 1 };
+          outcome = "PROJECTION_FAILED"; reason = stop.reason;
+        } else if (error instanceof VolumeProfileCapacityError) {
           stop = { reason: error.message, limit: "volumeProfilePriceLevels",
             maximum: error.maximum, attempted: error.attempted };
           outcome = "BUDGET_EXCEEDED"; reason = stop.reason;
@@ -375,5 +497,73 @@ export function createAnalysisHub(definition: AnalysisScope, monotonicNowMs: () 
       }),
     });
   }
-  return Object.freeze({ ingest, read: view, pollNotification, readVolumeProfile });
+  function notice(): AnalysisNotice {
+    return Object.freeze({
+      label: "MOCK / SIMULATED", revision, stateRevision, observedThroughNs,
+      status: stop ? "STOPPED" : "RUNNING", stop: copy(stop), counts: copy(counts), usage: copy(usage),
+    });
+  }
+  /** Independent lightweight consumer cursor. Does not call legacy view() or copy history. */
+  function pollNotice(): AnalysisNotice | null {
+    const now = monotonicNowMs();
+    ensure(Number.isFinite(now) && (noticeLastPoll === null || now >= noticeLastPoll), "Clock must be monotonic");
+    noticeLastPoll = now;
+    if (revision === noticePublished || noticeLastSent !== null && now - noticeLastSent < 250) return null;
+    const next = notice();
+    noticePublished = revision; noticeLastSent = now;
+    return next;
+  }
+  function readRenderFrame(query: AnalysisRenderQuery): AnalysisRenderFrame {
+    const readRevision = revision;
+    const bounds = scope.derivedViews;
+    ensure(bounds, "Derived views are not enabled");
+    ensure(Array.isArray(query.cells) && query.cells.length <= bounds.maxHeatmapCells,
+      "Render heatmap-cell budget exceeded");
+    ns(query.startNs); ns(query.endNs);
+    const start = BigInt(query.startNs), end = BigInt(query.endNs), binNs = 2_000_000_000n;
+    ensure(start >= 0n && end > start, "Invalid render range");
+    const binCount = (end - 1n) / binNs - start / binNs + 1n;
+    ensure(binCount <= BigInt(bounds.maxDeltaBins), "Render Delta-bin budget exceeded");
+    for (const cell of query.cells) {
+      ns(cell.startNs); ns(cell.endNs);
+      ensure(BigInt(cell.startNs) >= start && BigInt(cell.endNs) <= end,
+        "Cell must be within the render range");
+    }
+    const key = JSON.stringify([revision, query]);
+    if (renderCache?.key === key) return renderCache.frame;
+    // Bound the open quality interval by actual MOCK observation. A query into the
+    // future must not extend a held book into unobserved market time.
+    const observedQuality = markChannelCondition(quality, "L2_MBP", "STALE",
+      observedThroughNs, "Beyond applied MOCK observation is unobserved");
+    const history: DepthHistory | null = scope.depthTimeAlignmentEvidence === null ? null : {
+      events: depth, qualityState: observedQuality,
+      qualityTimeAlignmentEvidence: scope.depthTimeAlignmentEvidence,
+    };
+    const cells = history ? query.cells.map(cell => calculateTimeWeightedDepth(history, cell)) : [];
+    const deltaEnd = end < BigInt(observedThroughNs) ? end : BigInt(observedThroughNs);
+    const bins = deltaEnd > start ? displayDeltaBins.filter(bin =>
+      BigInt(bin.endNs) > start && BigInt(bin.startNs) < deltaEnd) : [];
+    const book = stop ? null : currentMbpBook(quality);
+    const levels: { side: "BID" | "ASK"; priceTicks: number; qty: number }[] = [];
+    if (book) for (const side of ["BID", "ASK"] as const) {
+      for (const [priceTicks, qty] of side === "BID" ? book.bids : book.asks) levels.push({ side, priceTicks, qty });
+    }
+    const frame: AnalysisRenderFrame = Object.freeze({
+      ...notice(), scope: copy(scope.config.identity),
+      book: freeze({ revision, levels }),
+      heatmap: freeze({ revision, status: history ? "AVAILABLE" as const : "ALIGNMENT_UNKNOWN" as const, cells }),
+      bubbles: freeze({ revision, items: copy(bubbleState?.bubbles ?? []) }),
+      delta: freeze({ revision, items: copy(bins) }),
+      volumeProfile: freeze({ revision, value: readVolumeProfile() }),
+      quality: freeze({ revision, channels: Object.fromEntries(
+        (["L1", "L2_MBP", "TRADES"] as const).map(channel => [channel, copy(quality.timeline[channel].at(-1)!)]),
+      ) as AnalysisRenderFrame["quality"]["channels"], tradeIssues: copy(store.issues) }),
+    });
+    ensure(revision === readRevision && frame.revision === readRevision,
+      "Analysis revision changed during render projection");
+    // Publish/cache only after every read projection succeeds.
+    renderCache = { key, frame };
+    return frame;
+  }
+  return Object.freeze({ ingest, read: view, pollNotification, readVolumeProfile, pollNotice, readRenderFrame });
 }

@@ -2,13 +2,63 @@ import { describe, expect, it } from "vitest";
 import { R09_SCENARIOS, R09_BUBBLE_EXPECTED, F04_TRADES, F05_TRADES } from "../../fixtures/src/index";
 import type { BubbleDemoScenario } from "../../fixtures/src/r09-bubbles";
 import { executedVolume, type Trade } from "./events";
+import { createTradeStore, ingestTrade, withTradeQuality } from "./tradeStore";
 import { evaluateBubbleFilter, aggregateTradeBucket } from "./bubbleAggregate";
 import {
   createBubbleFinality, ingestBubbleTrade, advanceBubbleWatermark, setBubbleCondition,
-  bubbleIdentity, bubbleOpacity, type BubbleFinality,
+  bubbleIdentity, bubbleOpacity, projectAcceptedBubbleState, type BubbleFinality,
 } from "./bubbleFinality";
 
 const scenario = (id: string) => R09_SCENARIOS.find(s => s.id === id)!;
+describe("projection of an authoritative accepted Store", () => {
+  it("shares Store identity and matches the legacy R09 fold after every Trade", () => {
+    const spec = scenario("F04");
+    let store = withTradeQuality(createTradeStore(spec.events[0].header), spec.quality);
+    let shared: BubbleFinality | null = null, legacy = createBubbleFinality(spec.events[0].header, spec.quality);
+    for (const event of spec.events) {
+      const accepted = ingestTrade(store, event); store = accepted.store;
+      shared = projectAcceptedBubbleState(shared, store, "VALID",
+        accepted.disposition === "ACCEPTED" ? store.trades.at(-1) : undefined);
+      legacy = ingestBubbleTrade(legacy, event);
+      expect(shared.store).toBe(store);
+      expect(shared).toEqual(legacy);
+    }
+  });
+  it("preserves exact finalization/revision through shared late Trades and trusted progress", () => {
+    const spec = scenario("LATE");
+    let store = withTradeQuality(createTradeStore(spec.events[0].header), spec.quality);
+    let shared = projectAcceptedBubbleState(null, store, "VALID"), legacy = createBubbleFinality(spec.events[0].header, spec.quality);
+    let cursor = 0;
+    for (const step of spec.steps) {
+      while (cursor < step.tradeCount) {
+        const event = spec.events[cursor++];
+        const next = ingestTrade(store, event); store = next.store;
+        shared = projectAcceptedBubbleState(shared, store, "VALID",
+          next.disposition === "ACCEPTED" ? store.trades.at(-1) : undefined);
+        legacy = ingestBubbleTrade(legacy, event);
+      }
+      if (step.progressNs) {
+        const p = { exchangeTimeNs: step.progressNs, trusted: true as const, scope: store.scope, evidence: "MOCK explicit progress" };
+        shared = advanceBubbleWatermark(shared, p); legacy = advanceBubbleWatermark(legacy, p);
+      }
+      expect(shared).toEqual(legacy);
+    }
+    expect(shared.bubbles[0]).toMatchObject({ status: "REVISED", revision: 1 });
+  });
+  it("projects GAP without replacing the Store or mutating the previous candidate", () => {
+    const s = replay(scenario("F04")), before = s.bubbles;
+    const next = projectAcceptedBubbleState(s, s.store, "GAP");
+    expect(next.store).toBe(s.store);
+    expect(next.bubbles.every(b => b.status === "INCOMPLETE")).toBe(true);
+    expect(s.bubbles).toBe(before);
+  });
+  it("rejects foreign scopes and unaccepted progress Trades", () => {
+    const s = replay(scenario("F04"));
+    expect(() => projectAcceptedBubbleState(s, { ...s.store,
+      scope: { ...s.store.scope, sessionId: "FOREIGN" } }, "VALID")).toThrow();
+    expect(() => projectAcceptedBubbleState(s, s.store, "VALID", { ...F04_TRADES.events[0] })).toThrow();
+  });
+});
 function initial(s = scenario("F04")) { return createBubbleFinality(s.events[0].header, s.quality); }
 function trusted(s: BubbleFinality, offset: bigint) {
   return advanceBubbleWatermark(s, { exchangeTimeNs: (1767261600000000000n + offset).toString(),
