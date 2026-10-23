@@ -12,6 +12,10 @@ import {
 } from "./tradeStore";
 import type { DepthHistory, DepthRecord } from "./timeWeightedDepth";
 import type { MbpBook } from "./mbpBook";
+import {
+  VolumeProfileAccumulator, VolumeProfileCapacityError,
+  type VolumeProfileOptions, type VolumeProfileSnapshot,
+} from "./volumeProfile";
 
 /** All limits are required, per finite MOCK scope. No defaults or eviction.
  * normalizedBytes is cumulative UTF-8 JSON input payload, NOT heap/RSS usage.
@@ -36,6 +40,8 @@ export interface AnalysisScope {
   /** Null means unknown, not receive-time == exchange-time. */
   readonly depthTimeAlignmentEvidence: string | null;
   readonly tradeTimeAlignmentEvidence: string | null;
+  /** Opt-in only; existing scopes retain their original behavior and budgets. */
+  readonly volumeProfile?: VolumeProfileOptions;
 }
 export type AnalysisInput =
   | { readonly type: "EVENT"; readonly event: MarketEvent }
@@ -55,7 +61,7 @@ export interface AnalysisCounts {
 export interface AnalysisUsage extends AnalysisBudget {}
 export interface AnalysisStop {
   readonly reason: string;
-  readonly limit: keyof AnalysisBudget;
+  readonly limit: keyof AnalysisBudget | "volumeProfilePriceLevels";
   readonly maximum: number;
   readonly attempted: number;
 }
@@ -90,6 +96,20 @@ export interface AnalysisDecision {
   readonly tradeDisposition: TradeIngestResult["disposition"] | null;
   readonly counts: AnalysisCounts;
   readonly stop: AnalysisStop | null;
+}
+
+export interface AnalysisVolumeProfileView extends VolumeProfileSnapshot {
+  readonly label: "MOCK / SIMULATED";
+  readonly revision: number;
+  readonly status: "RUNNING" | "STOPPED";
+  readonly stop: AnalysisStop | null;
+  /** Existing R03/R08 evidence, never a VP-invented continuity/coverage verdict. */
+  readonly quality: {
+    readonly channel: MarketQualityState["timeline"]["TRADES"][number];
+    readonly timeAlignmentEvidence: string | null;
+    readonly intervals: readonly DataQualityInterval[];
+    readonly issues: TradeStore["issues"];
+  };
 }
 
 function ensure(value: unknown, reason: string): asserts value {
@@ -154,6 +174,8 @@ export function createAnalysisHub(definition: AnalysisScope, monotonicNowMs: () 
   validateEventHeader(header);
   let quality = createMarketQualityState(scope.config, scope.startNs);
   let store = createTradeStore(header);
+  const volumeProfile = scope.volumeProfile === undefined ? null :
+    new VolumeProfileAccumulator(scope.config.identity, scope.volumeProfile);
   let depth: readonly DepthRecord[] = [];
   let evidence: readonly DataQualityInterval[] = [];
   let counts: AnalysisCounts = { inputs: 0, accepted: 0, duplicate: 0, rejected: 0 };
@@ -296,13 +318,26 @@ export function createAnalysisHub(definition: AnalysisScope, monotonicNowMs: () 
           };
           stop = overflow(pending);
           if (!stop) {
+            // R03 and R08 must BOTH accept, and every existing budget must pass.
+            // Prepare/commit VP before publishing reducer candidates; a failed VP
+            // write cannot advance the hub's Trade/guard/quality state alone.
+            if (volumeProfile && applied && tradeDisposition === "ACCEPTED" &&
+                value.type === "EVENT" && value.event.kind === "TRADE") {
+              volumeProfile.prepareAccepted(value.event)();
+            }
             quality = nextQuality; store = nextStore; depth = nextDepth; evidence = nextEvidence;
             disposition = applied ? "ACCEPTED" : duplicate ? "DUPLICATE" : "REJECTED";
           }
         }
         if (stop) { outcome = "BUDGET_EXCEEDED"; reason = stop.reason; tradeDisposition = null; }
       } catch (error) {
-        outcome = "INVALID_INPUT"; reason = error instanceof Error ? error.message : "Invalid input";
+        if (error instanceof VolumeProfileCapacityError) {
+          stop = { reason: error.message, limit: "volumeProfilePriceLevels",
+            maximum: error.maximum, attempted: error.attempted };
+          outcome = "BUDGET_EXCEEDED"; reason = stop.reason;
+        } else {
+          outcome = "INVALID_INPUT"; reason = error instanceof Error ? error.message : "Invalid input";
+        }
         tradeDisposition = null;
         // Failed validation does not install a partially computed reducer candidate.
         pending = { ...usage, inputs: pending.inputs, normalizedBytes: pending.normalizedBytes };
@@ -328,5 +363,17 @@ export function createAnalysisHub(definition: AnalysisScope, monotonicNowMs: () 
     published = revision; lastNotification = now;
     return view();
   }
-  return Object.freeze({ ingest, read: view, pollNotification });
+  function readVolumeProfile(): AnalysisVolumeProfileView | null {
+    if (!volumeProfile) return null;
+    return Object.freeze({
+      ...volumeProfile.read(), label: "MOCK / SIMULATED", revision,
+      status: stop ? "STOPPED" : "RUNNING", stop: copy(stop),
+      quality: Object.freeze({
+        channel: copy(quality.timeline.TRADES.at(-1)!),
+        timeAlignmentEvidence: scope.tradeTimeAlignmentEvidence,
+        intervals: copy(store.quality), issues: copy(store.issues),
+      }),
+    });
+  }
+  return Object.freeze({ ingest, read: view, pollNotification, readVolumeProfile });
 }

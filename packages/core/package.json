@@ -19,6 +19,7 @@
     "./bubble-sizing": "./src/bubbleSizing.ts",
     "./bubble-finality": "./src/bubbleFinality.ts",
     "./delta-timeline": "./src/deltaTimeline.ts",
+    "./volume-profile": "./src/volumeProfile.ts",
     "./ladder-view": "./src/ladderView.ts",
     "./settings-schema": "./src/settingsSchema.ts"
   },

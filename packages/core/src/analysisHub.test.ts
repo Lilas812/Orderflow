@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   F01_BOOK as F01, F02_TWO_TICKS as F02, F04_TRADES as F04,
   F05_TRADES as F05, F07_SEQUENCE_GAP as F07,
@@ -14,6 +14,7 @@ import {
 import { createTradeStore, ingestTrade } from "./tradeStore";
 import { calculateTimeWeightedDepth } from "./timeWeightedDepth";
 import { aggregateTrades } from "./bubbleAggregate";
+import { VolumeProfileAccumulator } from "./volumeProfile";
 
 const alignment = "MOCK-only explicit event/quality axis alignment; not vendor evidence";
 const limits: AnalysisBudget = {
@@ -21,6 +22,180 @@ const limits: AnalysisBudget = {
   trades: 100, rawDeliveries: 100, qualityNotifications: 100,
   qualityIntervals: 300, dedupEntries: 200, bookLevels: 100,
 };
+
+describe("opt-in incremental Volume Profile connection", () => {
+  const create = (patch: Partial<AnalysisScope> = {}) => createAnalysisHub(
+    definition(F04.events[0], { volumeProfile: { maxPriceLevels: 4 }, ...patch }), () => 0);
+  it("publishes F04 volume exactly once at the hub's accepted revision", () => {
+    const hub = create();
+    F04.events.forEach(t => expect(hub.ingest(envelope(t)).disposition).toBe("ACCEPTED"));
+    expect(hub.readVolumeProfile()).toMatchObject({
+      label: "MOCK / SIMULATED", revision: 3, status: "RUNNING", pocTick: 80000,
+      totals: { buyVolume: 23n, sellVolume: 4n, unknownVolume: 0n, totalVolume: 27n, tradeCount: 3 },
+    });
+  });
+  it("neither event retransmissions nor economic retransmissions are counted again", () => {
+    const hub = create(), first = F04.events[0];
+    hub.ingest(envelope(first));
+    expect(hub.ingest(envelope(first)).disposition).toBe("DUPLICATE");
+    expect(hub.ingest(envelope({ ...first,
+      header: { ...first.header, eventId: "vp-resend", sequence: "2" } })).disposition).toBe("DUPLICATE");
+    expect(hub.readVolumeProfile()!.totals).toMatchObject({ totalVolume: 12n, tradeCount: 1 });
+  });
+  it("uses existing conflict rejection and exposes its quality without adding volume", () => {
+    const hub = create(), first = F04.events[0];
+    hub.ingest(envelope(first));
+    expect(hub.ingest(envelope({ ...first, qty: F04.events[1].qty,
+      header: { ...first.header, eventId: "vp-conflict", sequence: "2" } })).tradeDisposition)
+      .toBe("CONFLICTING_TRADE_ID");
+    expect(hub.readVolumeProfile()).toMatchObject({ totals: { totalVolume: 12n },
+      quality: { channel: { status: "GAP" }, issues: [{ code: "CONFLICTING_TRADE_ID" }] } });
+  });
+  it.each(["TRADE_CORRECTION", "TRADE_CANCEL"] as const)("audits %s without replacing/subtracting", kind => {
+    const hub = create(), first = F04.events[0];
+    hub.ingest(envelope(first));
+    const revision = { ...first, kind, originalTradeId: first.tradeId,
+      header: { ...first.header, eventId: `vp-${kind}`, sequence: "2" } };
+    expect(hub.ingest(envelope(revision)).outcome).toBe("UNSUPPORTED_REVISION");
+    expect(hub.readVolumeProfile()).toMatchObject({ totals: { totalVolume: 12n, tradeCount: 1 },
+      quality: { channel: { status: "GAP" }, issues: [{ code: "UNSUPPORTED_REVISION" }] } });
+  });
+  it("keeps independent source/contract/session scopes separate", () => {
+    const hub = create(), other = createAnalysisHub(
+      definition(F05.events[0], { volumeProfile: { maxPriceLevels: 4 } }), () => 0);
+    F04.events.forEach(t => hub.ingest(envelope(t)));
+    F05.events.forEach(t => other.ingest(envelope(t)));
+    const before = hub.readVolumeProfile()!;
+    expect(hub.ingest(envelope(F05.events[0])).disposition).toBe("REJECTED");
+    expect(hub.readVolumeProfile()!.totals).toEqual(before.totals);
+    expect(other.readVolumeProfile()!.scope.sessionId).not.toBe(before.scope.sessionId);
+    expect(other.readVolumeProfile()!.totals.totalVolume).toBe(BigInt(F05.expected.totalVolume));
+  });
+  it("increments UNKNOWN volume and does not label unknown coverage as complete", () => {
+    const hub = create({ tradeTimeAlignmentEvidence: null });
+    const first = F04.events[0];
+    hub.ingest(envelope({ ...first, aggressor: "UNKNOWN", classification: "UNKNOWN" }));
+    expect(hub.readVolumeProfile()).toMatchObject({ marketCompleteness: "NOT_ASSERTED",
+      totals: { unknownVolume: 12n, totalVolume: 12n },
+      classificationComplete: false, quality: { timeAlignmentEvidence: null, intervals: [] } });
+  });
+  it("distinguishes zero observed volume from verified absence of market Trades", () => {
+    const hub = create({ tradeTimeAlignmentEvidence: null });
+    expect(hub.readVolumeProfile()).toMatchObject({ pocTick: null, marketCompleteness: "NOT_ASSERTED",
+      totals: { totalVolume: 0n }, quality: { channel: { status: "NOT_INITIALIZED" } } });
+  });
+  it("includes delayed deliveries and is independent of equal-time Trade arrival order", () => {
+    const results = [];
+    for (const ordered of [F04.events, [...F04.events].reverse()]) {
+      const hub = create();
+      ordered.forEach((t, i) => {
+        const event = { ...t, priceTicks: i % 2 ? 80001 : 80000,
+          header: { ...t.header, sequence: String(i + 1),
+            exchangeTimeNs: F04.events[0].header.exchangeTimeNs,
+            receiveTimeNs: (BigInt(F04.events[2].header.receiveTimeNs) + BigInt(i)).toString() } };
+        expect(hub.ingest(envelope(event)).disposition).toBe("ACCEPTED");
+      });
+      results.push(hub.readVolumeProfile()!.totals);
+      expect(hub.readVolumeProfile()!.pocTick).toBe(80000);
+    }
+    expect(results[0]).toEqual(results[1]);
+  });
+  it("preserves the existing OLD rejection for backwards event time without adding VP volume", () => {
+    const hub = create();
+    const later = { ...F04.events[2], header: { ...F04.events[2].header, sequence: "1" } };
+    expect(hub.ingest(envelope(later)).disposition).toBe("ACCEPTED");
+    const before = hub.readVolumeProfile()!;
+    const older = { ...F04.events[0], header: { ...F04.events[0].header, sequence: "2",
+      receiveTimeNs: F04.events[2].header.receiveTimeNs } };
+    expect(hub.ingest(envelope(older))).toMatchObject({ disposition: "REJECTED", outcome: "OLD" });
+    expect(hub.readVolumeProfile()!.totals).toEqual(before.totals);
+  });
+  it("VP price-cap overflow atomically leaves guard, Trade state and VP unchanged and stops", () => {
+    const hub = create({ volumeProfile: { maxPriceLevels: 1 } });
+    hub.ingest(envelope(F04.events[0]));
+    const before = hub.read(), vpBefore = hub.readVolumeProfile()!;
+    const result = hub.ingest(envelope({ ...F04.events[1], priceTicks: 80001 }));
+    expect(result).toMatchObject({ disposition: "REJECTED", outcome: "BUDGET_EXCEEDED",
+      stop: { limit: "volumeProfilePriceLevels", maximum: 1, attempted: 2 } });
+    expect(hub.read().tradeStore).toEqual(before.tradeStore);
+    expect(hub.read().qualityState).toEqual(before.qualityState);
+    expect(hub.readVolumeProfile()!.totals).toEqual(vpBefore.totals);
+    expect(hub.readVolumeProfile()!.status).toBe("STOPPED");
+    expect(hub.ingest(envelope(F04.events[1])).outcome).toBe("STOPPED");
+  });
+  it("an existing Trade budget failure never commits a VP candidate", () => {
+    const hub = create({ budget: { ...limits, trades: 1 } });
+    hub.ingest(envelope(F04.events[0]));
+    const before = hub.read(), vpBefore = hub.readVolumeProfile()!;
+    expect(hub.ingest(envelope(F04.events[1])).stop?.limit).toBe("trades");
+    expect(hub.read().tradeStore).toEqual(before.tradeStore);
+    expect(hub.read().qualityState).toEqual(before.qualityState);
+    expect(hub.readVolumeProfile()!.totals).toEqual(vpBefore.totals);
+  });
+  it.each(["prepare", "commit"] as const)("a VP %s failure cannot advance Trade/guard state", phase => {
+    const hub = create(), before = hub.read(), vpBefore = hub.readVolumeProfile()!;
+    const spy = vi.spyOn(VolumeProfileAccumulator.prototype, "prepareAccepted")
+      .mockImplementationOnce(() => {
+        if (phase === "prepare") throw new Error("Artificial VP preparation failure");
+        return () => { throw new Error("Artificial VP commit failure"); };
+      });
+    try {
+      expect(hub.ingest(envelope(F04.events[0])).outcome).toBe("INVALID_INPUT");
+      expect(hub.read().tradeStore).toEqual(before.tradeStore);
+      expect(hub.read().qualityState).toEqual(before.qualityState);
+      expect(hub.readVolumeProfile()!.totals).toEqual(vpBefore.totals);
+    } finally { spy.mockRestore(); }
+    expect(hub.ingest(envelope(F04.events[0])).disposition).toBe("ACCEPTED");
+    expect(hub.readVolumeProfile()!.totals.totalVolume).toBe(12n);
+  });
+  it("a real VP Map write exception cannot publish only the hub's Trade candidate", () => {
+    const hub = create(), before = hub.read(), vpBefore = hub.readVolumeProfile()!;
+    const original = Map.prototype.set;
+    const spy = vi.spyOn(Map.prototype, "set").mockImplementation(function(
+      this: Map<unknown, unknown>, key: unknown, value: unknown,
+    ) {
+      if (key === 80000) throw new Error("Artificial VP Map allocation failure");
+      return original.call(this, key, value);
+    });
+    let result;
+    try { result = hub.ingest(envelope(F04.events[0])); } finally { spy.mockRestore(); }
+    expect(result).toMatchObject({ disposition: "REJECTED", outcome: "INVALID_INPUT" });
+    expect(hub.read().tradeStore).toEqual(before.tradeStore);
+    expect(hub.read().qualityState).toEqual(before.qualityState);
+    expect(hub.readVolumeProfile()!.totals).toEqual(vpBefore.totals);
+    expect(hub.ingest(envelope(F04.events[0])).disposition).toBe("ACCEPTED");
+  });
+  it("returns defensive copies without invoking the full hub read/Trade scan", () => {
+    const hub = create();
+    hub.ingest(envelope(F04.events[0]));
+    const before = hub.readVolumeProfile()!, again = hub.readVolumeProfile()!;
+    expect(before.quality.intervals).not.toBe(again.quality.intervals);
+    expect(before.levels).not.toBe(again.levels);
+    expect(Object.isFrozen(before)).toBe(true);
+    hub.ingest(envelope(F04.events[1]));
+    expect(before.totals.totalVolume).toBe(12n);
+  });
+  it("does not reinterpret missing exchange time or an L2 update as VP volume", () => {
+    const hub = create();
+    expect(hub.ingest(envelope({ ...F04.events[0],
+      header: { ...F04.events[0].header, exchangeTimeNs: null } })).disposition).toBe("REJECTED");
+    expect(hub.readVolumeProfile()!.totals.totalVolume).toBe(0n);
+    const depth = createAnalysisHub(definition(F01.events[0],
+      { volumeProfile: { maxPriceLevels: 1 } }), () => 0);
+    depth.ingest(envelope(F01.events[0]));
+    expect(depth.readVolumeProfile()!.totals.totalVolume).toBe(0n);
+  });
+  it("preserves disabled hub decisions, views and notifications exactly", () => {
+    const a = createAnalysisHub(definition(F04.events[0]), () => 0);
+    const b = create();
+    expect(a.readVolumeProfile()).toBeNull();
+    F04.events.forEach(t => expect(a.ingest(envelope(t))).toEqual(b.ingest(envelope(t))));
+    const enabled = b.read();
+    const { volumeProfile: _option, ...definitionWithoutVp } = enabled.scope;
+    expect(a.read()).toEqual({ ...enabled, scope: definitionWithoutVp });
+    expect(a.pollNotification()!.tradeStore).toEqual(b.pollNotification()!.tradeStore);
+  });
+});
 function definition(first: MarketEvent = F01.events[0], patch: Partial<AnalysisScope> = {}): AnalysisScope {
   const h = first.header;
   const rule = { scope: "CHANNEL", continuity: { contiguous: true, evidence: "MOCK +1 channel order" } } as const;
