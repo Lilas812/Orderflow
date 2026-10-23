@@ -1,10 +1,11 @@
 import { canonicalObservation, type ObservationRecord } from "@workspace/tickstream-adapter/live-observation";
 import { LiveAppendStore } from "./liveAppendStore";
-import { LIVE_CODES, liveCheck, LiveFailure, offlineLiveRecord, OFFLINE_LIVE_MODE,
-  validateLiveRecord, type LiveCode, type LiveTickRecord } from "./liveRecord";
+import { LIVE_CODES, liveCheck, LiveFailure, offlineLiveRecord, authorizedLiveRecord, OFFLINE_LIVE_MODE,
+  validateLiveRecord, type LiveCode, type StoredLiveTick } from "./liveRecord";
+import { AUTHORIZED_LIVE_MODE, LiveAuthorizationFailure } from "./liveAuthorization";
 
 export interface LiveQueueReport {
-  readonly mode: typeof OFFLINE_LIVE_MODE;
+  readonly mode: typeof OFFLINE_LIVE_MODE | typeof AUTHORIZED_LIVE_MODE;
   readonly phase: "OPEN" | "STOPPED" | "FAILED" | "ABORTED";
   readonly reason: LiveCode | null;
   readonly offered: number;
@@ -30,7 +31,7 @@ export interface LiveQueueOptions {
  * No market records or free-text exceptions are returned by diagnostics. */
 export class LiveStorageQueue {
   readonly testOnly = true as const;
-  private readonly entries: { record: LiveTickRecord; bytes: number }[] = [];
+  private readonly entries: { record: StoredLiveTick; bytes: number }[] = [];
   private bytes = 0;
   private phase: LiveQueueReport["phase"] = "OPEN";
   private reason: LiveCode | null = null;
@@ -52,7 +53,8 @@ export class LiveStorageQueue {
   }
   onFailure(callback: () => void): void { this.failureHandler = callback; }
   report(): LiveQueueReport {
-    return Object.freeze({ mode: OFFLINE_LIVE_MODE, phase: this.phase, reason: this.reason,
+    return Object.freeze({ mode: this.store.authorization ? AUTHORIZED_LIVE_MODE : OFFLINE_LIVE_MODE,
+      phase: this.phase, reason: this.reason,
       offered: this.offered, enqueued: this.enqueued, persisted: this.store.persisted,
       pending: this.entries.length, pendingBytes: this.bytes, unknown: this.unknown,
       refused: this.refused, unpersisted: this.offered - this.store.persisted,
@@ -61,16 +63,16 @@ export class LiveStorageQueue {
   }
   accept(input: ObservationRecord): void {
     this.ensureOpen();
-    let record: LiveTickRecord;
-    try { record = offlineLiveRecord(input); }
+    let record: StoredLiveTick;
+    try { record = this.store.authorization ? authorizedLiveRecord(input, this.store.authorization) : offlineLiveRecord(input); }
     catch (error) { this.offered++; this.refused++; this.fail(error); throw new LiveFailure(this.reason!); }
     this.enqueue(record);
   }
-  enqueue(input: LiveTickRecord): void {
+  enqueue(input: StoredLiveTick): void {
     this.ensureOpen(); this.offered++;
-    let record: LiveTickRecord, bytes: number;
+    let record: StoredLiveTick, bytes: number;
     try {
-      record = validateLiveRecord(input); bytes = Buffer.byteLength(canonicalObservation(record));
+      record = validateLiveRecord(input, this.store.authorization); bytes = Buffer.byteLength(canonicalObservation(record));
       liveCheck(this.offered <= 1000, "LIVE_STORE_QUOTA");
       liveCheck(this.entries.length < this.maxCount, "LIVE_QUEUE_COUNT_LIMIT");
       liveCheck(this.bytes + bytes <= this.maxBytes, "LIVE_QUEUE_BYTE_LIMIT");
@@ -120,7 +122,8 @@ export class LiveStorageQueue {
   private fail(error: unknown): void {
     if (this.phase === "FAILED") return;
     this.phase = "FAILED";
-    this.reason = error instanceof LiveFailure && LIVE_CODES.includes(error.code) ? error.code : "LIVE_STORE_IO";
+    this.reason = error instanceof LiveAuthorizationFailure ? error.code :
+      error instanceof LiveFailure && LIVE_CODES.includes(error.code) ? error.code : "LIVE_STORE_IO";
     this.cancel?.(); this.cancel = undefined;
     try { this.failureHandler?.(); } catch { /* do not leak callback exceptions or change the first failure */ }
   }

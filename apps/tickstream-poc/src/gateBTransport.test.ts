@@ -24,6 +24,13 @@ function harness(options: { manualDrain?: boolean; finishAfter?: number } = {}) 
     send: (wire: unknown) => sockets.at(-1)!.emit({ type: "text", bytes: encode(wire) }) };
 }
 describe("RAM-only ticks states and counters", () => {
+  it("rejects a forged production-storage port before calling any factory or callback", () => {
+    const factory = vi.fn(), callback = vi.fn(), port = { mode: "AUTHORIZED_LIVE_TRIAL" as const,
+      accept: callback, finish: callback, abort: callback, onFailure: callback };
+    expect(() => new GateBTicks(new FakeClock(), factory, "PRODUCTION", { liveStorage: port })).toThrow("LIVE_AUTH_REQUIRED");
+    expect(factory).not.toHaveBeenCalled(); expect(callback).not.toHaveBeenCalled();
+    const h = harness(); expect(() => h.p.liveReport()).toThrow("LIVE_AUTH_REQUIRED"); h.p.finish();
+  });
   it("rejects offline storage in production before any factory/port invocation", () => {
     const factory = vi.fn(), accept = vi.fn(), onFailure = vi.fn(), finish = vi.fn(), abort = vi.fn();
     const port = { testOnly: true as const, accept, onFailure, finish, abort };

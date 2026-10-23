@@ -3,20 +3,24 @@ import { join } from "node:path";
 import { canonicalObservation } from "@workspace/tickstream-adapter/live-observation";
 import { digest, LIVE_FILES, LIVE_LOG, LIVE_TEMP, liveDirectory, liveRead,
   MANIFEST_RESERVE, QUOTA_BYTES, readLiveManifest, ZERO_HASH, type LiveManifest } from "./liveManifest";
-import { assertReceiveOrder, LIVE_RECORD_BYTES, liveCheck, LiveFailure, validateLiveRecord, type LiveTickRecord } from "./liveRecord";
+import { assertReceiveOrder, LIVE_RECORD_BYTES, liveCheck, LiveFailure, validateLiveRecord, type LiveTickRecord, type StoredLiveTick } from "./liveRecord";
+import { assertLiveAuthorization, AUTHORIZED_LIVE_MODE, LiveAuthorizationFailure, type LiveAuthorization } from "./liveAuthorization";
+import { DEFAULT_LIVE_ROOT, inspectTrial } from "./liveTrialDirectory";
 
 export const LIVE_MAGIC = Buffer.from("OLABLIV1");
+export const AUTHORIZED_MAGIC = Buffer.from("OLABLIV2");
 export interface LiveFrameBody {
   sessionId: string;
   position: number;
   previousHash: string;
-  record: LiveTickRecord;
+  record: StoredLiveTick;
 }
 export function encodeLiveFrame(body: LiveFrameBody): { data: Buffer; hash: string } {
   const bytes = Buffer.from(canonicalObservation(body));
   liveCheck(bytes.length > 0 && bytes.length <= LIVE_RECORD_BYTES + 512, "LIVE_RECORD_INVALID");
   const hash = digest(bytes), header = Buffer.alloc(12);
-  LIVE_MAGIC.copy(header); header.writeUInt32BE(bytes.length, 8);
+  (body.record.schema === "TICKSTREAM_LIVE_TICK_RECORD_V2" ? AUTHORIZED_MAGIC : LIVE_MAGIC).copy(header);
+  header.writeUInt32BE(bytes.length, 8);
   return { data: Buffer.concat([header, bytes, Buffer.from(hash, "hex")]), hash };
 }
 export interface LiveRecovery {
@@ -31,14 +35,21 @@ export interface LiveRecovery {
 }
 /** Two bounded passes; all bytes checked before a visitor sees any record.
  * No repair, continuation, deletion, retained Trade list or skipped prefix. */
-export function recoverLive(directory: string, visit?: (record: LiveTickRecord) => void): LiveRecovery {
-  try { return scanLive(directory, visit); }
+export function recoverLive(directory: string, visit?: (record: LiveTickRecord) => void): LiveRecovery;
+export function recoverLive(directory: string, visit: ((record: StoredLiveTick) => void) | undefined,
+  authorization: LiveAuthorization): LiveRecovery;
+export function recoverLive(directory: string,
+  visit?: ((record: LiveTickRecord) => void) | ((record: StoredLiveTick) => void), authorization?: LiveAuthorization): LiveRecovery {
+  // Without a capability scanLive rejects V2 before opening the log, so the
+  // legacy visitor can only receive V1. The overload preserves the old API.
+  try { return scanLive(directory, visit as ((record: StoredLiveTick) => void) | undefined, authorization); }
   catch (error) {
+    if (error instanceof LiveAuthorizationFailure) throw new LiveFailure(error.code);
     if (error instanceof LiveFailure) throw error;
     throw new LiveFailure("LIVE_STORE_CORRUPT");
   }
 }
-function scanLive(directory: string, visit?: (record: LiveTickRecord) => void): LiveRecovery {
+function scanLive(directory: string, visit?: (record: StoredLiveTick) => void, authorization?: LiveAuthorization): LiveRecovery {
   const root = liveDirectory(directory), names = readdirSync(root);
   liveCheck(names.every(n => (LIVE_FILES as readonly string[]).includes(n)), "LIVE_STORE_CORRUPT");
   let diskBytes = 0;
@@ -49,7 +60,20 @@ function scanLive(directory: string, visit?: (record: LiveTickRecord) => void): 
     diskBytes += st.size;
   }
   liveCheck(diskBytes <= QUOTA_BYTES, "LIVE_STORE_QUOTA");
-  const manifest = readLiveManifest(root), fd = liveRead(root, LIVE_LOG, QUOTA_BYTES);
+  const manifest = readLiveManifest(root);
+  const authorized = manifest.mode === AUTHORIZED_LIVE_MODE;
+  if (authorized) {
+    assertLiveAuthorization(authorization);
+    liveCheck(authorization.directory === root && authorization.trialId === manifest.trialId &&
+      authorization.captureMode === manifest.captureMode && authorization.issuedAtMs === manifest.issuedAtMs &&
+      authorization.deleteByMs === manifest.deleteByMs, "LIVE_AUTH_SCOPE");
+    if (authorization.captureMode === "PRODUCTION") {
+      const p = inspectTrial(DEFAULT_LIVE_ROOT, authorization.trialId);
+      liveCheck(p.data === root && p.marker.captureMode === "PRODUCTION" &&
+        p.marker.issuedAtMs === authorization.issuedAtMs && p.marker.deleteByMs === authorization.deleteByMs, "LIVE_AUTH_SCOPE");
+    }
+  } else liveCheck(authorization === undefined, "LIVE_AUTH_SCOPE");
+  const fd = liveRead(root, LIVE_LOG, QUOTA_BYTES);
   try {
     const initial = fstatSync(fd), manifestText = canonicalObservation(manifest);
     const unchanged = () => {
@@ -66,14 +90,14 @@ function scanLive(directory: string, visit?: (record: LiveTickRecord) => void): 
     };
     let peak = 12;
     const pass = (publish: boolean) => {
-      let offset = 0, count = 0, head = ZERO_HASH, partial = false, previous: LiveTickRecord | undefined;
+      let offset = 0, count = 0, head = ZERO_HASH, partial = false, previous: StoredLiveTick | undefined;
       let boundary = manifest.bytes === 0;
       if (boundary) liveCheck(manifest.count === 0 && manifest.head === ZERO_HASH, "LIVE_STORE_CORRUPT");
       while (offset < initial.size) {
         const start = offset;
         if (initial.size - offset < 12) { partial = true; break; }
         const header = readAt(offset, 12); offset += 12;
-        liveCheck(header.subarray(0, 8).equals(LIVE_MAGIC), "LIVE_STORE_CORRUPT");
+        liveCheck(header.subarray(0, 8).equals(authorized ? AUTHORIZED_MAGIC : LIVE_MAGIC), "LIVE_STORE_CORRUPT");
         const length = header.readUInt32BE(8);
         liveCheck(length > 0 && length <= LIVE_RECORD_BYTES + 512, "LIVE_STORE_CORRUPT");
         if (initial.size - offset < length + 32) { partial = true; offset = start; break; }
@@ -84,7 +108,8 @@ function scanLive(directory: string, visit?: (record: LiveTickRecord) => void): 
         liveCheck(Object.keys(body).length === 4 && body.sessionId === manifest.sessionId &&
           canonicalObservation(body) === bytes.toString("utf8") &&
           body.position === count + 1 && body.previousHash === head && count < 1000, "LIVE_STORE_CORRUPT");
-        const record = validateLiveRecord(body.record);
+        if (authorization) assertLiveAuthorization(authorization);
+        const record = validateLiveRecord(body.record, authorization);
         assertReceiveOrder(previous, record); previous = record;
         head = hash; count++;
         if (offset === manifest.bytes) {
@@ -107,6 +132,7 @@ function scanLive(directory: string, visit?: (record: LiveTickRecord) => void): 
       tailBytes: initial.size - manifest.bytes, pendingManifest, writerLockPresent: names.includes("live-writer.lock"),
       peakReadBufferBytes: peak });
   } catch (error) {
+    if (error instanceof LiveAuthorizationFailure) throw new LiveFailure(error.code);
     if (error instanceof LiveFailure && ["LIVE_STORE_UNKNOWN", "LIVE_STORE_TAIL"].includes(error.code)) throw error;
     throw new LiveFailure("LIVE_STORE_CORRUPT");
   } finally { closeSync(fd); }

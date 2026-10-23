@@ -2,6 +2,7 @@ import { REASON_CODES } from "@workspace/tickstream-adapter/envelope";
 import { parseObservation, type ObservationRecord, type ReceiveContext } from "@workspace/tickstream-adapter/live-observation";
 import type { Clock } from "./transport";
 import { classifyMessage } from "./liveControl";
+import { assertLiveStoragePort, type BLiveStoragePort } from "./gateB2Config";
 import {
   LIMITS, B_COUNTERS, B_PHASES, emptyGateBReport, readGateBReport,
   type BExecution, type BPhase, type BReason, type GateBReport,
@@ -51,10 +52,15 @@ export class GateBTicks {
   constructor(private readonly clock: Clock, private readonly factory: () => BTicksSocket,
     execution: Exclude<BExecution, "NOT_RUN">, private readonly options: {
       manualDrain?: boolean; finishAfter?: number; offlineStorage?: BOfflineStoragePort;
+      liveStorage?: BLiveStoragePort;
     } = {}) {
     if (options.offlineStorage !== undefined &&
       (execution !== "LOOPBACK_TEST" || options.offlineStorage.testOnly !== true)) {
       throw new Error("GATE_B_PRODUCTION_STORAGE_DISABLED");
+    }
+    if (options.liveStorage) {
+      if (options.offlineStorage) throw new Error("LIVE_AUTH_SCOPE");
+      assertLiveStoragePort(options.liveStorage, execution);
     }
     if (!["LOOPBACK_TEST", "PRODUCTION"].includes(execution) || (options.finishAfter !== undefined &&
       (!Number.isInteger(options.finishAfter) || options.finishAfter < 1 || options.finishAfter > LIMITS.messages))) {
@@ -65,7 +71,7 @@ export class GateBTicks {
       phaseVisits: Object.fromEntries(B_PHASES.map(k => [k, 0])) as NonNullable<GateBReport["phaseVisits"]>,
       parserReasons: Object.fromEntries(REASON_CODES.map(k => [k, 0])) as NonNullable<GateBReport["parserReasons"]> };
     this.phase("NOT_RUNNING");
-    options.offlineStorage?.onFailure(() => {
+    (options.offlineStorage ?? options.liveStorage)?.onFailure(() => {
       this.offlineStorageFailed = true;
       // The unchanged B-1 report has no storage enums. The separate offline
       // queue report owns the exact LIVE_* reason and all persistence counts.
@@ -77,7 +83,7 @@ export class GateBTicks {
   onTerminal(callback: () => void): void { this.terminalCallback = callback; }
   private phase(phase: BPhase): void { this.reportValue.phase = phase; this.reportValue.phaseVisits![phase]++; }
   report(): GateBReport {
-    if (this.options.offlineStorage) throw new Error("GATE_B_OFFLINE_REPORT_REQUIRED");
+    if (this.options.offlineStorage || this.options.liveStorage) throw new Error("GATE_B_OFFLINE_REPORT_REQUIRED");
     return this.baseReport();
   }
   /** Do not label an offline disk test with B-1's persistence:DISABLED.
@@ -87,6 +93,12 @@ export class GateBTicks {
     const { schema: _, persistence: _p, ...transport } = this.baseReport();
     return { schema: "TICKSTREAM_GATE_B2A_OFFLINE_V1" as const,
       persistence: "OFFLINE_ONLY" as const, transport };
+  }
+  liveReport() {
+    if (!this.options.liveStorage) throw new Error("LIVE_AUTH_REQUIRED");
+    const { schema: _, persistence: _p, ...transport } = this.baseReport();
+    return { schema: "TICKSTREAM_GATE_B2B_TRANSPORT_V1" as const,
+      persistence: "AUTHORIZED_LIVE_ONLY" as const, transport };
   }
   private baseReport(): GateBReport {
     const r = this.reportValue, c = r.counters!;
@@ -235,8 +247,9 @@ export class GateBTicks {
       r.subscription = "DATA_OBSERVED_NO_ACK";
       if (this.observedEpoch !== this.epoch) { this.observedEpoch = this.epoch; this.phase("FIRST_VALID_TICK_RECEIVED"); }
       this.phase("OBSERVING");
-      if (this.options.offlineStorage) {
-        try { this.options.offlineStorage.accept(record); }
+      const storage = this.options.offlineStorage ?? this.options.liveStorage;
+      if (storage) {
+        try { storage.accept(record); }
         catch { this.offlineStorageFailed = true; this.stop("CHILD_FAILURE"); return; }
       }
       // Without the explicit offline port, release after fixed counters as B-1.
@@ -253,13 +266,14 @@ export class GateBTicks {
     this.phase("STOPPING"); this.reportValue.stopReason = reason;
     this.timers.forEach(cancel => cancel()); this.timers.clear();
     try { this.socket?.close(); } catch { this.socket?.terminate(); }
-    if (this.options.offlineStorage) {
+    const storage = this.options.offlineStorage ?? this.options.liveStorage;
+    if (storage) {
       try {
-        if (failed || this.offlineStorageFailed) this.options.offlineStorage.abort();
-        else this.options.offlineStorage.finish();
+        if (failed || this.offlineStorageFailed) storage.abort();
+        else storage.finish();
       } catch {
         this.offlineStorageFailed = true;
-        try { this.options.offlineStorage.abort(); } catch { /* fixed failure below, no free-text errors */ }
+        try { storage.abort(); } catch { /* fixed failure below, no free-text errors */ }
       }
       if (this.offlineStorageFailed) { failed = true; this.reportValue.stopReason = "CHILD_FAILURE"; }
     }

@@ -1,5 +1,6 @@
 import { canonicalObservation, parseObservation, PARSER_VERSION, validateObservation,
   type ObservationRecord } from "@workspace/tickstream-adapter/live-observation";
+import { assertLiveAuthorization, AUTHORIZED_LIVE_MODE, type LiveAuthorization } from "./liveAuthorization";
 
 /** B-2A is NOT evidence of live provenance. Both the file and each record carry
  * this discriminator; actual-provider records are forbidden in this stage. */
@@ -11,6 +12,7 @@ export const LIVE_CODES = [
   "LIVE_STORE_UNKNOWN", "LIVE_STORE_CORRUPT", "LIVE_STORE_TAIL", "LIVE_STORE_QUOTA",
   "LIVE_RECEIVE_ID_INVALID", "LIVE_QUEUE_COUNT_LIMIT", "LIVE_QUEUE_BYTE_LIMIT",
   "LIVE_QUEUE_CLOSED", "LIVE_QUEUE_ABORTED", "LIVE_QUEUE_FAILED", "LIVE_FINISHED",
+  "LIVE_AUTH_REQUIRED", "LIVE_AUTH_EXPIRED", "LIVE_AUTH_SCOPE",
 ] as const;
 export type LiveCode = typeof LIVE_CODES[number];
 export class LiveFailure extends Error {
@@ -51,12 +53,23 @@ export interface LiveTickRecord {
   readonly providerSequence: "UNAVAILABLE";
   readonly continuityStatus: "UNKNOWN";
 }
+export type AuthorizedLiveTickRecord = Omit<LiveTickRecord, "schema" | "testMode" | "inputOrigin"> & {
+  readonly schema: "TICKSTREAM_LIVE_TICK_RECORD_V2";
+  readonly testMode: typeof AUTHORIZED_LIVE_MODE;
+  readonly inputOrigin: "SYNTHETIC_TEST" | "ACTUAL_PROVIDER_RESPONSE";
+  readonly trialId: string;
+  readonly captureMode: LiveAuthorization["captureMode"];
+};
+export type StoredLiveTick = LiveTickRecord | AuthorizedLiveTickRecord;
 /** Projection only after the existing parser's strict round-trip validation.
  * No free text, rejected raw bytes, credentials or provider identity synthesis. */
 export function offlineLiveRecord(input: ObservationRecord): LiveTickRecord {
+  return projectObservation(input, "SYNTHETIC_TEST");
+}
+function projectObservation(input: ObservationRecord, origin: "SYNTHETIC_TEST" | "ACTUAL_PROVIDER_RESPONSE"): LiveTickRecord {
   try {
     const r = validateObservation(input), p = r.provenance;
-    liveCheck(p.sampleOrigin === "SYNTHETIC_TEST" && p.environment === "SIMULATED", "LIVE_PRODUCTION_DISABLED");
+    liveCheck(p.sampleOrigin === origin && p.environment === (origin === "SYNTHETIC_TEST" ? "SIMULATED" : "LIVE"), "LIVE_PRODUCTION_DISABLED");
     liveCheck(r.result.status === "ACCEPTED_OBSERVATION" &&
       r.result.observation.kind === "TRADE_OBSERVATION" && p.channel === "ticks" &&
       p.providerTimestampUnit === "s", "LIVE_RECORD_INVALID");
@@ -80,27 +93,38 @@ export function offlineLiveRecord(input: ObservationRecord): LiveTickRecord {
     throw new LiveFailure("LIVE_RECORD_INVALID");
   }
 }
+export function authorizedLiveRecord(input: ObservationRecord, authorization: LiveAuthorization): AuthorizedLiveTickRecord {
+  assertLiveAuthorization(authorization);
+  const origin = authorization.captureMode === "PRODUCTION" ? "ACTUAL_PROVIDER_RESPONSE" : "SYNTHETIC_TEST";
+  const base = projectObservation(input, origin);
+  return Object.freeze({ ...base, schema: "TICKSTREAM_LIVE_TICK_RECORD_V2", testMode: AUTHORIZED_LIVE_MODE,
+    inputOrigin: origin, trialId: authorization.trialId, captureMode: authorization.captureMode });
+}
 /** Reconstruct the exact reviewed parser input and compare EVERY stored field.
  * Extra properties, false provenance and modified derived values are rejected. */
-export function validateLiveRecord(input: unknown): LiveTickRecord {
+export function validateLiveRecord(input: unknown): LiveTickRecord;
+export function validateLiveRecord(input: unknown, authorization: LiveAuthorization | undefined): StoredLiveTick;
+export function validateLiveRecord(input: unknown, authorization?: LiveAuthorization): StoredLiveTick {
   try {
+    if (authorization) assertLiveAuthorization(authorization);
     const text = canonicalObservation(input);
     liveCheck(Buffer.byteLength(text) <= LIVE_RECORD_BYTES, "LIVE_RECORD_INVALID");
-    const r = JSON.parse(text) as LiveTickRecord;
+    const r = JSON.parse(text) as StoredLiveTick;
     const observation = parseObservation(JSON.stringify({
       type: "tick", symbol: r.providerSymbol, ts: r.providerTimestamp,
       price: r.price, size: r.size,
       side: r.side === "BUY" ? "buy" : r.side === "SELL" ? "sell" : r.side === "UNKNOWN" ? "unknown" : null,
       exch: r.exchange,
-    }), { origin: "SYNTHETIC_TEST", channel: "ticks", timestampUnit: "s",
+    }), { origin: authorization?.captureMode === "PRODUCTION" ? "ACTUAL_PROVIDER_RESPONSE" : "SYNTHETIC_TEST",
+      channel: "ticks", timestampUnit: "s",
       receivedAtUtcNs: r.receivedAtUtcNs, receivedAtMonotonicNs: r.receivedAtMonotonicNs,
       connectionEpoch: r.connectionEpoch, receiveOrdinal: r.receiveOrdinal });
-    const expected = offlineLiveRecord(observation);
+    const expected = authorization ? authorizedLiveRecord(observation, authorization) : offlineLiveRecord(observation);
     liveCheck(canonicalObservation(expected) === text, "LIVE_RECORD_INVALID");
     return expected;
   } catch { throw new LiveFailure("LIVE_RECORD_INVALID"); }
 }
-export function assertReceiveOrder(previous: LiveTickRecord | undefined, record: LiveTickRecord): void {
+export function assertReceiveOrder(previous: StoredLiveTick | undefined, record: StoredLiveTick): void {
   liveCheck(!previous || record.connectionEpoch > previous.connectionEpoch ||
     record.connectionEpoch === previous.connectionEpoch && record.receiveOrdinal > previous.receiveOrdinal,
   "LIVE_RECEIVE_ID_INVALID");

@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { canonicalObservation } from "@workspace/tickstream-adapter/live-observation";
 import { digest, MANIFEST_RESERVE, privateDirectory, privateRead, QUOTA_BYTES, writeFully, ZERO_HASH } from "./manifest";
 import { liveCheck, LiveFailure, OFFLINE_LIVE_MODE } from "./liveRecord";
+import { AUTHORIZED_LIVE_MODE, MAX_RETENTION_MS, TRIAL_ID, type CaptureMode } from "./liveAuthorization";
 
 export { digest, MANIFEST_RESERVE, QUOTA_BYTES, ZERO_HASH };
 export const LIVE_LOG = "live-ticks.bin";
@@ -15,14 +16,18 @@ export type LiveWritePhase = "BEFORE_APPEND" | "AFTER_PARTIAL_APPEND" | "AFTER_A
   "BEFORE_MANIFEST_RENAME" | "BEFORE_DIRECTORY_FSYNC" | "AFTER_DIRECTORY_FSYNC" | "AFTER_MANIFEST";
 export type LiveFault = (phase: LiveWritePhase) => void;
 export interface LiveManifest {
-  readonly schema: "TICKSTREAM_LIVE_APPEND_V1";
-  readonly mode: typeof OFFLINE_LIVE_MODE;
+  readonly schema: "TICKSTREAM_LIVE_APPEND_V1" | "TICKSTREAM_LIVE_APPEND_V2";
+  readonly mode: typeof OFFLINE_LIVE_MODE | typeof AUTHORIZED_LIVE_MODE;
   readonly environment: "LIVE";
   readonly sessionId: string;
   readonly count: number;
   readonly bytes: number;
   readonly head: string;
   readonly checksum: string;
+  readonly trialId?: string;
+  readonly captureMode?: CaptureMode;
+  readonly issuedAtMs?: number;
+  readonly deleteByMs?: number;
 }
 export function liveDirectory(directory: string): string {
   try { return privateDirectory(directory); } catch { throw new LiveFailure("LIVE_PRIVATE_DIRECTORY"); }
@@ -59,8 +64,13 @@ export function readLiveManifest(root: string): LiveManifest {
     while (n < bytes.length) { const k = readSync(fd, bytes, n, bytes.length - n, n); liveCheck(k > 0, "LIVE_STORE_CORRUPT"); n += k; }
     const m = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)) as LiveManifest;
     const { checksum, ...base } = m;
-    liveCheck(Object.keys(m).length === 8 && m.schema === "TICKSTREAM_LIVE_APPEND_V1" &&
-      m.mode === OFFLINE_LIVE_MODE && m.environment === "LIVE" &&
+    const offline = Object.keys(m).length === 8 && m.schema === "TICKSTREAM_LIVE_APPEND_V1" && m.mode === OFFLINE_LIVE_MODE;
+    const authorized = Object.keys(m).length === 12 && m.schema === "TICKSTREAM_LIVE_APPEND_V2" &&
+      m.mode === AUTHORIZED_LIVE_MODE && typeof m.trialId === "string" && TRIAL_ID.test(m.trialId) &&
+      ["PRODUCTION", "ARTIFICIAL_PROTOCOL_TEST"].includes(m.captureMode!) &&
+      Number.isSafeInteger(m.issuedAtMs) && m.issuedAtMs! >= 0 && Number.isSafeInteger(m.deleteByMs) &&
+      m.deleteByMs! > m.issuedAtMs! && m.deleteByMs! - m.issuedAtMs! <= MAX_RETENTION_MS;
+    liveCheck((offline || authorized) && m.environment === "LIVE" &&
       typeof m.sessionId === "string" && /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(m.sessionId) &&
       Number.isSafeInteger(m.count) && m.count >= 0 && m.count <= 1000 &&
       Number.isSafeInteger(m.bytes) && m.bytes >= 0 && m.bytes <= QUOTA_BYTES &&

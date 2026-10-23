@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { canonicalObservation, parseObservation } from "@workspace/tickstream-adapter/live-observation";
 import { OFFLINE_LIVE_MODE, offlineLiveRecord, validateLiveRecord } from "./liveRecord";
+import { authorizedLiveRecord } from "./liveRecord";
+import { authorizeLiveStorage } from "./liveAuthorization";
 
 const wire = { type: "tick", symbol: "NQ", ts: 1700000000, price: 20000.25, size: 12, side: "buy", exch: "CME" };
 const context = { origin: "SYNTHETIC_TEST", channel: "ticks", timestampUnit: "s",
@@ -10,6 +12,28 @@ const observation = () => parseObservation(JSON.stringify(wire), context);
 const record = () => offlineLiveRecord(observation());
 
 describe("B-2A strict offline LIVE-equivalent record", () => {
+  it("separates the new authorized schema and preserves artificial origin in offline protocol tests", () => {
+    const now = Date.now(), a = authorizeLiveStorage({ explicitMode: "GATE_B2B", dataPermission: true,
+      replitStoragePermission: true, manualCleanupConfirmed: true, captureMode: "ARTIFICIAL_PROTOCOL_TEST",
+      trialId: "bfb331cf-087e-41f6-9227-21488394112f", directory: "/private/trial/data", issuedAtMs: now, deleteByMs: now + 10000 });
+    const r = authorizedLiveRecord(observation(), a);
+    expect(r).toMatchObject({ schema: "TICKSTREAM_LIVE_TICK_RECORD_V2", inputOrigin: "SYNTHETIC_TEST",
+      captureMode: "ARTIFICIAL_PROTOCOL_TEST", trialId: a.trialId });
+    expect(validateLiveRecord(r, a)).toEqual(r);
+    expect(() => validateLiveRecord(r)).toThrow("LIVE_RECORD_INVALID");
+    expect(() => validateLiveRecord(record(), a)).toThrow("LIVE_RECORD_INVALID");
+    expect(() => validateLiveRecord({ ...r, inputOrigin: "ACTUAL_PROVIDER_RESPONSE" }, a)).toThrow("LIVE_RECORD_INVALID");
+  });
+  it("production record projection requires actual-origin metadata; test never connects or writes it", () => {
+    const now = Date.now(), a = authorizeLiveStorage({ explicitMode: "GATE_B2B", dataPermission: true,
+      replitStoragePermission: true, manualCleanupConfirmed: true, captureMode: "PRODUCTION",
+      trialId: "bfb331cf-087e-41f6-9227-21488394112f", directory: "/private/trial/data", issuedAtMs: now, deleteByMs: now + 10000 });
+    expect(() => authorizedLiveRecord(observation(), a)).toThrow("LIVE_PRODUCTION_DISABLED");
+    // Artificial bytes exercising ONLY the production codec's input contract.
+    const artificialActualContext = parseObservation(JSON.stringify(wire), { ...context, origin: "ACTUAL_PROVIDER_RESPONSE" });
+    const r = authorizedLiveRecord(artificialActualContext, a);
+    expect(r.inputOrigin).toBe("ACTUAL_PROVIDER_RESPONSE"); expect(validateLiveRecord(r, a)).toEqual(r);
+  });
   it("preserves every required value, explicit precision and unknown quality", () => {
     const r = record();
     expect(r).toEqual({

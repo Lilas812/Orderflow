@@ -10,6 +10,8 @@ import { digest, LIVE_LOG, LIVE_MANIFEST, LIVE_TEMP, publishLiveManifest, readLi
   sealLiveManifest, type LiveWritePhase } from "./liveManifest";
 import { offlineLiveRecord, OFFLINE_LIVE_MODE } from "./liveRecord";
 import { encodeLiveFrame, recoverLive } from "./liveRecovery";
+import { authorizeLiveStorage, AUTHORIZED_LIVE_MODE } from "./liveAuthorization";
+import { authorizedLiveRecord } from "./liveRecord";
 
 const dirs: string[] = [];
 function directory() {
@@ -26,6 +28,63 @@ function stored() {
 }
 
 describe("B-2A full bounded verification and crash evidence", () => {
+  it.each(["AFTER_PARTIAL_APPEND", "AFTER_LOG_FSYNC", "BEFORE_MANIFEST_RENAME", "AFTER_MANIFEST"] as LiveWritePhase[])(
+    "keeps V2 authorization/commit evidence after actual SIGKILL at %s", async phase => {
+      const d = directory(), now = Date.now(), authInput = { explicitMode: "GATE_B2B" as const, dataPermission: true,
+        replitStoragePermission: true, manualCleanupConfirmed: true, captureMode: "ARTIFICIAL_PROTOCOL_TEST" as const,
+        trialId: "bfb331cf-087e-41f6-9227-21488394112f", directory: d, issuedAtMs: now, deleteByMs: now + 60000 };
+      const a = authorizeLiveStorage(authInput), code = `
+        import {registerHooks} from "node:module"; import {writeSync} from "node:fs";
+        registerHooks({resolve(s,c,n){try{return n(s,c)}catch(e){if(s.startsWith(".")&&!s.endsWith(".ts"))return n(s+".ts",c);throw e}}});
+        const {LiveAppendStore}=await import(${JSON.stringify(new URL("./liveAppendStore.ts", import.meta.url).href)});
+        const {authorizedLiveRecord}=await import(${JSON.stringify(new URL("./liveRecord.ts", import.meta.url).href)});
+        const {authorizeLiveStorage,AUTHORIZED_LIVE_MODE}=await import(${JSON.stringify(new URL("./liveAuthorization.ts", import.meta.url).href)});
+        const {parseObservation}=await import(${JSON.stringify(new URL("../../tickstream-adapter/src/liveObservation.ts", import.meta.url).href)});
+        const a=authorizeLiveStorage(${JSON.stringify(authInput)});
+        let armed=false;
+        const s=new LiveAppendStore(${JSON.stringify(d)},{testMode:AUTHORIZED_LIVE_MODE,authorization:a,fault:p=>{
+          if(armed&&p===${JSON.stringify(phase)}){writeSync(1,"READY\\n");Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0);}
+        }});
+        const record=n=>authorizedLiveRecord(parseObservation(${JSON.stringify(wire)},{...${JSON.stringify(context)},receiveOrdinal:n}),a);
+        s.append(record(1));armed=true;s.append(record(2));
+      `;
+      const child = spawn(process.execPath, ["--experimental-transform-types", "--disable-warning=ExperimentalWarning",
+        "--input-type=module", "-e", code], { env: {}, stdio: ["ignore", "pipe", "ignore"] });
+      const exit = once(child, "exit");
+      try {
+        await new Promise<void>((resolve, reject) => {
+          const timer = setTimeout(() => reject(Error("ARTIFICIAL_CHILD_NOT_READY")), 3000);
+          child.once("exit", () => { clearTimeout(timer); reject(Error("ARTIFICIAL_CHILD_EXIT")); });
+          child.stdout.on("data", bytes => { if (bytes.toString().includes("READY")) { clearTimeout(timer); resolve(); } });
+        });
+        child.kill("SIGKILL"); expect((await exit)[1]).toBe("SIGKILL");
+        const r = recoverLive(d, undefined, a);
+        expect(r.persistedCount).toBe(phase === "AFTER_MANIFEST" ? 2 : 1);
+        expect(r.status).toBe(phase === "AFTER_PARTIAL_APPEND" ? "TRUNCATED_TAIL" :
+          phase === "AFTER_MANIFEST" ? "VERIFIED" : "UNPUBLISHED_TAIL");
+        expect(r.writerLockPresent).toBe(true);
+        expect(() => recoverLive(d)).toThrow("LIVE_AUTH_REQUIRED");
+      } finally { child.kill("SIGKILL"); }
+    });
+  it("rejects a V2 magic/manifest mode mismatch and a rehashed trial-id substitution", () => {
+    for (const kind of ["magic", "trial"]) {
+      const d = directory(), now = Date.now(), a = authorizeLiveStorage({ explicitMode: "GATE_B2B", dataPermission: true,
+        replitStoragePermission: true, manualCleanupConfirmed: true, captureMode: "ARTIFICIAL_PROTOCOL_TEST",
+        trialId: "bfb331cf-087e-41f6-9227-21488394112f", directory: d, issuedAtMs: now, deleteByMs: now + 60000 });
+      const s = new LiveAppendStore(d, { testMode: AUTHORIZED_LIVE_MODE, authorization: a }),
+        r = authorizedLiveRecord(parseObservation(wire, context), a);
+      s.append(r); s.close();
+      if (kind === "magic") {
+        const bytes = readFileSync(join(d, LIVE_LOG)); Buffer.from("OLABLIV1").copy(bytes); writeFileSync(join(d, LIVE_LOG), bytes);
+      } else {
+        const m = readLiveManifest(d), bad = { ...r, trialId: "bf6691e8-f7bd-4d27-aa10-b369cf223cb7" };
+        const frame = encodeLiveFrame({ sessionId: m.sessionId, position: 1, previousHash: "0".repeat(64), record: bad });
+        writeFileSync(join(d, LIVE_LOG), frame.data); const { checksum: _, ...base } = m;
+        publishLiveManifest(d, sealLiveManifest({ ...base, bytes: frame.data.length, head: frame.hash }));
+      }
+      expect(() => recoverLive(d, undefined, a)).toThrow("LIVE_STORE_CORRUPT");
+    }
+  });
   it.each([1, 7, 11, 12, 100])("detects %s-byte partial tail, does not repair or publish it", length => {
     const d = stored(), m = readLiveManifest(d), frame = encodeLiveFrame({
       sessionId: m.sessionId, position: 2, previousHash: m.head, record: record(2) });

@@ -7,6 +7,7 @@ import { LiveAppendStore } from "./liveAppendStore";
 import { OFFLINE_LIVE_MODE, offlineLiveRecord } from "./liveRecord";
 import { recoverLive } from "./liveRecovery";
 import { LiveStorageQueue, type LiveQueueOptions } from "./liveStorageQueue";
+import { authorizeLiveStorage, AUTHORIZED_LIVE_MODE } from "./liveAuthorization";
 
 const dirs: string[] = [];
 afterEach(() => dirs.splice(0).forEach(d => rmSync(d, { recursive: true, force: true })));
@@ -24,6 +25,18 @@ function harness(options: LiveQueueOptions = {}, fault?: (phase: string) => void
 }
 
 describe("B-2A bounded durable queue and truthful accounting", () => {
+  it("uses the same bounded commit protocol for explicitly authorized artificial V2 records", () => {
+    // Use a new owned directory; never reuse or resume a prior store.
+    const d = mkdtempSync(join(tmpdir(), "b2b-queue-v2-")); chmodSync(d, 0o700); dirs.push(d);
+    const now = Date.now(), a = authorizeLiveStorage({ explicitMode: "GATE_B2B", dataPermission: true,
+      replitStoragePermission: true, manualCleanupConfirmed: true, captureMode: "ARTIFICIAL_PROTOCOL_TEST",
+      trialId: "bfb331cf-087e-41f6-9227-21488394112f", directory: d, issuedAtMs: now, deleteByMs: now + 60000 });
+    const store = new LiveAppendStore(d, { testMode: AUTHORIZED_LIVE_MODE, authorization: a }),
+      queue = new LiveStorageQueue(store, { manualDrain: true });
+    queue.accept(observation()); queue.accept(observation(2)); queue.finish();
+    expect(queue.report()).toMatchObject({ mode: AUTHORIZED_LIVE_MODE, persisted: 2, pending: 0, accountingMatches: true });
+    expect(recoverLive(d, undefined, a).persistedCount).toBe(2);
+  });
   it("separates input, enqueued and acknowledged counts", () => {
     const h = harness(); h.queue.accept(observation()); h.queue.accept(observation(2));
     expect(h.queue.report()).toMatchObject({ offered: 2, enqueued: 2, persisted: 0, pending: 2,

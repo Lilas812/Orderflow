@@ -10,6 +10,8 @@ import { LiveAppendStore } from "./liveAppendStore";
 import { LIVE_LOCK, LIVE_LOG, LIVE_MANIFEST, LIVE_TEMP, QUOTA_BYTES, readLiveManifest, type LiveWritePhase } from "./liveManifest";
 import { OFFLINE_LIVE_MODE, offlineLiveRecord } from "./liveRecord";
 import { recoverLive } from "./liveRecovery";
+import { AUTHORIZED_LIVE_MODE, authorizeLiveStorage } from "./liveAuthorization";
+import { authorizedLiveRecord } from "./liveRecord";
 
 vi.mock("node:fs", async importOriginal => {
   const actual = await importOriginal<typeof import("node:fs")>();
@@ -31,6 +33,25 @@ const record = (n = 1, epoch = 1) => offlineLiveRecord(observation(n, epoch));
 const options = { testMode: OFFLINE_LIVE_MODE };
 
 describe("B-2A isolated durable append protocol", () => {
+  it("commits/reopens V2 independently; does not accept legacy records into the new session", () => {
+    const d = directory(), now = Date.now(), a = authorizeLiveStorage({ explicitMode: "GATE_B2B", dataPermission: true,
+      replitStoragePermission: true, manualCleanupConfirmed: true, captureMode: "ARTIFICIAL_PROTOCOL_TEST",
+      trialId: "bfb331cf-087e-41f6-9227-21488394112f", directory: d, issuedAtMs: now, deleteByMs: now + 60000 });
+    const s = new LiveAppendStore(d, { testMode: AUTHORIZED_LIVE_MODE, authorization: a });
+    const r = authorizedLiveRecord(observation(), a), receipt = s.append(r); s.close();
+    const found: unknown[] = [], result = recoverLive(d, value => found.push(value), a);
+    expect(found).toEqual([r]); expect(result.manifest.head).toBe(receipt.head);
+    expect(result.manifest).toMatchObject({ schema: "TICKSTREAM_LIVE_APPEND_V2", mode: AUTHORIZED_LIVE_MODE,
+      trialId: a.trialId, deleteByMs: a.deleteByMs });
+    expect(() => recoverLive(d)).toThrow("LIVE_AUTH_REQUIRED");
+  });
+  it("does not allow a copied capability or another destination to authorize writes", () => {
+    const d = directory(), now = Date.now(), a = authorizeLiveStorage({ explicitMode: "GATE_B2B", dataPermission: true,
+      replitStoragePermission: true, manualCleanupConfirmed: true, captureMode: "ARTIFICIAL_PROTOCOL_TEST",
+      trialId: "bfb331cf-087e-41f6-9227-21488394112f", directory: d, issuedAtMs: now, deleteByMs: now + 60000 });
+    expect(() => new LiveAppendStore(d, { testMode: AUTHORIZED_LIVE_MODE, authorization: { ...a } })).toThrow("LIVE_AUTH_REQUIRED");
+    expect(() => new LiveAppendStore(directory(), { testMode: AUTHORIZED_LIVE_MODE, authorization: a })).toThrow("LIVE_AUTH_SCOPE");
+  });
   it("keeps identical Trades, receipt/hash order, private files and independent reopen", () => {
     const d = directory(), s = new LiveAppendStore(d, options);
     const a = s.append(record()), b = s.append(record(2)); s.close(); s.close();

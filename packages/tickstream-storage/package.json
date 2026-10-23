@@ -11,7 +11,9 @@
     "./live-manifest": "./src/liveManifest.ts",
     "./live-recovery": "./src/liveRecovery.ts",
     "./live-append": "./src/liveAppendStore.ts",
-    "./live-queue": "./src/liveStorageQueue.ts"
+    "./live-queue": "./src/liveStorageQueue.ts",
+    "./live-authorization": "./src/liveAuthorization.ts",
+    "./live-trial-directory": "./src/liveTrialDirectory.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",

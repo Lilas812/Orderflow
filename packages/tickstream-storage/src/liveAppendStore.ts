@@ -6,11 +6,14 @@ import { writeFully } from "./manifest";
 import { directorySync, LIVE_FILES, LIVE_LOCK, LIVE_LOG, LIVE_TEMP, liveDirectory, liveRead,
   MANIFEST_RESERVE, publishLiveManifest, QUOTA_BYTES, readLiveManifest, sealLiveManifest,
   ZERO_HASH, type LiveFault, type LiveManifest } from "./liveManifest";
-import { assertReceiveOrder, liveCheck, LiveFailure, OFFLINE_LIVE_MODE, validateLiveRecord, type LiveTickRecord } from "./liveRecord";
+import { assertReceiveOrder, liveCheck, LiveFailure, OFFLINE_LIVE_MODE, validateLiveRecord, type StoredLiveTick } from "./liveRecord";
 import { encodeLiveFrame } from "./liveRecovery";
+import { assertLiveAuthorization, AUTHORIZED_LIVE_MODE, LiveAuthorizationFailure, type LiveAuthorization } from "./liveAuthorization";
+import { DEFAULT_LIVE_ROOT, inspectTrial } from "./liveTrialDirectory";
 
 export interface LiveAppendOptions {
-  readonly testMode: typeof OFFLINE_LIVE_MODE;
+  readonly testMode: typeof OFFLINE_LIVE_MODE | typeof AUTHORIZED_LIVE_MODE;
+  readonly authorization?: LiveAuthorization;
   readonly quotaBytes?: number;
   readonly fault?: LiveFault;
 }
@@ -25,14 +28,24 @@ export class LiveAppendStore {
   private closed = false;
   private readonly quota: number;
   private head: LiveManifest;
-  private previous: LiveTickRecord | undefined;
+  private previous: StoredLiveTick | undefined;
   constructor(directory: string, private readonly options: LiveAppendOptions) {
-    liveCheck(options?.testMode === OFFLINE_LIVE_MODE &&
-      Object.keys(options).every(k => ["testMode", "quotaBytes", "fault"].includes(k)), "LIVE_PRODUCTION_DISABLED");
+    const authorized = options?.testMode === AUTHORIZED_LIVE_MODE;
+    liveCheck((options?.testMode === OFFLINE_LIVE_MODE && options.authorization === undefined || authorized) &&
+      Object.keys(options).every(k => ["testMode", "quotaBytes", "fault", "authorization"].includes(k)), "LIVE_PRODUCTION_DISABLED");
+    if (authorized) {
+      assertLiveAuthorization(options.authorization);
+      liveCheck(options.authorization.directory === directory, "LIVE_AUTH_SCOPE");
+      if (options.authorization.captureMode === "PRODUCTION") {
+        const a = options.authorization, p = inspectTrial(DEFAULT_LIVE_ROOT, a.trialId);
+        liveCheck(p.data === directory && p.marker.captureMode === "PRODUCTION" &&
+          p.marker.issuedAtMs === a.issuedAtMs && p.marker.deleteByMs === a.deleteByMs, "LIVE_AUTH_SCOPE");
+      }
+    }
     this.directory = liveDirectory(directory);
-    this.quota = options.quotaBytes ?? QUOTA_BYTES;
+    this.quota = options.quotaBytes ?? (authorized ? QUOTA_BYTES - MANIFEST_RESERVE : QUOTA_BYTES);
     liveCheck(Number.isSafeInteger(this.quota) && this.quota >= MANIFEST_RESERVE * 2 &&
-      this.quota <= QUOTA_BYTES, "LIVE_STORE_QUOTA");
+      this.quota <= (authorized ? QUOTA_BYTES - MANIFEST_RESERVE : QUOTA_BYTES), "LIVE_STORE_QUOTA");
     try { liveCheck(readdirSync(this.directory).length === 0, "LIVE_STORE_EXISTS"); }
     catch (error) {
       if (error instanceof LiveFailure) throw error;
@@ -40,6 +53,12 @@ export class LiveAppendStore {
     }
     this.head = sealLiveManifest({ schema: "TICKSTREAM_LIVE_APPEND_V1", mode: OFFLINE_LIVE_MODE,
       environment: "LIVE", sessionId: randomUUID(), count: 0, bytes: 0, head: ZERO_HASH });
+    if (authorized) {
+      const a = options.authorization!;
+      const { checksum: _, ...base } = this.head;
+      this.head = sealLiveManifest({ ...base, schema: "TICKSTREAM_LIVE_APPEND_V2", mode: AUTHORIZED_LIVE_MODE,
+        trialId: a.trialId, captureMode: a.captureMode, issuedAtMs: a.issuedAtMs, deleteByMs: a.deleteByMs });
+    }
     try {
       this.lock = openSync(join(this.directory, LIVE_LOCK), "wx", 0o600);
       this.fd = openSync(join(this.directory, LIVE_LOG), "wx", 0o600);
@@ -48,13 +67,18 @@ export class LiveAppendStore {
     } catch { this.release(); throw new LiveFailure("LIVE_STORE_IO"); }
   }
   get persisted(): number { return this.head.count; }
-  append(input: LiveTickRecord): LiveReceipt {
+  get authorization(): LiveAuthorization | undefined { return this.options.authorization; }
+  get commitState(): LiveReceipt {
+    return Object.freeze({ position: this.head.count, head: this.head.head, bytes: this.head.bytes });
+  }
+  append(input: StoredLiveTick): LiveReceipt {
     liveCheck(!this.closed && this.fd !== undefined, "LIVE_STORE_CLOSED");
     liveCheck(!this.failed, "LIVE_STORE_FAILED");
     // Even a definite validation/quota failure ends this session; no silent skip.
     let writing = false;
     try {
-      const record = validateLiveRecord(input);
+      if (this.options.authorization) assertLiveAuthorization(this.options.authorization);
+      const record = validateLiveRecord(input, this.options.authorization);
       assertReceiveOrder(this.previous, record);
       liveCheck(this.head.count < 1000, "LIVE_STORE_QUOTA");
       const frame = encodeLiveFrame({ sessionId: this.head.sessionId, position: this.head.count + 1,
@@ -89,6 +113,7 @@ export class LiveAppendStore {
       return Object.freeze({ position: next.count, head: next.head, bytes: next.bytes });
     } catch (error) {
       this.failed = true;
+      if (!writing && error instanceof LiveAuthorizationFailure) throw new LiveFailure(error.code);
       if (!writing && error instanceof LiveFailure) throw error;
       throw new LiveFailure("LIVE_STORE_UNKNOWN");
     }
