@@ -1,0 +1,287 @@
+import fs from "node:fs";
+import assert from "node:assert/strict";
+import { spawn, execFileSync } from "node:child_process";
+import { gzipSync, gunzipSync } from "node:zlib";
+import { resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import { createHash } from "node:crypto";
+import { StringDecoder } from "node:string_decoder";
+import { createAnalysisHub } from "@workspace/core/analysis-hub";
+import { createBrowserTermination, timeStats } from "../baseline13-driver.mjs";
+import { installObserver } from "./observer.mjs";
+import { BUDGET, canonical, validate, orderedStages, marketCount, deadlineBudget } from "./contracts.ts";
+import { save, checkDirectory } from "../load29/evidence.ts";
+import { group, identity, resourceGate, competingBrowsers } from "./process.mjs";
+const ROOT = ".local/diagnostics/task29-b", INPUT = ".local/diagnostics/task29-a";
+const sha = x => createHash("sha256").update(x).digest("hex");
+const delay = ms => new Promise(r => setTimeout(r, ms));
+export function verifyInput(d, stage, expected) {
+  validate(d, stage);
+  assert.equal(sha(JSON.stringify(d.inputs)), expected, "INPUT_SHA_MISMATCH");
+  assert.equal(d.inputSha256, expected, "INPUT_SHA_MISMATCH");
+}
+export function decodeBlock(wire) {
+  assert.equal(wire.codec, "gzip/base64");
+  const b = gunzipSync(Buffer.from(wire.data, "base64"), { maxOutputLength: BUDGET.wireBytes });
+  assert.equal(b.length, wire.bytes, "BLOCK_BYTES");
+  assert.equal(sha(b), wire.sha256, "BLOCK_SHA");
+  return JSON.parse(b.toString());
+}
+export function publicMatch(frame, reference) {
+  assert.equal(sha(canonical(frame)), reference, "PUBLIC_FRAME_MISMATCH");
+}
+export function glGate(observer) {
+  assert(!observer.fault && observer.totals.errors === 0 && observer.totals.loss === 0, "GL_OR_CONTEXT_FAILURE");
+}
+function pins() {
+  const p = JSON.parse(fs.readFileSync(`${ROOT}/preflight.json`));
+  for (const f of [...p.sources, ...p.evidence]) assert.equal(sha(fs.readFileSync(f.path)), f.sha256, f.path);
+}
+export function journal(stage, directory = ROOT) {
+  let rows = [], bytes = 0, count = 0;
+  const blocks = [];
+  return {
+    append(row) {
+      const n = Buffer.byteLength(JSON.stringify(row));
+      assert(n <= BUDGET.wireBytes, "ROW_CAP");
+      if (bytes + n > BUDGET.blockBytes && rows.length) this.flush();
+      rows.push(row); bytes += n;
+      assert(++count <= BUDGET.observerRows, "JOURNAL_RECORD_CAP");
+    },
+    flush() {
+      if (!rows.length) return;
+      const raw = Buffer.from(JSON.stringify(rows));
+      const receipt = save(directory, `stage${stage}-block-${String(blocks.length).padStart(3, "0")}.json`,
+        { codec: "gzip/base64", bytes: raw.length, sha256: sha(raw), data: gzipSync(raw).toString("base64") });
+      blocks.push(receipt); rows = []; bytes = 0;
+    },
+    checkpoint() { this.flush(); return { count, blocks: [...blocks] }; },
+  };
+}
+async function runStage(stage, d, reference, globalDeadline) {
+  assert.equal(competingBrowsers().length, 0, "COMPETING_PROCESS_GATE");
+  const profile = fs.mkdtempSync("/tmp/orderflow-load29-");
+  const profileStat = fs.lstatSync(profile);
+  assert.equal(fs.realpathSync(profile), profile, "PROFILE_SYMLINK");
+  assert.equal(profileStat.uid, process.getuid(), "PROFILE_OWNER");
+  assert.equal(profileStat.mode & 0o777, 0o700, "PROFILE_MODE");
+  const journalOut = journal(stage), samples = [], cpuStart = process.cpuUsage(), began = performance.now();
+  let started = null, monitor = null, wall = null, fault = null, n = 0, sessionId, pending = new Map(), wire = "";
+  const decoder = new StringDecoder("utf8");
+  let beforeDispose, afterDispose, observer, observerAfter, result;
+  const browser = spawn("/repl/tools/bin/chromium", ["--headless=new", "--no-sandbox", "--disable-dev-shm-usage",
+    "--disable-background-networking", "--disable-breakpad", "--disable-crash-reporter", "--no-first-run",
+    "--no-default-browser-check", "--use-angle=swiftshader", "--enable-unsafe-swiftshader",
+    "--remote-debugging-pipe", `--user-data-dir=${profile}`],
+  { detached: true, stdio: ["ignore", "ignore", "ignore", "pipe", "pipe"] });
+  const exited = () => browser.exitCode !== null || browser.signalCode !== null;
+  let termination;
+  function fail(e) {
+    if (!fault) { fault = String(e); if (termination) void termination.finish().catch(() => {}); }
+  }
+  function call(method, params = {}, sid) {
+    return new Promise((resolveCall, reject) => {
+      if (pending.size >= 64 || exited()) return reject(Error("CDP_UNAVAILABLE"));
+      const id = ++n, timer = setTimeout(() => { pending.delete(id); reject(Error(`CDP_TIMEOUT:${method}`)); }, 10000);
+      pending.set(id, { resolve: resolveCall, reject, timer });
+      browser.stdio[3].write(JSON.stringify({ id, method, params, ...(sid ? { sessionId: sid } : {}) }) + "\0");
+    });
+  }
+  browser.on("error", fail);
+  browser.stdio[4].on("data", data => {
+    try {
+      wire += decoder.write(data);
+      assert(Buffer.byteLength(wire) <= BUDGET.wireBytes, "CDP_WIRE_CAP");
+      let cut;
+      while ((cut = wire.indexOf("\0")) >= 0) {
+        const text = wire.slice(0, cut); wire = wire.slice(cut + 1); if (!text) continue;
+        const m = JSON.parse(text);
+        if (m.id) {
+          const p = pending.get(m.id); if (!p) continue;
+          pending.delete(m.id); clearTimeout(p.timer);
+          if (m.error) p.reject(Error(`CDP_ERROR:${m.error.message}`)); else p.resolve(m.result);
+        } else if (m.method === "Runtime.bindingCalled" && m.params.name === "__load29Send") {
+          const row = JSON.parse(m.params.payload); journalOut.append(row);
+          if (row.kind === "failure") fail(row.fault);
+        } else if (m.method === "Fetch.requestPaused") {
+          const u = new URL(m.params.request.url);
+          const allowed = ["http:", "https:"].includes(u.protocol) && ["127.0.0.1", "localhost", "[::1]"].includes(u.hostname);
+          void call(allowed ? "Fetch.continueRequest" : "Fetch.failRequest",
+            { requestId: m.params.requestId, ...(!allowed ? { errorReason: "BlockedByClient" } : {}) }, m.sessionId).catch(fail);
+        } else if (m.method === "Runtime.exceptionThrown") fail("PAGE_EXCEPTION");
+      }
+    } catch (e) { fail(e); }
+  });
+  try { started = identity(browser.pid); } catch (e) { fail(e); }
+  termination = createBrowserTermination({
+    close: () => call("Browser.close"), exited, holdsLeader: () => !exited() && browser.pid === started?.pid,
+    inspect: () => group(browser.pid), waitExit: async ms => {
+      const end = performance.now() + ms; while (!exited() && performance.now() < end) await delay(25);
+    }, signal: (pid, signal) => process.kill(pid, signal), recover: async ms => {
+      const end = performance.now() + ms;
+      while (performance.now() < end) { const g = group(browser.pid); if (!g.live.length && !g.zombies.length) return; await delay(50); }
+    },
+  }, { trialId: `load29-stage${stage}`, started });
+  const page = (method, params = {}) => call(method, params, sessionId);
+  const evaluate = async expression => {
+    if (fault) throw Error(fault);
+    const r = await page("Runtime.evaluate", { expression, returnByValue: true, awaitPromise: true });
+    if (r.exceptionDetails) throw Error("PAGE_EVALUATION_ERROR");
+    return r.result.value;
+  };
+  try {
+    assert(started, "START_IDENTITY_UNKNOWN");
+    wall = setTimeout(() => { fail("WALL_TIMEOUT"); void termination.wallTimeout().catch(fail); },
+      deadlineBudget(stage, performance.now(), globalDeadline));
+    monitor = setInterval(() => {
+      if (exited()) return;
+      try {
+        const g = group(browser.pid);
+        if (!g.live.length) return;
+        const sample = resourceGate(started, g, identity(process.pid), BUDGET);
+        assert(samples.length < BUDGET.observerRows, "RESOURCE_RECORD_CAP"); samples.push(sample);
+      } catch (e) { fail(e); }
+    }, 100);
+    const version = await call("Browser.getVersion");
+    const target = await call("Target.createTarget", { url: "about:blank" });
+    ({ sessionId } = await call("Target.attachToTarget", { targetId: target.targetId, flatten: true }));
+    await page("Page.enable"); await page("Runtime.enable");
+    await page("Performance.enable");
+    await page("Emulation.setDeviceMetricsOverride", { width: 852, height: 760, deviceScaleFactor: 1, mobile: false });
+    await page("Runtime.addBinding", { name: "__load29Send" });
+    await page("Fetch.enable", { patterns: [{ urlPattern: "*" }] });
+    await page("Page.addScriptToEvaluateOnNewDocument", {
+      source: `window.__load29Input=${JSON.stringify({ stage, definition: d })};(${installObserver.toString()})()`,
+    });
+    await page("Page.navigate", { url: "http://127.0.0.1:80/src/diagnostics/load29-browser/index.html" });
+    const readyEnd = performance.now() + 15000;
+    while (!await evaluate(`!!window.__load29 && !!document.querySelector('[data-testid="button-unified-start"]')`)) {
+      assert(performance.now() < readyEnd, "PAGE_START_TIMEOUT"); await delay(100);
+    }
+    await evaluate("window.__load29.start()");
+    while (true) {
+      const state = await evaluate("({done:window.__load29.snapshot().done,fault:window.__load29.snapshot().fault})");
+      assert(!state.fault, state.fault);
+      if (state.done) break;
+      assert(performance.now() - began < BUDGET.wallMs[stage], "WALL_TIMEOUT");
+      await delay(250);
+    }
+    // Allow the final committed React effects/rAFs, not a new data interval or extra input.
+    await delay(250);
+    beforeDispose = await evaluate("window.__load29.snapshot()");
+    observer = await evaluate("window.__load29Observer.snapshot()");
+    const browserMetrics = await page("Performance.getMetrics");
+    glGate(observer);
+    assert(beforeDispose.status.processedInputs === d.inputs.length &&
+      beforeDispose.status.acceptedMarketEvents === marketCount(d.inputs), "INPUT_COMPLETION");
+    assert(beforeDispose.panels.every(p => p.exists && (p.testid === "delta-panel" || Number(p.revision) === beforeDispose.revision) &&
+      p.rect.width > 0 && p.rect.height > 0), "PANEL_REVISION_OR_SIZE");
+    assert(observer.rows.some(r => r.kind === "delta-clear" && r.revision === beforeDispose.revision), "DELTA_DRAW_MISSING");
+    assert(beforeDispose.panels.find(p => p.testid === "vp-panel").svgRects > 0, "VP_SVG_MISSING");
+    assert(observer.contexts.filter(c => c.connected).every(c => !c.lost && c.error === 0), "CONTEXT_UNAVAILABLE");
+    for (const layer of ["heatmap", "bubble"]) {
+      assert(observer.contexts.some(c => c.layer === layer && c.connected), `CANVAS_MISSING:${layer}`);
+      assert(beforeDispose.panels.find(p => p.testid === `${layer}-canvas`).status === "READY", `NOT_READY:${layer}`);
+    }
+    afterDispose = await evaluate("window.__load29.dispose()");
+    await delay(50);
+    observerAfter = await evaluate("window.__load29Observer.snapshot()");
+    assert.equal(afterDispose.timers, 0);
+    assert.equal(afterDispose.after.subscribers, 0);
+    assert.equal(afterDispose.mountedCanvases, 0);
+    assert.equal(observerAfter.pending, 0);
+    assert.equal(observerAfter.totals.buffers, observerAfter.totals.deletes, "BUFFER_REMAINDER");
+    await evaluate("window.__load29Observer.dispose()");
+    result = { status: "PASS", version, browserMetrics, beforeDispose, afterDispose, observer, observerAfter };
+  } catch (error) { result = { status: "FAIL", error: String(error), beforeDispose, afterDispose, observer, observerAfter }; }
+  finally {
+    const cleanup = await termination.finish();
+    if (monitor) clearInterval(monitor);
+    if (wall) clearTimeout(wall);
+    for (const p of pending.values()) { clearTimeout(p.timer); p.reject(Error("CDP_CLOSED")); } pending.clear();
+    const residual = group(browser.pid);
+    const profileRemoved = !residual.processes.length;
+    if (profileRemoved) {
+      const s = fs.lstatSync(profile);
+      assert(!s.isSymbolicLink() && s.ino === profileStat.ino && s.uid === profileStat.uid &&
+        fs.realpathSync(profile) === profile, "PROFILE_CHANGED");
+      fs.rmSync(profile, { recursive: true });
+    }
+    const checkpoint = journalOut.checkpoint();
+    result ??= { status: "FAIL", error: fault ?? "RUN_INCOMPLETE" };
+    Object.assign(result, { stage, started, fault, cleanup, profileRemoved,
+      remainingProfile: fs.existsSync(profile), samples, checkpoint,
+      wallMs: performance.now() - began, parentCpuUs: process.cpuUsage(cpuStart),
+      cpuClockHz: Number(execFileSync("/usr/bin/getconf", ["CLK_TCK"], { encoding: "utf8" })),
+      cpuClockSource: "getconf CLK_TCK checked before run", inputSha256: d.inputSha256,
+      frameCanonicalSchema: "frozen Node canonical BigInt/Map encoding", resources: "100ms samples, not instantaneous peak" });
+    if (cleanup.status !== "PASS" || fault || !profileRemoved || !samples.length) result.status = "FAIL";
+    save(ROOT, `stage${stage}-checkpoint.json`, result);
+  }
+  if (result.status === "PASS") {
+    // Derived references only: original #29-A inputs/reference are never edited.
+    const hub = createAnalysisHub(d.scope, () => 0), checks = []; let consumed = 0, lastFrame;
+    try {
+      for (const receipt of result.checkpoint.blocks) {
+        const wire = JSON.parse(fs.readFileSync(`${ROOT}/${receipt.file}`));
+        for (const row of decodeBlock(wire)) {
+          assert(performance.now() < globalDeadline, "OVERALL_WALL");
+          if (row.kind !== "frame" && row.kind !== "probe") continue;
+          assert(row.prefix >= consumed && row.prefix <= d.inputs.length, "PREFIX_ORDER");
+          while (consumed < row.prefix) {
+            const decision = hub.ingest(d.inputs[consumed++]);
+            assert.equal(decision.disposition, "ACCEPTED", "REFERENCE_INPUT_REJECTION");
+          }
+          const expected = canonical(hub.readRenderFrame(d.query));
+          assert.equal(row.canonical, expected, `PREFIX_FRAME_MISMATCH:${row.prefix}`);
+          lastFrame = JSON.parse(row.canonical);
+          checks.push({ kind: row.kind, prefix: row.prefix, revision: row.revision, sha256: sha(row.canonical),
+            quality: lastFrame.quality.channels.L2_MBP.status, readMs: row.readMs ?? row.ms, cache: row.cache });
+        }
+      }
+      assert.equal(consumed, d.inputs.length, "FINAL_PREFIX_MISSING");
+      publicMatch(lastFrame, reference.publicFrameSha256);
+      if (stage === 2) {
+        const conditionPrefixes = d.inputs.flatMap((i, index) => i.type === "CONDITION" ? [index + 1] : []);
+        for (const prefix of conditionPrefixes) assert(checks.some(c => c.prefix === prefix && c.kind === "probe"), `QUALITY_BOUNDARY_NOT_OBSERVED:${prefix}`);
+        assert(checks.some(c => c.quality === "GAP") && checks.some(c => c.quality === "RESYNCING"), "QUALITY_BOUNDARY_MISSING");
+      }
+      result.correctness = { status: "PASS", prefixes: checks, finalPublicFrameSha256: sha(canonical(lastFrame)) };
+      const reads = result.beforeDispose.readRows;
+      result.performance = { frameMiss: timeStats(reads.filter(c => c.cache === "MISS").map(c => c.ms)),
+        frameHit: timeStats(reads.filter(c => c.cache === "HIT").map(c => c.ms)) };
+    } catch (error) { result.status = "FAIL"; result.correctness = { status: "FAIL", error: String(error), checkedPrefixes: checks }; }
+  }
+  return result;
+}
+async function main() {
+  checkDirectory(ROOT); pins();
+  assert(!fs.existsSync(`${ROOT}/run-start.json`), "RUN_ALREADY_ATTEMPTED");
+  assert.equal(fs.readFileSync("/sys/fs/cgroup/cpu.max", "utf8").trim(), "800000 100000", "CPU_ENV");
+  assert.equal(fs.readFileSync("/sys/fs/cgroup/memory.max", "utf8").trim(), "17179869184", "MEMORY_ENV");
+  const sources = fs.readdirSync("apps/web/src/diagnostics/load29-browser").map(name => {
+    const path = `apps/web/src/diagnostics/load29-browser/${name}`; return { path, sha256: sha(fs.readFileSync(path)) };
+  });
+  const references = JSON.parse(fs.readFileSync(`${INPUT}/independent-audit.json`)).summaries;
+  const definitions = [0, 1, 2].map(stage => {
+    const d = JSON.parse(fs.readFileSync(`${INPUT}/stage${stage}-input.json`));
+    verifyInput(d, stage, references[stage].inputSha256); return d;
+  });
+  save(ROOT, "run-start.json", { budget: BUDGET, sources, launchAttemptsAllowed: 3, stageRetries: 0 });
+  const started = performance.now(), results = await orderedStages(async stage => {
+    pins(); assert(performance.now() - started < BUDGET.totalWallMs, "OVERALL_WALL");
+    save(ROOT, `stage${stage}-input.json`, definitions[stage]);
+    return runStage(stage, definitions[stage], references[stage], started + BUDGET.totalWallMs);
+  }, async (stage, result) => { save(ROOT, `stage${stage}-result.json`, result); });
+  pins();
+  save(ROOT, "aggregate.json", { status: results.length === 3 && results.every(r => r.status === "PASS") ? "PASS" : "FAIL",
+    stages: results.map(r => ({ stage: r.stage, status: r.status, fault: r.fault, error: r.error })),
+    browserLaunches: results.length, retries: 0, wallMs: performance.now() - started,
+    correctness: "all observed prefixes compared post-browser to real Node hub; counts alone never suffice",
+    performance: "Browser/Node differences are not product failure thresholds", GateB2B: "HOLD" });
+}
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url) && process.argv[2] === "--run")
+  await main().catch(error => {
+    try { save(ROOT, "run-error.json", { status: "HOLD", error: String(error) }); } catch {}
+    console.error(String(error)); process.exitCode = 1;
+  });
