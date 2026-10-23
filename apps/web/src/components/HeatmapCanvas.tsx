@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { diagnostics, beginDraw, endDraw } from "../diagnostics/mockDiagnostics";
 import { F01_BOOK, F02_TWO_TICKS, F03_GAP_TWA } from "@workspace/fixtures";
 import type { L2Snapshot } from "@workspace/core/events";
 import { scaleQuantity } from "@workspace/core/heatmap-scale";
@@ -191,7 +192,9 @@ export function HeatmapCanvas({ cells, vp, style, scheduler = "interval", revisi
   const { fmt: fmtJst } = useTimeFormat();
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const rendererRef = useRef<HeatmapRenderer | null>(null);
-  const pending = useRef({ cells, vp, style, dirty: true });
+  const pending = useRef({ cells, vp, style, revision, dirty: true });
+  const origin = useRef(0);
+  useLayoutEffect(() => { if (revision !== undefined) diagnostics()?.add("received", revision, -1, "heatmap"); }, [revision]);
   const pointer = useRef<{ x: number; y: number } | null>(null);
   const hoverRef = useRef<() => void>(() => {});
   const [status, setStatus] = useState<UiStatus>("INITIALIZING");
@@ -201,6 +204,7 @@ export function HeatmapCanvas({ cells, vp, style, scheduler = "interval", revisi
   const [tip, setTip] = useState<Tip | null>(null);
 
   const p = pending.current;
+  p.revision = revision;
   if (p.cells !== cells || p.vp !== vp || p.style !== style) { p.cells = cells; p.vp = vp; p.style = style; p.dirty = true; }
 
   useEffect(() => {
@@ -219,13 +223,16 @@ export function HeatmapCanvas({ cells, vp, style, scheduler = "interval", revisi
       const q = pending.current;
       if (!q.dirty) return;
       q.dirty = false;
+      const token = beginDraw("heatmap", q.revision, origin.current);
       try {
         const frame = renderer.draw(q.cells, q.vp, q.style);
+        endDraw(token, frame.vertexCount);
         count += 1;
         setInfo({ count, vertices: frame.vertexCount, rects: frame.rects.length, minNs: q.vp.time.minNs, maxNs: q.vp.time.maxNs });
         setDrawError(null);
         hoverRef.current();
       } catch (e) {
+        endDraw(token, -1);
         setDrawError(e instanceof Error ? e.message : String(e));
       }
     };
@@ -254,7 +261,12 @@ export function HeatmapCanvas({ cells, vp, style, scheduler = "interval", revisi
 
   useEffect(() => {
     if (schedulerRef.current !== "frame") return;
-    const id = window.requestAnimationFrame(() => flushRef.current());
+    const d = diagnostics(), requested = d ? performance.now() : 0;
+    const id = window.requestAnimationFrame((stamp) => {
+      d?.add("raf", pending.current.revision ?? -1, -1, "heatmap", performance.now() - requested, stamp);
+      origin.current = 1;
+      try { flushRef.current(); } finally { origin.current = 0; }
+    });
     return () => window.cancelAnimationFrame(id);
   });
 

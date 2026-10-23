@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { UNIFIED_MOCK_STREAM } from "@workspace/fixtures";
 import type { AnalysisRenderFrame } from "@workspace/core/analysis-hub";
 import { createMockAnalysisSession } from "../lib/mockAnalysisSession";
+import { startDiagnostics, releaseDiagnostics, setDiagnosticReader, diagnosticMode } from "../diagnostics/mockDiagnostics";
 
 /** Explicit finite-demo speeds. 300 ms/input lets a 250 ms notification observe the transient L2 GAP. */
 export const UNIFIED_SPEEDS = [50, 300, 800] as const;
@@ -66,6 +67,7 @@ export function useMockAnalysisSession() {
 
   const teardown = useCallback(() => {
     const l = live.current; live.current = null;
+    releaseDiagnostics();
     if (!l) return;
     window.clearInterval(l.timer);
     l.session.dispose();
@@ -73,25 +75,41 @@ export function useMockAnalysisSession() {
 
   const start = useCallback((inputEveryMs: number = UNIFIED_DEFAULT_SPEED) => {
     teardown();
+    const c = counters.current; c.runId++; c.notices = 0; c.lastRevision = -1;
+    const diagnostic = startDiagnostics(c.runId);
+    const inspection = diagnosticMode() !== "off";
     const session = createMockAnalysisSession({
       scope: UNIFIED_MOCK_STREAM.scope, inputs: UNIFIED_MOCK_STREAM.inputs,
-      query: UNIFIED_MOCK_STREAM.query, inputEveryMs,
+      query: UNIFIED_MOCK_STREAM.query, inputEveryMs, diagnostics: diagnostic,
     });
     session.setNotificationsEnabled(false);
-    const c = counters.current; c.runId++; c.notices = 0; c.lastRevision = -1;
     const runId = c.runId;
+    let tick = 0;
+    let timerStart = 0;
     const publish = () => {
+      const entered = diagnostic ? performance.now() : 0;
+      tick++;
       const status = session.getStatus();
       const terminal = status.state !== "RUNNING" && status.state !== "DRAINING";
       const changed = status.revision !== c.lastRevision;
+      if (!changed) diagnostic?.add("publish", status.revision, status.processedInputs, "root",
+        performance.now() - entered, timerStart + tick * UNIFIED_NOTICE_MS, entered, 0);
       if (changed) {
         try {
           const frame = session.readFrame(UNIFIED_MOCK_STREAM.query);
           c.lastRevision = status.revision; c.notices++;
           const phase: UnifiedPhase = terminal ? (status.state === "COMPLETED" ? "COMPLETED" : "STOPPED") : "RUNNING";
+          if (inspection) {
+            const publishedAt = performance.now();
+            setDiagnosticReader(() => ({ frame, checks: unifiedChecks(frame), counts: status.counts,
+              revision: status.revision, processedInputs: status.processedInputs, state: status.state }));
+            diagnostic?.add("publish", frame.revision, status.processedInputs, "root", publishedAt - entered,
+              timerStart + tick * UNIFIED_NOTICE_MS, entered, publishedAt);
+          }
           setSnap({ phase, frame, status, notices: c.notices, runId, inputEveryMs });
         } catch {
           session.stop();
+          releaseDiagnostics();
           setSnap(s => ({ ...s, phase: "STOPPED",
             status: { ...session.getStatus(), reason: "RENDER_FRAME_FAILED" } }));
           finish();
@@ -100,13 +118,17 @@ export function useMockAnalysisSession() {
       } else if (terminal) {
         setSnap(s => ({ ...s, phase: status.state === "COMPLETED" ? "COMPLETED" : "STOPPED", status }));
       }
-      if (terminal) finish();
+      if (terminal) {
+        finish();
+        if (status.state !== "COMPLETED") releaseDiagnostics();
+      }
     };
     const finish = () => {
       const l = live.current;
       if (l && l.session === session) window.clearInterval(l.timer);
     };
     session.start();
+    if (diagnostic) timerStart = performance.now();
     const timer = window.setInterval(publish, UNIFIED_NOTICE_MS);
     live.current = { session, timer };
     setSnap({ phase: "RUNNING", frame: null, status: session.getStatus(), notices: 0, runId, inputEveryMs });
@@ -122,6 +144,7 @@ export function useMockAnalysisSession() {
     const c = counters.current;
     if (frame) { c.notices++; c.lastRevision = status.revision; }
     setSnap(s => ({ ...s, phase: "STOPPED", status, frame: frame ?? s.frame, notices: c.notices }));
+    releaseDiagnostics();
   }, []);
 
   const exit = useCallback(() => { teardown(); setSnap(OFF); }, [teardown]);

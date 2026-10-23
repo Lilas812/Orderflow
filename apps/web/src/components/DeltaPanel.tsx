@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { diagnostics } from "../diagnostics/mockDiagnostics";
 import type { DeltaBar, DeltaBin, DeltaFrame } from "@workspace/core/delta-timeline";
 import type { Viewport } from "@workspace/core/viewport";
 import { useTimeFormat } from "./SettingsContext";
@@ -11,6 +12,7 @@ const utc = (ns: string) => new Date(Number(BigInt(ns) / 1_000_000n)).toISOStrin
 const WITHHELD = "withheld (not computed)";
 
 interface Props {
+  revision?: number;
   frame: DeltaFrame | null;
   vp: Viewport;
   sourceOf: ReadonlyMap<DeltaBin, string>;
@@ -19,7 +21,8 @@ interface Props {
   onPan: (dx: number) => void;
 }
 
-export function DeltaPanel({ frame, vp, sourceOf, error, onZoom, onPan }: Props) {
+export function DeltaPanel({ frame, vp, sourceOf, error, onZoom, onPan, revision }: Props) {
+  useLayoutEffect(() => { if (revision !== undefined) diagnostics()?.add("received", revision, -1, "delta"); }, [revision]);
   const { fmt: fmtJst, tzLabel } = useTimeFormat();
   const ref = useRef<HTMLDivElement>(null);
   const cv = useRef<HTMLCanvasElement>(null);
@@ -52,6 +55,7 @@ export function DeltaPanel({ frame, vp, sourceOf, error, onZoom, onPan }: Props)
     const ctx = c.getContext("2d");
     if (!ctx) { setStatus("RENDER ERROR"); setRenderError("Canvas2D unavailable; no image or SVG fallback"); return; }
     setRenderError(null);
+    const d = revision === undefined ? undefined : diagnostics(), started = d ? performance.now() : 0;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.fillStyle = "#08090d"; ctx.fillRect(0, 0, w, h);
     ctx.save(); ctx.beginPath(); ctx.rect(frame.plot.left, 0, frame.plot.width, h); ctx.clip();
@@ -84,7 +88,8 @@ export function DeltaPanel({ frame, vp, sourceOf, error, onZoom, onPan }: Props)
     ctx.beginPath(); ctx.moveTo(frame.plot.left, frame.zeroY); ctx.lineTo(frame.plot.left + frame.plot.width, frame.zeroY); ctx.stroke();
     ctx.restore();
     setStatus(frame.bars.length ? "CANVAS2D OK" : "NO DATA");
-  }, [frame, vp.dpr, w, h, error]);
+    d?.add("draw", revision, -1, "delta", performance.now() - started, frame.bars.length);
+  }, [frame, vp.dpr, w, h, error, revision]);
 
   const limit = frame ? frame.scaleLimitDenominator === 1n ? frame.scaleLimitNumerator.toString()
     : `${frame.scaleLimitNumerator / frame.scaleLimitDenominator}.${frame.scaleLimitNumerator % frame.scaleLimitDenominator}` : "-";

@@ -1,0 +1,231 @@
+// Existing Chromium + native CDP pipe only. No dependencies, external URLs or application timers.
+// Usage: node apps/web/src/diagnostics/baseline13-driver.mjs [new .local/diagnostics/.../results.json]
+import { spawn } from "node:child_process";
+import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { resolve, dirname } from "node:path";
+import { createHash } from "node:crypto";
+import assert from "node:assert/strict";
+
+function installGLObserver() {
+  const proto = WebGL2RenderingContext.prototype, saved = new Map(), contexts = new WeakMap(), listeners = [];
+  const totals = Object.fromEntries(["heatmap", "bubble"].map(l => [l, {
+    draws: 0, vertices: 0, uploads: 0, bytes: 0, buffers: 0, deletes: 0, loss: 0, restore: 0, errors: 0, cpuMs: 0,
+  }]));
+  const draws = [];
+  let limited = false;
+  const getContext = HTMLCanvasElement.prototype.getContext;
+  HTMLCanvasElement.prototype.getContext = function (...args) {
+    const gl = getContext.apply(this, args);
+    const layer = this.classList.contains("hm-canvas") ? "heatmap" : this.classList.contains("bb-canvas") ? "bubble" : null;
+    if (args[0] === "webgl2" && gl && layer && !contexts.has(gl)) {
+      if (listeners.length === 16) { limited = true; return gl; }
+      const info = { layer, last: null }; contexts.set(gl, info);
+      const lost = () => totals[layer].loss++, restored = () => totals[layer].restore++;
+      this.addEventListener("webglcontextlost", lost); this.addEventListener("webglcontextrestored", restored);
+      listeners.push([this, lost, restored]);
+    }
+    return gl;
+  };
+  const methods = ["viewport", "clearColor", "clear", "enable", "blendFunc", "useProgram", "bindVertexArray",
+    "bindBuffer", "bufferData", "uniform2f", "drawArrays", "getError", "createBuffer", "deleteBuffer",
+    "createVertexArray", "deleteVertexArray", "getUniformLocation", "getAttribLocation", "compileShader",
+    "shaderSource", "getShaderParameter", "createShader", "attachShader", "linkProgram", "createProgram",
+    "getProgramParameter", "vertexAttribPointer", "enableVertexAttribArray", "deleteShader", "deleteProgram"];
+  for (const name of methods) {
+    const original = proto[name]; if (typeof original !== "function") continue;
+    saved.set(name, original);
+    proto[name] = function (...args) {
+      const info = contexts.get(this);
+      if (!info) return original.apply(this, args);
+      const token = window.__orderflowMockDiagnostics?.activeDraw(), t = performance.now();
+      const value = original.apply(this, args), ms = performance.now() - t, total = totals[info.layer];
+      total.cpuMs += ms;
+      if (token && token.layer === info.layer && info.last?.start !== token.start && draws.length < 256) {
+        info.last = { layer: info.layer, revision: token.revision, start: token.start, firstGLAt: t,
+          preludeUpperMs: t - token.start, apiCpuMs: 0, vertices: 0 };
+        draws.push(info.last);
+      } else if (draws.length === 256) limited = true;
+      if (token && info.last?.start === token.start) info.last.apiCpuMs += ms;
+      let kind = -1, a = 0;
+      if (name === "createBuffer" && value) { total.buffers++; kind = 1; }
+      if (name === "deleteBuffer" && args[0]) total.deletes++;
+      if (name === "bufferData") {
+        a = typeof args[1] === "number" ? args[1] : args[1]?.byteLength ?? 0;
+        total.uploads++; total.bytes += a; kind = 2;
+      }
+      if (name === "drawArrays") {
+        a = args[2]; total.draws++; total.vertices += a; kind = 3;
+        if (token && info.last?.start === token.start) info.last.vertices += a;
+      }
+      if (name === "getError" && value !== 0) { total.errors++; kind = 4; a = value; }
+      if (kind >= 0) window.__orderflowMockDiagnostics?.gl(info.layer, kind, ms, a, 0);
+      return value;
+    };
+  }
+  window.__b2gl = {
+    snapshot: () => ({ totals, draws, limited }),
+    dispose() {
+      for (const [name, original] of saved) proto[name] = original;
+      HTMLCanvasElement.prototype.getContext = getContext;
+      for (const [canvas, lost, restored] of listeners) {
+        canvas.removeEventListener("webglcontextlost", lost); canvas.removeEventListener("webglcontextrestored", restored);
+      }
+      saved.clear(); listeners.length = 0;
+    },
+  };
+}
+
+async function browserRun(mode, repetition, lifecycle) {
+  const dir = await mkdtemp("/tmp/orderflow-b2b1-browser-");
+  const browser = spawn("/repl/tools/bin/chromium", ["--headless=new", "--no-sandbox", "--disable-dev-shm-usage",
+    "--disable-background-networking", "--disable-component-update", "--disable-sync", "--no-first-run",
+    "--no-default-browser-check", `--user-data-dir=${dir}`, "--remote-debugging-pipe"],
+  { detached: true, stdio: ["ignore", "ignore", "ignore", "pipe", "pipe"] });
+  let id = 0, buffer = "";
+  const pending = new Map();
+  browser.stdio[4].on("data", b => {
+    buffer += b;
+    for (;;) {
+      const i = buffer.indexOf("\0"); if (i < 0) break;
+      const s = buffer.slice(0, i); buffer = buffer.slice(i + 1); if (!s) continue;
+      const response = JSON.parse(s), p = pending.get(response.id); if (!p) continue;
+      pending.delete(response.id); clearTimeout(p.timer);
+      response.error ? p.reject(Error(JSON.stringify(response.error))) : p.resolve(response.result);
+    }
+  });
+  browser.on("exit", () => { for (const p of pending.values()) { clearTimeout(p.timer); p.reject(Error("BROWSER_EXIT")); } pending.clear(); });
+  const call = (method, params = {}, sessionId) => new Promise((resolve, reject) => {
+    const n = ++id, timer = setTimeout(() => { pending.delete(n); reject(Error(`CDP_TIMEOUT:${method}`)); }, 10000);
+    pending.set(n, { resolve, reject, timer });
+    browser.stdio[3].write(JSON.stringify({ id: n, method, params, ...(sessionId ? { sessionId } : {}) }) + "\0");
+  });
+  const hardStop = setTimeout(() => { try { process.kill(-browser.pid, "SIGKILL"); } catch {} }, 45000);
+  let captured;
+  try {
+    const version = await call("Browser.getVersion"), target = await call("Target.createTarget", { url: "about:blank" });
+    const { sessionId } = await call("Target.attachToTarget", { targetId: target.targetId, flatten: true });
+    const page = (method, params) => call(method, params, sessionId);
+    const evaluate = async expression => {
+      const r = await page("Runtime.evaluate", { expression, returnByValue: true, awaitPromise: true });
+      if (r.exceptionDetails) throw Error(`BROWSER_EVALUATION:${r.exceptionDetails.text}:${r.exceptionDetails.exception?.description}`);
+      return r.result.value;
+    };
+    const wait = async expression => {
+      const deadline = performance.now() + 10000;
+      while (performance.now() < deadline) {
+        if (await evaluate(expression)) return;
+        await new Promise(r => setTimeout(r, 100));
+      }
+      throw Error(`CONDITION_TIMEOUT:${expression}`);
+    };
+    await page("Page.enable");
+    await page("Network.enable");
+    await page("Network.setBlockedURLs", { urls: ["*tick-stream.xyz*"] });
+    if (mode === "on") await page("Page.addScriptToEvaluateOnNewDocument", { source: `(${installGLObserver.toString()})()` });
+    await page("Page.navigate", { url: `http://127.0.0.1:80/?mockDiagnostics=${mode === "on" ? "1" : "control"}` });
+    await wait(`!!document.querySelector('[data-testid="button-unified-start"]')`);
+    const initial = await evaluate(`({text:document.body.textContent, bridge:!!window.__orderflowMockDiagnostics})`);
+    assert(initial.text.includes("Events loaded: 0")); assert(!initial.bridge);
+    const gpu = await evaluate(`(()=>{const c=document.createElement('canvas'),g=c.getContext('webgl2');
+      if(!g)return {webgl2:false};const d=g.getExtension('WEBGL_debug_renderer_info');
+      const out={webgl2:true,renderer:g.getParameter(d?d.UNMASKED_RENDERER_WEBGL:g.RENDERER),
+        timerExtension:!!g.getExtension('EXT_disjoint_timer_query_webgl2')};
+      g.getExtension('WEBGL_lose_context')?.loseContext();return out})()`);
+    assert(gpu.webgl2, "WEBGL2_UNAVAILABLE");
+    const start = await evaluate(`(()=>{const t=performance.now();document.querySelector('[data-testid="button-unified-start"]').click();return t})()`);
+    await wait(`document.querySelector('[data-testid="status-data"]')?.textContent.includes("COMPLETED")`);
+    const observedCompletion = await evaluate("performance.now()");
+    await new Promise(r => setTimeout(r, 400));
+    const sample = await evaluate(`({meaning:window.__orderflowMockDiagnostics.meaning(),
+      telemetry:window.__orderflowMockDiagnostics.snapshot(),gl:window.__b2gl?.snapshot(),
+      errors:[...document.querySelectorAll('[role="alert"]')].map(e=>e.textContent)})`);
+    const meaning = JSON.parse(sample.meaning);
+    assert.equal(meaning.processedInputs, 13); assert.equal(meaning.counts.inputs, 13);
+    assert(meaning.checks.every(c => c.ok), "GOLDEN_MISMATCH");
+    const revision = meaning.frame.revision;
+    const layerRevisions = ["book", "heatmap", "bubbles", "delta", "volumeProfile", "quality"].map(l => meaning.frame[l].revision);
+    assert(layerRevisions.every(r => r === revision), "MIXED_FRAME");
+    assert(!sample.errors.some(s => /RENDER ERROR|WebGL2 unavailable/i.test(s)), "RENDER_ERROR");
+    if (mode === "on") {
+      assert.equal(sample.telemetry.dropped, 0); assert(!sample.telemetry.saturated);
+      for (const layer of ["heatmap", "bubble", "delta"]) {
+        assert(sample.telemetry.rows.some(r => r.stage === "draw" && r.layer === layer && r.revision === revision), `MISSING_DRAW:${layer}`);
+      }
+      for (const layer of ["heatmap", "bubble", "delta", "vp"]) {
+        assert(sample.telemetry.rows.some(r => r.stage === "received" && r.layer === layer && r.revision === revision), `MISSING_RECEIVE:${layer}`);
+      }
+      assert(sample.telemetry.rows.some(r => r.stage === "dom" && r.layer === "vp" && r.revision === revision));
+      assert(!sample.gl.limited);
+      assert(Object.values(sample.gl.totals).every(t => t.errors === 0));
+      assert(sample.gl.draws.some(d => d.layer === "heatmap" && d.revision === revision && d.vertices > 0));
+      assert(sample.gl.draws.some(d => d.layer === "bubble" && d.revision === revision && d.vertices > 0));
+    }
+    const result = captured = { mode, repetition, chromium: version.product, gpu, counts: meaning.counts,
+      revision, layerRevisions, golden: meaning.checks, quality: meaning.frame.quality,
+      meaningHash: createHash("sha256").update(sample.meaning).digest("hex"),
+      completionObservedMs: observedCompletion - start, telemetry: sample.telemetry, gl: sample.gl ?? null };
+    if (lifecycle) {
+      // The existing UI intentionally disables Stop after COMPLETED. Exercise it while RUNNING.
+      await evaluate(`document.querySelector('[data-testid="button-unified-restart"]').click()`);
+      await wait("window.__orderflowMockDiagnostics?.snapshot()?.sessionId===2");
+      const fresh = await evaluate("window.__orderflowMockDiagnostics.snapshot()");
+      assert(!fresh.rows.some(r => r.stage === "ingest")); // before the first 300ms input
+      result.restartFresh = fresh.sessionId === 2;
+      await evaluate(`document.querySelector('[data-testid="button-unified-stop"]').click()`);
+      await wait("!window.__orderflowMockDiagnostics");
+      result.stopReleased = true;
+      await evaluate(`document.querySelector('[data-testid="button-unified-restart"]').click()`);
+      await wait("window.__orderflowMockDiagnostics?.snapshot()?.sessionId===3");
+      await evaluate(`window.dispatchEvent(new Event("orderflow:diagnostic-unmount"))`);
+      await wait("!window.__orderflowMockDiagnostics && !document.querySelector('.shell')");
+      await new Promise(r => setTimeout(r, 400));
+      assert(await evaluate("!window.__orderflowMockDiagnostics"));
+      result.unmountReleased = true;
+    } else {
+      await evaluate(`document.querySelector('[data-testid="button-unified-exit"]').click()`);
+      await wait(`!document.querySelector('.hm-canvas') && !document.querySelector('.bb-canvas')`);
+      assert(await evaluate("!window.__orderflowMockDiagnostics"));
+      result.exitReleased = true;
+    }
+    if (mode === "on") {
+      result.afterReleaseGL = await evaluate("window.__b2gl.snapshot().totals");
+      assert(Object.values(result.afterReleaseGL).every(t => t.buffers === t.deletes), "BUFFER_NOT_RELEASED");
+      await evaluate("window.__b2gl.dispose()");
+    }
+    return result;
+  } catch (error) {
+    if (captured) error.partialResult = captured;
+    throw error;
+  } finally {
+    try { await call("Browser.close"); } catch {}
+    if (browser.exitCode === null && !browser.signalCode) await new Promise(r => {
+      browser.once("exit", r); setTimeout(r, 2000);
+    });
+    clearTimeout(hardStop);
+    if (browser.exitCode === null && !browser.signalCode) { try { process.kill(-browser.pid, "SIGKILL"); } catch {} }
+    await rm(dir, { recursive: true, force: true });
+  }
+}
+
+const output = resolve(process.argv[2] ?? ".local/diagnostics/task28-b2-b1/results.json");
+assert(output.startsWith(resolve(".local/diagnostics") + "/"), "OUTPUT_MUST_BE_IGNORED_DIAGNOSTICS");
+const report = { workload: "existing unified baseline13 only", runs: [], failure: null,
+  gpuMs: "UNKNOWN", presentationAt: "UNKNOWN", note: "No heavy trace; OFF has only explicit control-mode semantic readout. Completion includes DOM polling uncertainty." };
+try {
+  for (let r = 1; r <= 3; r++) for (const mode of r % 2 ? ["control", "on"] : ["on", "control"]) {
+    const sample = await browserRun(mode, r, mode === "on" && r === 1);
+    report.runs.push(sample);
+    assert(report.runs.every(x => x.meaningHash === sample.meaningHash), "ON_OFF_MEANING_HASH_MISMATCH");
+    console.log(JSON.stringify({ mode, repetition: r, hash: sample.meaningHash, rows: sample.telemetry?.rows.length ?? 0,
+      completionObservedMs: sample.completionObservedMs, gl: sample.gl?.totals ?? "NOT_OBSERVED" }));
+  }
+} catch (e) {
+  report.failure = String(e);
+  if (e.partialResult) report.runs.push({ ...e.partialResult, failed: true });
+  process.exitCode = 1;
+}
+await mkdir(dirname(output), { recursive: true });
+const text = JSON.stringify(report, null, 2);
+assert(Buffer.byteLength(text) <= 2 * 1024 * 1024, "REPORT_SIZE_LIMIT");
+await writeFile(output, text + "\n", { flag: "wx" });
+if (report.failure) console.error(report.failure);

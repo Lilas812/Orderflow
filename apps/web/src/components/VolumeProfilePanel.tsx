@@ -1,4 +1,6 @@
 import type { AnalysisVolumeProfileView } from "@workspace/core/analysis-hub";
+import { useLayoutEffect } from "react";
+import { diagnostics } from "../diagnostics/mockDiagnostics";
 import { tickToY, type Viewport } from "@workspace/core/viewport";
 import { ticksToPrice } from "@workspace/core";
 
@@ -19,6 +21,12 @@ interface Props {
 
 /** Session-cumulative observed Volume Profile. Rows use the shared tickToY (tick center). */
 export function VolumeProfilePanel({ profile, vp, revision, width = 240 }: Props) {
+  useLayoutEffect(() => {
+    if (revision !== null) {
+      diagnostics()?.add("received", revision, -1, "vp");
+      diagnostics()?.add("dom", revision, -1, "vp");
+    }
+  }, [revision, profile, vp]);
   const h = vp.bounds.height;
   const levels = profile?.levels ?? [];
   const max = levels.reduce((m, l) => (l.totalVolume > m ? l.totalVolume : m), 0n);

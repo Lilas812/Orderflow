@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { diagnostics, beginDraw, endDraw } from "../diagnostics/mockDiagnostics";
 import { R09_OVERLAY_DEPTH, R09_SCENARIOS, R10_OVERLAY_DEPTH, R10_SCENARIOS } from "@workspace/fixtures";
 import { createMarketQualityState, ingestMarketEvent } from "@workspace/core/quality-timeline";
 import { calculateTimeWeightedDepth, type DepthHistory } from "@workspace/core/time-weighted-depth";
@@ -67,7 +68,9 @@ export function BubbleCanvas({ bubbles, vp, sizing, clustering, filters, colors,
   const schedulerRef = useRef(scheduler);
   const flushRef = useRef<() => void>(() => {});
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const pending = useRef({ bubbles, vp, sizing, clustering, filters, colors, dirty: true });
+  const pending = useRef({ bubbles, vp, sizing, clustering, filters, colors, revision, dirty: true });
+  const origin = useRef(0);
+  useLayoutEffect(() => { if (revision !== undefined) diagnostics()?.add("received", revision, -1, "bubble"); }, [revision]);
   const pointer = useRef<{ x: number; y: number } | null>(null);
   const pinned = useRef<string | null>(null);
   const hoverRef = useRef<() => void>(() => {});
@@ -83,6 +86,7 @@ export function BubbleCanvas({ bubbles, vp, sizing, clustering, filters, colors,
   const [tip, setTip] = useState<BubbleTip | null>(null);
 
   const p = pending.current;
+  p.revision = revision;
   if (p.bubbles !== bubbles || p.vp !== vp || p.sizing !== sizing || p.clustering !== clustering
     || p.filters !== filters || p.colors !== colors) {
     p.bubbles = bubbles; p.vp = vp; p.sizing = sizing; p.clustering = clustering;
@@ -117,8 +121,10 @@ export function BubbleCanvas({ bubbles, vp, sizing, clustering, filters, colors,
       const q = pending.current;
       if (!q.dirty) return;
       q.dirty = false;
+      const token = beginDraw("bubble", q.revision, origin.current);
       try {
         const frame = renderer.draw(q.bubbles, q.vp, q.sizing, q.filters, q.clustering, q.colors);
+        endDraw(token, frame.vertexCount);
         n += 1; setCount(n); setVerts(frame.vertexCount); setDisplay(frame.clusters.length); setDrawError(null);
         const changed = q.vp !== lastVp.current || q.bubbles !== lastSrc.current.b || q.clustering !== lastSrc.current.c
           || q.filters !== lastSrc.current.f;
@@ -126,6 +132,7 @@ export function BubbleCanvas({ bubbles, vp, sizing, clustering, filters, colors,
         if (changed) { pinned.current = null; setTip(null); }
         else hoverRef.current();
       } catch (e) {
+        endDraw(token, -1);
         setDrawError(e instanceof Error ? e.message : String(e));
       }
     };
@@ -173,7 +180,12 @@ export function BubbleCanvas({ bubbles, vp, sizing, clustering, filters, colors,
 
   useEffect(() => {
     if (schedulerRef.current !== "frame") return;
-    const id = window.requestAnimationFrame(() => flushRef.current());
+    const d = diagnostics(), requested = d ? performance.now() : 0;
+    const id = window.requestAnimationFrame((stamp) => {
+      d?.add("raf", pending.current.revision ?? -1, -1, "bubble", performance.now() - requested, stamp);
+      origin.current = 1;
+      try { flushRef.current(); } finally { origin.current = 0; }
+    });
     return () => window.cancelAnimationFrame(id);
   });
 

@@ -699,7 +699,7 @@ export function ChartShell({ trades, mockOn, onToggleMock, onAddThird, heatmap: 
         </div>
         <PriceAxis vp={vp} onPan={panY} onZoom={zoomY} />
         {uniOn ? (
-          <DeltaPanel frame={dFrame.frame} vp={vp} sourceOf={UNI_NO_SOURCE} error={dFrame.error} onZoom={zoom} onPan={panX} />
+          <DeltaPanel frame={dFrame.frame} vp={vp} sourceOf={UNI_NO_SOURCE} error={dFrame.error} onZoom={zoom} onPan={panX} revision={uniRev} />
         ) : dcase && dReplay ? (
           <DeltaPanel frame={dFrame.frame} vp={vp} sourceOf={dReplay.sourceOf} error={dFrame.error}
             onZoom={zoom} onPan={panX} />

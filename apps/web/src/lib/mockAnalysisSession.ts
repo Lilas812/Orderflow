@@ -2,6 +2,7 @@ import {
   createAnalysisHub, analysisInputBytes, type AnalysisInput, type AnalysisScope, type AnalysisRenderQuery,
   type AnalysisRenderFrame, type AnalysisDecision,
 } from "@workspace/core/analysis-hub";
+import type { Recorder } from "../diagnostics/mockDiagnostics";
 
 export interface MockSessionOptions {
   readonly scope: AnalysisScope;
@@ -9,6 +10,7 @@ export interface MockSessionOptions {
   readonly query: AnalysisRenderQuery;
   readonly inputEveryMs?: number;
   readonly maxSubscribers?: number;
+  readonly diagnostics?: Recorder;
 }
 export type MockSessionState = "IDLE" | "RUNNING" | "DRAINING" | "STOPPED" | "COMPLETED" | "DISPOSED";
 
@@ -48,6 +50,7 @@ export function createMockAnalysisSession(options: MockSessionOptions) {
   let marketEvents = 0, acceptedMarketEvents = 0;
   let notificationsEnabled = true;
   let delivering = false;
+  let startedAt = 0;
   const now = () => performance.now();
   function clearTimers() {
     if (inputTimer !== null) clearInterval(inputTimer);
@@ -80,7 +83,11 @@ export function createMockAnalysisSession(options: MockSessionOptions) {
   function nextInput() {
     if (!hub || state !== "RUNNING") return;
     try {
+      const d = options.diagnostics;
+      const entered = d ? performance.now() : 0;
       decision = hub.ingest(definition.inputs[processed]);
+      d?.add("ingest", decision.revision, processed + 1, "session", performance.now() - entered,
+        startedAt + (processed + 1) * interval, entered, decision.disposition === "ACCEPTED" ? 1 : 0);
       processed++;
       marketEvents += decision.eventCount;
       if (decision.disposition === "ACCEPTED") acceptedMarketEvents += decision.eventCount;
@@ -105,16 +112,19 @@ export function createMockAnalysisSession(options: MockSessionOptions) {
       hub = createAnalysisHub(definition.scope, now);
       processed = 0; marketEvents = 0; acceptedMarketEvents = 0;
       decision = null; state = "RUNNING"; reason = "STARTED";
+      if (options.diagnostics) startedAt = performance.now();
       if (definition.inputs.length === 0) { finish("COMPLETED", "INPUT_EXHAUSTED"); return; }
       inputTimer = setInterval(nextInput, interval);
       if (notificationsEnabled) noticeTimer = setInterval(pump, 250);
     },
     stop() {
       if (state !== "DISPOSED") finish("STOPPED", "MANUAL_STOP");
+      options.diagnostics?.dispose();
     },
     dispose() {
       finish("DISPOSED", "DISPOSED");
       listeners.clear(); hub = null; decision = null;
+      options.diagnostics?.dispose();
     },
     subscribe(listener: (frame: AnalysisRenderFrame) => void) {
       if (state === "DISPOSED" || typeof listener !== "function") throw new Error("Invalid subscription");
@@ -131,7 +141,10 @@ export function createMockAnalysisSession(options: MockSessionOptions) {
     },
     readFrame(query: AnalysisRenderQuery = definition.query) {
       if (!hub) throw new Error("No active analysis hub");
-      return hub.readRenderFrame(query);
+      const d = options.diagnostics, started = d ? performance.now() : 0;
+      const frame = hub.readRenderFrame(query);
+      d?.add("frame", frame.revision, processed, "session", performance.now() - started);
+      return frame;
     },
     getStatus() {
       return Object.freeze({

@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Profiler, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { diagnosticMode, profiler } from "./diagnostics/mockDiagnostics";
 import { NQ } from "@workspace/core";
 import type { DisplaySettings } from "@workspace/core/settings-schema";
 import { ChartShell, MOCK_INSTRUMENT, MOCK_TRADES } from "./components/ChartShell";
@@ -49,7 +50,7 @@ function App() {
     : scene ? `MOCK / events loaded ${scene.eventCount} (heatmap MOCK ${scene.id})`
     : `MOCK / events loaded ${count}`;
   const preview = settings.preview;
-  return (
+  const content = (
     <TimeFormatProvider timeZone={preview.viewport.timeZone}>
     <div className="shell">
       <header className="bar">
@@ -103,6 +104,21 @@ function App() {
     </div>
     </TimeFormatProvider>
   );
+  return diagnosticMode() === "on" ? <Profiler id="unified-root"
+    onRender={(_id, phase, actual, _base, start, commit) =>
+      profiler("root", actual, start, commit, phase === "mount", uni.snap.frame?.revision ?? -1)}>
+    {content}
+  </Profiler> : content;
 }
 
-export default App;
+/** Explicit driver-only lifecycle exercise; no controls/timers in the normal application. */
+function DiagnosticRoot() {
+  const [mounted, setMounted] = useState(true);
+  useEffect(() => {
+    const unmount = () => setMounted(false);
+    window.addEventListener("orderflow:diagnostic-unmount", unmount, { once: true });
+    return () => window.removeEventListener("orderflow:diagnostic-unmount", unmount);
+  }, []);
+  return mounted ? <App /> : null;
+}
+export default diagnosticMode() === "off" ? App : DiagnosticRoot;
