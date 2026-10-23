@@ -214,6 +214,7 @@ export function HeatmapCanvas({ cells, vp, style, scheduler = "interval", revisi
     const canvas = canvasRef.current; if (!canvas) return;
     const parent = canvas.parentElement;
     let active = true, restoring = false, frameId: number | null = null, generation = 0;
+    let finishRestore: (() => void) | null = null;
     const cancelFrame = () => {
       generation++;
       if (frameId !== null) window.cancelAnimationFrame(frameId);
@@ -222,15 +223,19 @@ export function HeatmapCanvas({ cells, vp, style, scheduler = "interval", revisi
     const renderer = new HeatmapRenderer(canvas, (s, e) => {
       if (!active) return;
       setStatus(s); setError(e);
-      if (s === "CONTEXT LOST") restoring = true;
+      if (s === "CONTEXT LOST") { restoring = true; finishRestore = null; }
       if (s === "READY" && restoring) {
-        restoring = false;
-        // Restore replays the renderer's saved inputs after this callback.
-        // If inputs changed during loss, refresh them synchronously first:
-        // never replay an older revision under the latest Canvas revision.
         cancelFrame();
-        flushRef.current();
-      } else if (s !== "READY") cancelFrame();
+        // The capture listener stages inputs while the renderer is still lost.
+        // initialize() notifies READY before its native replay: do not draw here.
+        const finish = finishRestore; finishRestore = null;
+        if (!finish) throw new Error("Heatmap restore inputs were not prepared");
+        finish();
+        restoring = false;
+      } else if (s !== "READY") {
+        cancelFrame();
+        if (s === "RENDER ERROR") { pending.current.dirty = true; finishRestore = null; }
+      }
     });
     rendererRef.current = renderer;
     let count = 0;
@@ -257,6 +262,32 @@ export function HeatmapCanvas({ cells, vp, style, scheduler = "interval", revisi
         setDrawError(e instanceof Error ? e.message : String(e));
       }
     };
+    const prepareRestore = () => {
+      if (!active || renderer.status !== "CONTEXT LOST") return;
+      cancelFrame();
+      const q = { ...pending.current };
+      try {
+        // Public draw() saves/projects inputs, then returns BEFORE any GL work
+        // while lost. Capture runs before the renderer's restore target listener.
+        const frame = renderer.draw(q.cells, q.vp, q.style);
+        finishRestore = () => {
+          const latest = pending.current;
+          if (latest.revision !== q.revision || latest.cells !== q.cells || latest.vp !== q.vp || latest.style !== q.style)
+            throw new Error("Heatmap inputs changed during synchronous restore");
+          latest.dirty = false;
+          if (q.dirty) {
+            count += 1;
+            setInfo({ count, vertices: frame.vertexCount, rects: frame.rects.length, minNs: q.vp.time.minNs, maxNs: q.vp.time.maxNs });
+          }
+          setDrawError(null);
+          hoverRef.current();
+        };
+      } catch (error) {
+        // Throw inside initialize's READY callback so it fails closed before replay.
+        finishRestore = () => { throw error; };
+      }
+    };
+    canvas.addEventListener("webglcontextrestored", prepareRestore, true);
     const move = (e: PointerEvent) => {
       const r = parent!.getBoundingClientRect();
       pointer.current = { x: e.clientX - r.left, y: e.clientY - r.top };
@@ -288,6 +319,8 @@ export function HeatmapCanvas({ cells, vp, style, scheduler = "interval", revisi
       requestFrameRef.current = () => {};
       if (timer !== null) window.clearInterval(timer);
       flushRef.current = () => {};
+      finishRestore = null;
+      canvas.removeEventListener("webglcontextrestored", prepareRestore, true);
       parent?.removeEventListener("pointermove", move);
       parent?.removeEventListener("pointerleave", leave);
       renderer.dispose();

@@ -3,7 +3,11 @@ import { readFileSync } from "node:fs";
 import { runInNewContext } from "node:vm";
 import { createHash } from "node:crypto";
 import { transpileModule, ModuleKind, JsxEmit } from "typescript";
-import { UNIFIED_MOCK_STREAM } from "@workspace/fixtures";
+import { HeatmapRenderer as RealHeatmapRenderer, projectHeatmap } from "@workspace/render";
+import { BubbleRenderer as RealBubbleRenderer, projectBubbles } from "@workspace/render/bubbles";
+import { createViewport } from "@workspace/core/viewport";
+import { UNIFIED_MOCK_STREAM, R09_SCENARIOS } from "@workspace/fixtures";
+import { createBubbleFinality, ingestBubbleTrade } from "@workspace/core/bubble-finality";
 import { createMockAnalysisSession } from "../lib/mockAnalysisSession";
 import { unifiedChecks } from "../hooks/useMockAnalysisSession";
 import {
@@ -19,7 +23,7 @@ afterEach(() => { releaseDiagnostics(); vi.restoreAllMocks(); vi.useRealTimers()
 // projection correctness remain covered by @workspace/render's existing tests.
 type CanvasLayer = "heatmap" | "bubble";
 const canvasPrograms = new Map<CanvasLayer, string>();
-function canvasSchedulerHarness(layer: CanvasLayer, scheduler: "frame" | "interval" = "frame") {
+function canvasSchedulerHarness(layer: CanvasLayer, scheduler: "frame" | "interval" = "frame", real = false) {
   const name = layer === "heatmap" ? "HeatmapCanvas" : "BubbleCanvas";
   if (!canvasPrograms.has(layer)) {
     const source = readFileSync(new URL(`../components/${name}.tsx`, import.meta.url), "utf8");
@@ -37,7 +41,42 @@ function canvasSchedulerHarness(layer: CanvasLayer, scheduler: "frame" | "interv
   const records: Value[] = [], renderers: ArtificialRenderer[] = [];
   let cursor = 0, nextId = 0, now = 0, stateDirty = false, tree: Value, effects: (() => void)[] = [];
   const parentEvents = new Map<string, Value>();
-  const canvas = { parentElement: { addEventListener: (k: string, f: Value) => parentEvents.set(k, f),
+  const canvasEvents = new Map<string, { f: Value; capture: boolean }[]>();
+  const glState = { lost: false, uploads: [] as Float32Array[], draws: [] as Float32Array[], trace: [] as string[], failCompile: false };
+  const gl: Value = {
+    NO_ERROR: 0, VERTEX_SHADER: 35633, FRAGMENT_SHADER: 35632, ARRAY_BUFFER: 34962,
+    getShaderParameter: () => !glState.failCompile, getProgramParameter: () => true,
+    getShaderInfoLog: () => "artificial compile failure", getError: () => 0, isContextLost: () => glState.lost,
+    bufferData: (_target: Value, data: Float32Array) => {
+      if (glState.lost) throw new Error("GL upload while lost");
+      glState.uploads.push(new Float32Array(data)); glState.trace.push("upload");
+    },
+    drawArrays: () => {
+      if (glState.lost) throw new Error("GL draw while lost");
+      glState.draws.push(glState.uploads.at(-1)!); glState.trace.push("gpu-draw");
+    },
+  };
+  for (const method of ["createShader", "createProgram", "createBuffer", "createVertexArray", "getUniformLocation"])
+    gl[method] = () => ({});
+  for (const method of ["shaderSource", "compileShader", "attachShader", "linkProgram", "bindVertexArray", "bindBuffer",
+    "enableVertexAttribArray", "vertexAttribPointer", "deleteShader", "deleteBuffer", "deleteVertexArray", "deleteProgram",
+    "viewport", "enable", "disable", "scissor", "clearColor", "clear", "blendFunc", "blendFuncSeparate", "useProgram", "uniform2f"])
+    gl[method] = vi.fn();
+  const dispatchCanvas = (type: string) => {
+    // DOM AT_TARGET capture listeners precede target non-capture listeners,
+    // irrespective of registration order. Node EventTarget does not model this.
+    const listeners = [...canvasEvents.get(type) ?? []].sort((a, b) => Number(b.capture) - Number(a.capture));
+    for (const listener of listeners) if (canvasEvents.get(type)?.includes(listener)) listener.f({ preventDefault() {} });
+  };
+  const canvas = {
+    width: 0, height: 0, getContext: () => gl,
+    addEventListener: (k: string, f: Value, capture = false) => {
+      canvasEvents.set(k, [...canvasEvents.get(k) ?? [], { f, capture }]);
+    },
+    removeEventListener: (k: string, f: Value, capture = false) => {
+      canvasEvents.set(k, (canvasEvents.get(k) ?? []).filter(l => l.f !== f || l.capture !== capture));
+    },
+    parentElement: { addEventListener: (k: string, f: Value) => parentEvents.set(k, f),
     removeEventListener: (k: string) => parentEvents.delete(k),
     getBoundingClientRect: () => ({ left: 0, top: 0 }) } };
   const hook = () => hooks[cursor++] ?? (hooks[cursor - 1] = {});
@@ -71,13 +110,16 @@ function canvasSchedulerHarness(layer: CanvasLayer, scheduler: "frame" | "interv
       renderers.push(this); statusChanged("READY", null);
     }
     draw(...args: Value[]) {
-      if (this.disposed || this.status === "CONTEXT LOST") throw new Error("invalid draw");
+      if (this.disposed) throw new Error("invalid draw");
+      this.saved = args;
+      if (this.status === "CONTEXT LOST") return this.lastFrame;
       if (this.failNext) { this.failNext = false; throw new Error("artificial draw failure"); }
       if (this.status !== "READY") { this.status = "READY"; this.statusChanged("READY", null); }
       this.saved = args; this.draws.push(args); return this.lastFrame;
     }
     loss() { this.status = "CONTEXT LOST"; this.statusChanged(this.status, "artificial context loss"); }
     restore() {
+      for (const l of canvasEvents.get("webglcontextrestored") ?? []) if (l.capture) l.f();
       this.status = "READY"; this.statusChanged("READY", null);
       // Match the existing renderer's automatic replay *after* its READY callback.
       if (this.saved) this.draw(...this.saved);
@@ -89,7 +131,22 @@ function canvasSchedulerHarness(layer: CanvasLayer, scheduler: "frame" | "interv
   runInNewContext(canvasPrograms.get(layer)!, {
     module, exports: module.exports, Error,
     require: (id: string) => id === "react" ? react : { jsx, jsxs: jsx, Fragment: "fragment" },
-    HeatmapRenderer: ArtificialRenderer, BubbleRenderer: ArtificialRenderer,
+    HeatmapRenderer: real ? class {
+      constructor(target: HTMLCanvasElement, statusChanged: Value) {
+        const renderer: Value = new RealHeatmapRenderer(target, (s, e) => { glState.trace.push(s); statusChanged(s, e); });
+        renderer.loss = () => { glState.lost = true; dispatchCanvas("webglcontextlost"); };
+        renderer.restore = () => { glState.lost = false; dispatchCanvas("webglcontextrestored"); };
+        renderers.push(renderer); return renderer;
+      }
+    } : ArtificialRenderer,
+    BubbleRenderer: real ? class {
+      constructor(target: HTMLCanvasElement, statusChanged: Value) {
+        const renderer: Value = new RealBubbleRenderer(target, (s, e) => { glState.trace.push(s); statusChanged(s, e); });
+        renderer.loss = () => { glState.lost = true; dispatchCanvas("webglcontextlost"); };
+        renderer.restore = () => { glState.lost = false; dispatchCanvas("webglcontextrestored"); };
+        renderers.push(renderer); return renderer;
+      }
+    } : ArtificialRenderer,
     useTimeFormat: () => ({ fmt: String }), hitTestCell: () => null, hitTestProjectedBubble: () => null,
     BubbleTooltip: () => null, DISPLAY_INTERVAL_MS: 250,
     diagnostics: () => ({ add: (...v: Value[]) => records.push(v) }),
@@ -106,7 +163,7 @@ function canvasSchedulerHarness(layer: CanvasLayer, scheduler: "frame" | "interv
     },
   });
   let props: Value = { cells: [], bubbles: [], vp: { bounds: { left: 0, top: 0, width: 403, height: 324 },
-    time: { minNs: "0", maxNs: "100" }, dpr: 1 }, revision: 1, scheduler };
+    time: { minNs: "0", maxNs: "100" }, price: { minTick: 79990, maxTick: 80010 }, dpr: 1 }, revision: 1, scheduler };
   const attach = (node: Value) => {
     if (!node || typeof node !== "object") return;
     if (node.type === "canvas") node.props.ref.current = canvas;
@@ -132,6 +189,7 @@ function canvasSchedulerHarness(layer: CanvasLayer, scheduler: "frame" | "interv
   const canvasProps = () => tree.props.children.find((v: Value) => v?.type === "canvas").props;
   render();
   return { render, advance, unmount, props: () => props, rafs, allRafs, canceled, records, renderers, intervals, canvasProps,
+    gl, glState, canvasEvents, dispatchCanvas,
     strictReplay: () => {
       unmount();
       for (const h of hooks) if (h.create) h.cleanup = h.create() || undefined;
@@ -139,7 +197,106 @@ function canvasSchedulerHarness(layer: CanvasLayer, scheduler: "frame" | "interv
     } };
 }
 
+function restoreFixture(layer: CanvasLayer) {
+  vi.useFakeTimers();
+  vi.stubGlobal("window", { location: { search: "?mockDiagnostics=1&mockCase=baseline13" } });
+  const c = selectDiagnosticCase(), seed = c.display.seed;
+  const session = createMockAnalysisSession({ scope: c.scope, inputs: c.inputs, query: c.query, inputEveryMs: 300 });
+  session.setNotificationsEnabled(false); session.start(); vi.advanceTimersByTime(c.inputs.length * 300);
+  const frame = session.readFrame(); session.dispose();
+  const vp = createViewport({ bounds: { left: 0, top: 0, width: 403, height: 324 }, dpr: 1,
+    latestNs: seed.endNs, price: { minTick: seed.priceMinTick, maxTick: seed.priceMaxTick } });
+  if (layer === "bubble") {
+    const scenario = R09_SCENARIOS.find(s => s.id === "F04")!;
+    let state = createBubbleFinality(scenario.events[0].header, scenario.quality);
+    for (const event of scenario.events) state = ingestBubbleTrade(state, event);
+    const origin = BigInt(scenario.events[0].header.exchangeTimeNs!);
+    return { cells: [], bubbles: state.bubbles,
+      vp: { ...vp, time: { minNs: (origin - 2_000_000_000n).toString(), maxNs: (origin + 6_000_000_000n).toString() } } };
+  }
+  return { cells: frame.heatmap.cells.map((result, i) => ({
+    id: `restore-${i}`, priceTicks: c.query.cells[i].priceTicks, result,
+  })), bubbles: [],
+  vp: { ...vp, time: { minNs: (BigInt(seed.endNs) - seed.spanNs).toString(), maxNs: seed.endNs } } };
+}
+
 for (const layer of ["heatmap", "bubble"] as const) {
+  for (const revisions of [[], [4], [3, 4], [3, 4, 5, 6]]) {
+    it(`${layer}: actual renderer capture stages latest input before READY/native replay (${revisions.join(",") || "unchanged"})`, () => {
+      const data = restoreFixture(layer), h = canvasSchedulerHarness(layer, "frame", true), renderer = h.renderers[0];
+      h.render({ ...data, revision: 2 }); h.advance();
+      const before = new Float32Array(h.glState.draws.at(-1)!);
+      const count = h.glState.draws.length;
+      const draw = vi.spyOn(renderer, "draw");
+      renderer.loss(); h.render();
+      for (const revision of revisions) h.render({ revision,
+        vp: { ...data.vp, bounds: { ...data.vp.bounds, width: 403 - revision * 3 } } });
+      expect(h.glState.draws).toHaveLength(count);
+      expect(h.rafs.size).toBe(0);
+      h.glState.trace.length = 0;
+      renderer.restore(); h.render();
+      expect(h.canvasProps()["data-status"], String((renderer as unknown as { error?: string }).error)).toBe("READY");
+      // The real renderer, not a convenient mock READY, supplies this ordering.
+      expect(draw).toHaveBeenCalledTimes(2); // CPU-only staging + one native replay
+      expect(h.glState.trace).toEqual(["READY", "upload", "gpu-draw"]);
+      expect(h.glState.draws).toHaveLength(count + 1);
+      const p = h.props();
+      const expected = layer === "heatmap" ? projectHeatmap(p.cells, p.vp) : projectBubbles(p.bubbles, p.vp);
+      expect(expected.vertexData.length).toBeGreaterThan(0);
+      expect(h.glState.draws.at(-1)).toEqual(expected.vertexData);
+      if (revisions.length) expect(h.glState.draws.at(-1)).not.toEqual(before);
+      else expect(h.glState.draws.at(-1)).toEqual(before);
+      expect(h.canvasProps()["data-status"]).toBe("READY");
+      expect(h.rafs.size).toBe(0);
+      h.render(); expect(h.rafs.size).toBe(0);
+      h.render({ revision: 10, vp: { ...p.vp } }); h.advance();
+      expect(h.glState.draws).toHaveLength(count + 2);
+      h.unmount();
+      expect(h.intervals.size).toBe(0); expect(h.rafs.size).toBe(0);
+      expect([...h.canvasEvents.values()].flat()).toHaveLength(0);
+      expect(h.gl.deleteBuffer).toHaveBeenCalled();
+    });
+  }
+  it(`${layer}: actual restore failure retains dirty input and recovers on the next context lifecycle`, () => {
+    const h = canvasSchedulerHarness(layer, "frame", true), renderer = h.renderers[0];
+    h.render({ ...restoreFixture(layer), revision: 2 }); h.advance();
+    renderer.loss(); h.render({ revision: 4 });
+    const count = h.glState.draws.length;
+    h.glState.failCompile = true; renderer.restore(); h.render();
+    expect(h.canvasProps()["data-status"]).toBe("RENDER ERROR");
+    expect(h.glState.draws).toHaveLength(count);
+    h.glState.failCompile = false; renderer.loss(); h.render({ revision: 5 });
+    renderer.restore(); h.render();
+    expect(h.glState.draws).toHaveLength(count + 1);
+    expect(h.canvasProps()["data-status"]).toBe("READY");
+    h.unmount();
+  });
+  it(`${layer}: actual renderer cannot replay after unmount; remount stages its own latest inputs`, () => {
+    const h = canvasSchedulerHarness(layer, "frame", true), renderer = h.renderers[0];
+    const data = restoreFixture(layer); h.render({ ...data, revision: 2 });
+    const stale = [...h.allRafs.values()].at(-1)!;
+    renderer.loss(); h.render({ revision: 4 });
+    h.unmount(); const count = h.glState.draws.length;
+    stale(40); renderer.restore();
+    expect(h.glState.draws).toHaveLength(count);
+    h.strictReplay();
+    const replacement = h.renderers.at(-1)!;
+    expect(replacement).not.toBe(renderer);
+    replacement.loss(); h.render({ revision: 6 }); replacement.restore(); h.render();
+    expect(h.canvasProps()["data-status"]).toBe("READY");
+    h.unmount(); expect([...h.canvasEvents.values()].flat()).toHaveLength(0);
+  });
+  it(`${layer}: a new revision queued during real restore is processed after native replay`, async () => {
+    const h = canvasSchedulerHarness(layer, "frame", true), renderer = h.renderers[0];
+    const data = restoreFixture(layer); h.render({ ...data, revision: 2 }); h.advance();
+    renderer.loss(); h.render({ revision: 4 });
+    const count = h.glState.draws.length;
+    // JavaScript restore/initialize/READY/native replay is one synchronous task.
+    const next = Promise.resolve().then(() => h.render({ revision: 5, vp: { ...data.vp } }));
+    renderer.restore(); h.render(); expect(h.glState.draws).toHaveLength(count + 1);
+    await next; expect(h.rafs.size).toBe(1); h.advance();
+    expect(h.glState.draws).toHaveLength(count + 2); h.unmount();
+  });
   it(`${layer}: mount draws once; statistics-only render does not schedule rAF`, () => {
     const h = canvasSchedulerHarness(layer);
     expect(h.renderers[0].draws).toHaveLength(1);

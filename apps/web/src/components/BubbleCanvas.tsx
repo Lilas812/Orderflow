@@ -98,6 +98,7 @@ export function BubbleCanvas({ bubbles, vp, sizing, clustering, filters, colors,
     const canvas = canvasRef.current; if (!canvas) return;
     const parent = canvas.parentElement;
     let active = true, restoring = false, frameId: number | null = null, generation = 0;
+    let finishRestore: (() => void) | null = null;
     const cancelFrame = () => {
       generation++;
       if (frameId !== null) window.cancelAnimationFrame(frameId);
@@ -107,13 +108,18 @@ export function BubbleCanvas({ bubbles, vp, sizing, clustering, filters, colors,
       if (!active) return;
       setStatus(s); setError(e);
       if (s !== "READY") { pinned.current = null; setTip(null); }
-      if (s === "CONTEXT LOST") restoring = true;
+      if (s === "CONTEXT LOST") { restoring = true; finishRestore = null; }
       if (s === "READY" && restoring) {
-        restoring = false;
-        // Refresh saved inputs before the renderer's synchronous restore replay.
         cancelFrame();
-        flushRef.current();
-      } else if (s !== "READY") cancelFrame();
+        // Capture stages latest inputs before initialize; native replay owns GL.
+        const finish = finishRestore; finishRestore = null;
+        if (!finish) throw new Error("Bubble restore inputs were not prepared");
+        finish();
+        restoring = false;
+      } else if (s !== "READY") {
+        cancelFrame();
+        if (s === "RENDER ERROR") { pending.current.dirty = true; finishRestore = null; }
+      }
     });
     let n = 0;
     const idOf = (b: { source: BubbleState; cluster?: { id: string } }) => b.cluster?.id ?? b.source.id;
@@ -151,6 +157,31 @@ export function BubbleCanvas({ bubbles, vp, sizing, clustering, filters, colors,
         setDrawError(e instanceof Error ? e.message : String(e));
       }
     };
+    const prepareRestore = () => {
+      if (!active || renderer.status !== "CONTEXT LOST") return;
+      cancelFrame();
+      const q = { ...pending.current };
+      try {
+        // draw() while lost only saves/projects; it cannot touch GL. This capture
+        // listener runs before the renderer clears its lost flag and initializes.
+        const frame = renderer.draw(q.bubbles, q.vp, q.sizing, q.filters, q.clustering, q.colors);
+        finishRestore = () => {
+          const latest = pending.current;
+          if (latest.revision !== q.revision || latest.bubbles !== q.bubbles || latest.vp !== q.vp ||
+            latest.sizing !== q.sizing || latest.filters !== q.filters || latest.clustering !== q.clustering || latest.colors !== q.colors)
+            throw new Error("Bubble inputs changed during synchronous restore");
+          latest.dirty = false;
+          if (q.dirty) { n += 1; setCount(n); setVerts(frame.vertexCount); setDisplay(frame.clusters.length); }
+          setDrawError(null);
+          lastVp.current = q.vp; lastSrc.current = { b: q.bubbles, c: q.clustering, f: q.filters };
+          pinned.current = null; setTip(null);
+          hoverRef.current();
+        };
+      } catch (error) {
+        finishRestore = () => { throw error; };
+      }
+    };
+    canvas.addEventListener("webglcontextrestored", prepareRestore, true);
     let down: { x: number; y: number } | null = null;
     const inTip = (t: EventTarget | null) => t instanceof Element && !!t.closest(".bb-tip");
     const local = (e: PointerEvent) => { const r = parent!.getBoundingClientRect(); return { x: e.clientX - r.left, y: e.clientY - r.top }; };
@@ -198,6 +229,8 @@ export function BubbleCanvas({ bubbles, vp, sizing, clustering, filters, colors,
       requestFrameRef.current = () => {};
       if (timer !== null) window.clearInterval(timer);
       flushRef.current = () => {};
+      finishRestore = null;
+      canvas.removeEventListener("webglcontextrestored", prepareRestore, true);
       parent?.removeEventListener("pointermove", move);
       parent?.removeEventListener("pointerleave", leave);
       parent?.removeEventListener("pointerdown", pdown);
