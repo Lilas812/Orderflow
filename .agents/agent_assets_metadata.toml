@@ -532,3 +532,31 @@ mtime_ms = 1792681153486
 storage_uri = "gcs://replit-rams-assets-pike/rams/assets/repl:396298eb-318f-4ad8-9c4e-13a5b19e25a9/ecac63ae-3278-49a4-ae44-ed34cbd4e77b/f42d3e29-f2d0-4d96-af88-a85fde8c9409"
 storage_version_token = "1792681177858332"
 content_type = "text/csv"
+
+[[outputs]]
+id = "jA6SfDsyIidFz1v-RfZ_C"
+uri = "file://.local/diagnostics/task28-b2-b2-e2/report.md"
+type = "text"
+title = "E2 正式12試行・詳細報告書"
+description = "全12試行の判定、初期化／定常別の全時間統計、GL・容量・解放・反復差・未計測事項。"
+logical_id = "f12509e3-f478-4816-9468-5b343d1435d2"
+content_hash = "sha256:672097d2d3d9cf97e0eb92aef87a2ae8792af719104839f0f94a24db6d458cb9"
+size = 26443
+mtime_ms = 1792767246003
+storage_uri = "gcs://replit-rams-assets-pike/rams/assets/repl:396298eb-318f-4ad8-9c4e-13a5b19e25a9/f12509e3-f478-4816-9468-5b343d1435d2/10b717af-b4aa-44b4-a5e4-bfdb123d7ca8"
+storage_version_token = "1792767265064814"
+content_type = "text/markdown"
+
+[[outputs]]
+id = "HGXvozbzewafB6LqyliTm"
+uri = "file://.local/diagnostics/task28-b2-b2-e2/timings.csv"
+type = "table"
+title = "E2 試行別・ケース別時間統計 CSV"
+description = "全480行。n・平均・中央値・p95・最大値、初期化／定常区分、OFFおよび未観測のUNKNOWNを保持。"
+logical_id = "65842faf-dc07-43aa-bc50-572b76631f96"
+content_hash = "sha256:ec4b1e215f4a063eb6c02fc573358fbe31a8a7d3932fa034166c7234cfeb5bb4"
+size = 47913
+mtime_ms = 1792767101331
+storage_uri = "gcs://replit-rams-assets-pike/rams/assets/repl:396298eb-318f-4ad8-9c4e-13a5b19e25a9/65842faf-dc07-43aa-bc50-572b76631f96/d01aab8b-a9d0-4058-8de6-88f9ce5b8d3f"
+storage_version_token = "1792767266441492"
+content_type = "text/csv"
