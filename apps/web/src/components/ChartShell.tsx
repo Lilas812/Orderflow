@@ -2,7 +2,16 @@ import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react"
 import type { DisplaySettings } from "@workspace/core/settings-schema";
 import { hexToRgb as hexToRgbSchema } from "@workspace/core/settings-schema";
 import type { BubbleColors } from "@workspace/render/bubbles";
+import { DEFAULT_BUBBLE_FILTERS } from "@workspace/core/bubble-aggregate";
 import { useTimeFormat, type HeatmapActionsRef } from "./SettingsContext";
+/** Small finite verification Trades must not all disappear under the default 15-lot filter.
+ * This display-only preset never changes global settings or accepted quantities.
+ */
+export const UNIFIED_BUBBLE_FILTERS = {
+  volume: { ...DEFAULT_BUBBLE_FILTERS.volume, enabled: false },
+  absoluteDelta: { ...DEFAULT_BUBBLE_FILTERS.absoluteDelta, enabled: false },
+  imbalancePercent: { ...DEFAULT_BUBBLE_FILTERS.imbalancePercent, enabled: false },
+} as const;
 import { executedVolume, type BookSide, type Trade } from "@workspace/core/events";
 import type { QualityInterval } from "@workspace/core/quality-timeline";
 import {
@@ -14,7 +23,7 @@ import {
   captureBaseline, collectQuantityStages, relativeP95, resolveReference, DEFAULT_SCALE,
   type RelativeReference, type ScaleBaseline, type ScaleSettings,
 } from "@workspace/core/heatmap-scale";
-import { projectHeatmap, REFERENCE_QUANTITY, type HeatmapStyle, type Palette } from "@workspace/render";
+import { projectHeatmap, REFERENCE_QUANTITY, type HeatmapCell, type HeatmapStyle, type Palette } from "@workspace/render";
 import { useViewport } from "../hooks/useViewport";
 import { HeatmapCanvas, HeatmapLegend, HEATMAP_SCENES, sceneForWidth, type HeatmapId, type HeatmapScene } from "./HeatmapCanvas";
 import { HeatmapDebugControls, rgbToHex, type Rgb, type SideStatus } from "./HeatmapDebugControls";
@@ -43,6 +52,23 @@ import { LadderPanel } from "./LadderPanel";
 
 const EMPTY_SOURCE_OF = new Map<DeltaBin, string>();
 import { TimeAxis } from "./TimeAxis";
+import { VolumeProfilePanel } from "./VolumeProfilePanel";
+import { UNIFIED_MOCK_STREAM } from "@workspace/fixtures";
+import { unifiedChecks, type UnifiedSnapshot } from "../hooks/useMockAnalysisSession";
+
+/** Integrated finite MOCK controller surface (owned by App via useMockAnalysisSession). */
+export interface UnifiedProps {
+  snap: UnifiedSnapshot;
+  speeds: readonly number[];
+  onStart: (inputEveryMs: number) => void;
+  onStop: () => void;
+  onRestart: (inputEveryMs: number) => void;
+  onExit: () => void;
+}
+const UNI_START = BigInt(UNIFIED_MOCK_STREAM.query.startNs);
+/** Fixed bounded source range (0..14 s, 7 cells); reused by the shared Viewport seed. Never the 30 min default. */
+const UNI_SEED = { endNs: (UNI_START + 15n * 1_000_000_000n).toString(), priceMinTick: 79998, priceMaxTick: 80005, spanNs: 16n * 1_000_000_000n };
+const UNI_NO_SOURCE = new Map<DeltaBin, string>();
 
 export const MOCK_INSTRUMENT = "CME:NQ:2026-03";
 export const MOCK_SESSION = "MOCK-SESSION-2026-01-01";
@@ -100,6 +126,7 @@ interface Props {
   onDisplay: (next: (s: DisplaySettings) => DisplaySettings) => void;
   heatmapActionsRef: HeatmapActionsRef;
   onOpenSettings: () => void;
+  unified?: UnifiedProps;
 }
 
 /** Verification-mode viewport built only from existing core functions: last 60 s (R05 minimum span), price MANUAL. */
@@ -116,7 +143,8 @@ function verificationViewport(s: { endNs: string; priceMinTick: number; priceMax
 const SIDES: readonly BookSide[] = ["BID", "ASK"];
 const recKey = (mode: string, side: BookSide, width: number) => `${mode}|${side}|${width}`;
 
-export function ChartShell({ trades, mockOn, onToggleMock, onAddThird, heatmap: baseScene, onSelectHeatmap, bubbleId, onSelectBubble, onBubbleRaw, deltaId, onSelectDelta, onDeltaRaw, ladderId, onSelectLadder, onLadderRaw, display, onDisplay, heatmapActionsRef, onOpenSettings }: Props) {
+export function ChartShell({ trades, mockOn, onToggleMock, onAddThird, heatmap: baseScene, onSelectHeatmap, bubbleId, onSelectBubble, onBubbleRaw, deltaId, onSelectDelta, onDeltaRaw, ladderId, onSelectLadder, onLadderRaw, display, onDisplay, heatmapActionsRef, onOpenSettings, unified }: Props) {
+  const [uniSpeed, setUniSpeed] = useState<number>(unified?.snap.inputEveryMs ?? 300);
   const { fmt: fmtJst, tzLabel } = useTimeFormat();
   const tv = useViewport(trades, MOCK_QUALITY, {
     initialMinutes: display.viewport.initialMinutes, autoMarginPercent: display.viewport.autoMarginPercent,
@@ -218,6 +246,20 @@ export function ChartShell({ trades, mockOn, onToggleMock, onAddThird, heatmap: 
   useEffect(() => {
     if (heatmap) setHmVp((v) => verificationViewport(heatmap, v.bounds, v.dpr));
   }, [baseScene?.id]); // Display-only price-bin edits never reset HISTORY or MANUAL price.
+  const uniOn = !!unified && unified.snap.phase !== "OFF";
+  const uniFrame = unified?.snap.frame ?? null;
+  const uniRun = unified?.snap.runId ?? 0;
+  // Seed only on explicit start/restart: notifications, pan, zoom and resize never reset HISTORY.
+  useEffect(() => {
+    if (uniOn) setHmVp((v) => verificationViewport(UNI_SEED, v.bounds, v.dpr));
+  }, [uniRun, uniOn]);
+  const uniRev = uniFrame?.revision;
+  const uniCells = useMemo<readonly HeatmapCell[]>(() => (uniFrame?.heatmap.cells ?? []).map((r, i) => ({
+    id: `uni-${r.side.toLowerCase()}-${r.binId * r.width}-${i}`, priceTicks: r.binId * r.width, result: r,
+    ...(r.status === "NO DATA" ? { missingReason: "UNKNOWN" as const } : {}),
+  })), [uniFrame]);
+  const uniBubbles = useMemo(() => uniFrame?.bubbles.items ?? [], [uniFrame]);
+  const uniChecks = useMemo(() => (uniFrame ? unifiedChecks(uniFrame) : []), [uniFrame]);
   /* ---- R09 bubble verification (independent of heatmap F01; viewport reset on scenario id only) ---- */
   const scn = useMemo(() => (bubbleId ? ALL_SCN.find((s) => s.id === bubbleId) ?? null : null), [bubbleId]);
   const isR10 = !!scn && R10_SCENARIOS.some((s) => s.id === scn.id);
@@ -322,7 +364,7 @@ export function ChartShell({ trades, mockOn, onToggleMock, onAddThird, heatmap: 
   const [ladW, setLadW] = useState(300);
   useEffect(() => { setLStep(0); }, [ladderId]);
   const lIdx = lad ? Math.min(lStep, lad.steps.length - 1) : 0;
-  const otherActive = !!heatmap || !!scn || !!dcase;
+  const otherActive = !!heatmap || !!scn || !!dcase || uniOn;
   const otherRef = useRef(otherActive); otherRef.current = otherActive;
   const ladderSeed = useMemo(() => lad ? { endNs: lad.endNs, priceMinTick: lad.priceMinTick, priceMaxTick: lad.priceMaxTick } : null, [lad]);
   useEffect(() => {
@@ -367,6 +409,12 @@ export function ChartShell({ trades, mockOn, onToggleMock, onAddThird, heatmap: 
     catch (e) { return { view: null, error: e instanceof Error ? e.message : String(e) }; }
   }, [lad, lReplay, vp]);
   const dFrame = useMemo<{ frame: DeltaFrame | null; error: string | null }>(() => {
+    if (uniOn) {
+      // Already-derived bins from the frame; projection only (no replay/aggregation).
+      if (!uniFrame || vp.bounds.width <= 0) return { frame: null, error: null };
+      try { return { frame: projectDeltaTimeline(uniFrame.delta.items, vp, 126), error: null }; }
+      catch (e) { return { frame: null, error: e instanceof Error ? e.message : String(e) }; }
+    }
     if (!dcase && ladderOn) {
       if (vp.bounds.width <= 0) return { frame: null, error: null };
       try { return { frame: projectDeltaTimeline([], vp, 126), error: null }; }
@@ -375,7 +423,7 @@ export function ChartShell({ trades, mockOn, onToggleMock, onAddThird, heatmap: 
     if (!dcase || !dReplay || vp.bounds.width <= 0) return { frame: null, error: dReplay?.error ?? null };
     try { return { frame: projectDeltaTimeline(dReplay.bins, vp, 126), error: dReplay.error }; }
     catch (e) { return { frame: null, error: e instanceof Error ? e.message : String(e) }; }
-  }, [dcase, dReplay, vp, ladderOn]);
+  }, [dcase, dReplay, vp, ladderOn, uniOn, uniFrame]);
   const projected = useMemo(() => {
     if (!scn || vp.bounds.width <= 0) return null;
     try {
@@ -468,7 +516,7 @@ export function ChartShell({ trades, mockOn, onToggleMock, onAddThird, heatmap: 
 
   const { width: w, height: h } = vp.bounds;
   const segments = useMemo(() => {
-    if (heatmap) return [];
+    if (heatmap || uniOn) return [];
     if (dcase) {
       // Each source is built separately; sessions are never concatenated or bridged.
       if (!dReplay) return [];
@@ -489,7 +537,7 @@ export function ChartShell({ trades, mockOn, onToggleMock, onAddThird, heatmap: 
       })));
     }
     return buildPriceSegments(trades, MOCK_QUALITY);
-  }, [heatmap, scn, dcase, dReplay, replayed, trades]);
+  }, [heatmap, uniOn, scn, dcase, dReplay, replayed, trades]);
   const scopeLines = dcase ? dcase.sources.slice(1).flatMap((s) => {
     const x = timeToX(vp, s.range.startNs);
     return x === null ? [] : [{ x, label: s.label }];
@@ -498,7 +546,7 @@ export function ChartShell({ trades, mockOn, onToggleMock, onAddThird, heatmap: 
     const x = timeToX(vp, t.header.exchangeTimeNs!), y = tickToY(vp, t.priceTicks);
     return x === null || y === null ? null : { x, y };
   };
-  const gaps = heatmap || vp.latestNs === null ? [] : (dcase ? dcase.sources.flatMap((s) => [...s.quality]) as unknown as readonly QualityInterval[] : (scn?.quality ?? MOCK_QUALITY)).filter((i) => i.status !== "VALID").flatMap((i, n) => {
+  const gaps = heatmap || uniOn || vp.latestNs === null ? [] : (dcase ? dcase.sources.flatMap((s) => [...s.quality]) as unknown as readonly QualityInterval[] : (scn?.quality ?? MOCK_QUALITY)).filter((i) => i.status !== "VALID").flatMap((i, n) => {
     const lat = BigInt(vp.latestNs!);
     if (BigInt(i.startNs) > lat) return [];
     const end = i.endNs !== null && BigInt(i.endNs) < lat ? i.endNs : lat.toString();
@@ -565,13 +613,25 @@ export function ChartShell({ trades, mockOn, onToggleMock, onAddThird, heatmap: 
           onClick={() => onSelectHeatmap("F03")}>Heatmap F03</button>
         <button type="button" className="btn" data-testid="button-heatmap-off" disabled={!heatmap}
           onClick={() => onSelectHeatmap(null)}>Heatmap off</button>
+        {unified && (uniOn ? <>
+          <span className="pill pill-on" data-testid="status-unified" data-phase={unified.snap.phase}>UNIFIED MOCK {unified.snap.phase}</span>
+          <button type="button" className="btn" data-testid="button-unified-stop" disabled={unified.snap.phase !== "RUNNING"}
+            onClick={unified.onStop}>統合MOCK停止</button>
+          <button type="button" className="btn" data-testid="button-unified-restart" onClick={() => unified.onRestart(uniSpeed)}>統合MOCK再開始</button>
+          <button type="button" className="btn" data-testid="button-unified-exit" onClick={unified.onExit}>統合MOCK終了</button>
+        </> : <button type="button" className="btn btn-primary" data-testid="button-unified-start"
+          onClick={() => unified.onStart(uniSpeed)}>統合MOCK開始</button>)}
+        {unified && <select className="btn" data-testid="select-unified-speed" aria-label="Unified MOCK input interval"
+          value={uniSpeed} disabled={unified.snap.phase === "RUNNING"} onChange={(e) => setUniSpeed(Number(e.target.value))}>
+          {unified.speeds.map((m) => <option key={m} value={m}>{m} ms/input</option>)}
+        </select>}
         <button type="button" className="btn" data-testid="button-mock-toggle" onClick={onToggleMock}>
           {mockOn ? "MOCK 無効化" : "MOCK 有効化"}
         </button>
         <button type="button" className="btn" data-testid="button-mock-third"
           disabled={!mockOn || trades.length !== 2} onClick={onAddThird}>MOCK 3点目を追加</button>
       </div>
-      <div className={`cs-grid${dcase || ladderOn ? " cs-delta" : ""}${ladderOn ? " cs-ladder" : ""}`}
+      <div className={`cs-grid${dcase || ladderOn || uniOn ? " cs-delta" : ""}${ladderOn ? " cs-ladder" : ""}${uniOn ? " cs-vp" : ""}`}
         style={ladderOn ? ({ "--lad-w": `${ladW}px` } as CSSProperties) : undefined}>
         <div className="cs-chart" ref={chartRef} data-testid="chart-area"
           onPointerDown={(e) => {
@@ -586,6 +646,8 @@ export function ChartShell({ trades, mockOn, onToggleMock, onAddThird, heatmap: 
           onPointerUp={() => { drag.current = null; }} onPointerCancel={() => { drag.current = null; }}
           onLostPointerCapture={() => { drag.current = null; }}>
           {heatmap && <HeatmapCanvas cells={heatmap.cells} vp={vp} style={style} />}
+          {uniOn && uniFrame && <HeatmapCanvas cells={uniCells} vp={vp} style={backdropStyle} scheduler="frame" revision={uniRev} />}
+          {uniOn && uniFrame && <BubbleCanvas bubbles={uniBubbles} vp={vp} sizing={sizing} clustering={clustering} filters={UNIFIED_BUBBLE_FILTERS} colors={bubbleColors} scheduler="frame" revision={uniRev} />}
           {(scn || dcase) && <svg className="bb-gaps" width={w} height={h} data-testid="bubble-gap-layer">
             {gaps.map(g => <g key={g.n}>
               <rect x={g.x0} y={0} width={Math.max(0, g.x1 - g.x0)} height={h} className="gap-band" />
@@ -636,7 +698,9 @@ export function ChartShell({ trades, mockOn, onToggleMock, onAddThird, heatmap: 
           </svg>
         </div>
         <PriceAxis vp={vp} onPan={panY} onZoom={zoomY} />
-        {dcase && dReplay ? (
+        {uniOn ? (
+          <DeltaPanel frame={dFrame.frame} vp={vp} sourceOf={UNI_NO_SOURCE} error={dFrame.error} onZoom={zoom} onPan={panX} />
+        ) : dcase && dReplay ? (
           <DeltaPanel frame={dFrame.frame} vp={vp} sourceOf={dReplay.sourceOf} error={dFrame.error}
             onZoom={zoom} onPan={panX} />
         ) : ladderOn && (
@@ -644,6 +708,7 @@ export function ChartShell({ trades, mockOn, onToggleMock, onAddThird, heatmap: 
             onZoom={zoom} onPan={panX} />
         )}
         <TimeAxis vp={vp} />
+        {uniOn && <VolumeProfilePanel profile={uniFrame?.volumeProfile.value ?? null} vp={vp} revision={uniRev ?? null} />}
         {lad && <LadderPanel view={ladderView.view} timeMode={vp.timeMode} error={ladderView.error ?? lReplay?.error ?? null}
           observedNs={lad.steps[lIdx].asOfNs} stepLabel={`step ${lIdx + 1}/${lad.steps.length}: ${lad.steps[lIdx].label}`} />}
       </div>
@@ -672,6 +737,41 @@ export function ChartShell({ trades, mockOn, onToggleMock, onAddThird, heatmap: 
           {" → "}<b data-testid="text-price-max">{vp.price?.maxTick ?? "—"}</b></span>
         <span data-testid="text-span">Span {hasData ? spanMin.toFixed(1) : "—"} min (recommended max {String(MAX_SPAN_NS / 60_000_000_000n / 60n)} h)</span>
       </div>
+      {uniOn && unified && (
+        <div className="dbg bb-dbg" data-testid="unified-controls">
+          <div className="dbg-row dbg-wrap">
+            <span data-testid="text-unified-source">MOCK / SIMULATED (NOT LIVE) single finite artificial stream {UNIFIED_MOCK_STREAM.scope.config.identity.sourceId}: {UNIFIED_MOCK_STREAM.inputs.length} inputs / 11 market events / 6 Trades. Only readRenderFrame(query) feeds the layers.</span>
+            <span data-testid="text-unified-bubble-preset">Unified verification: volume/Delta/imbalance display filters OFF; incomplete bubbles withheld, quantities unchanged. Legacy filter settings are preserved.</span>
+          </div>
+          <div data-testid="text-unified-counts">
+            state {unified.snap.status?.state ?? "-"} / reason {unified.snap.status?.reason ?? "-"} / inputs {unified.snap.status?.processedInputs ?? 0}/{unified.snap.status?.sourceInputs ?? UNIFIED_MOCK_STREAM.inputs.length}
+            {" "}/ market received {unified.snap.status?.processedMarketEvents ?? 0} / accepted {unified.snap.status?.acceptedMarketEvents ?? 0}
+            {" "}/ notices {unified.snap.notices} / {unified.snap.inputEveryMs} ms per input / timers {unified.snap.status?.timers ?? 0}
+          </div>
+          {uniFrame ? (<>
+            <div data-testid="text-unified-revisions" data-revision={uniFrame.revision}>
+              common revision <b data-testid="rev-frame">{uniFrame.revision}</b>: heatmap <b data-testid="rev-heatmap">{uniFrame.heatmap.revision}</b>
+              {" "}/ bubbles <b data-testid="rev-bubbles">{uniFrame.bubbles.revision}</b> / delta <b data-testid="rev-delta">{uniFrame.delta.revision}</b>
+              {" "}/ VP <b data-testid="rev-vp">{uniFrame.volumeProfile.revision}</b> / quality <b data-testid="rev-quality">{uniFrame.quality.revision}</b>
+              {" "}/ book <b data-testid="rev-book">{uniFrame.book.revision}</b>
+            </div>
+            <div data-testid="text-unified-quality" data-l2={uniFrame.quality.channels.L2_MBP.status}>
+              L2 (latest) {uniFrame.quality.channels.L2_MBP.status}{uniFrame.quality.channels.L2_MBP.status !== "VALID" ? " - BOOK UNCERTAIN until an eligible Snapshot (L2 only)" : ""}
+              {" "}/ TRADES {uniFrame.quality.channels.TRADES.status} / book levels {uniFrame.book.levels.length}
+              {" "}/ heatmap NO DATA cells {uniFrame.heatmap.cells.filter((c) => c.status === "NO DATA").length}/{uniFrame.heatmap.cells.length} (never drawn as zero)
+              {" "}/ Delta withheld bins {uniFrame.delta.items.filter((b) => b.delta === null).length} (UNKNOWN aggressor never BUY/SELL)
+            </div>
+            {uniFrame.status === "STOPPED" && <div className="dbg-warn" role="alert" data-testid="text-unified-stop">STOPPED: {uniFrame.stop?.reason ?? "no reason"}</div>}
+            {unified.snap.phase === "COMPLETED" && (
+              <div data-testid="unified-checks">
+                {uniChecks.map((c) => <span key={c.name} data-testid={`check-${c.name.replace(/\W+/g, "-").toLowerCase()}`} data-ok={String(c.ok)}>{c.ok ? "MATCH" : "MISMATCH"} {c.name} [{c.detail}]; </span>)}
+              </div>
+            )}
+          </>) : <div data-testid="unified-waiting">NO DATA yet: waiting for the first notification (not zero activity).</div>}
+          <DeltaTable frame={dFrame.frame} sourceOf={UNI_NO_SOURCE} />
+          <p className="note">MOCK / SIMULATED. Historical L2 quality is not in the frame; GAP is shown by NO DATA cells and the latest L2 status only. WebGL2 layers: software backends (SwiftShader) do not represent physical GPU performance.</p>
+        </div>
+      )}
       {heatmap ? (<>
         <HeatmapDebugControls settings={settings} onChange={update} palettes={palettes} onPalette={setPalette}
           onRecalibrate={recalibrate} status={sideStatus} captureError={captureError} />
@@ -811,6 +911,7 @@ export function ChartShell({ trades, mockOn, onToggleMock, onAddThird, heatmap: 
         </div>
       ) : (
         <p className="note howto" data-testid="text-mock-howto">
+          {unified && "Press 統合MOCK開始 to run the finite integrated MOCK (nothing starts automatically). "}
           MOCK fixture: {MOCK_INSTRUMENT}, 2026-01-01 00:00:00 UTC (09:00:00 JST), three Trades at +0s 80000, +300s 80100, +600s 80040 ticks;
           TRADES GAP [+360s, +540s). Verify: enable MOCK (2 events, one segment), add 3rd point (isolated marker; no line across the GAP).
         </p>

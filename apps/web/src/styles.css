@@ -171,3 +171,18 @@ body {
 .lad-info b { color: #e8eaf0; font-weight: 500; }
 .lad-head { position: absolute; left: 0; right: 0; top: 0; z-index: 1; display: grid; grid-template-columns: 1fr 1.2fr 1fr; padding: 2px 0; font-size: 10px; text-align: center; color: #9ca3b4; background: #10131b; pointer-events: none; }
 .cs-heatmap .hm-legend { min-width: 0; overflow-x: auto; }
+
+/* ---- Task 27-B unified MOCK: VP column shares the chart row (same top, same tickToY) ---- */
+.cs-grid.cs-vp { grid-template-columns: minmax(0, 1fr) 72px 240px; }
+.vp-col { grid-column: 3; grid-row: 1; position: relative; min-height: 0; overflow: hidden; background: #0c0e14; border-left: 1px solid #303443; }
+.vp-col svg { position: absolute; inset: 0; display: block; }
+.vp-label { position: absolute; right: 4px; top: 4px; font-size: 10px; letter-spacing: .05em; color: #9cA3b4; pointer-events: none; }
+.vp-b { fill: #17C96B; opacity: .85; }
+.vp-s { fill: #B548DB; opacity: .85; }
+.vp-u { fill: #6b7390; opacity: .9; }
+.vp-va { fill: rgba(185,164,240,.12); }
+.vp-line { stroke-width: 1; }
+.vp-line-poc { stroke: #D5A74B; stroke-width: 2; }
+.vp-line-va { stroke: #b9a4f0; stroke-dasharray: 4 3; }
+.vp-text { fill: #e8eaf0; font-size: 10px; font-family: Consolas, ui-monospace, monospace; }
+.cs-vp .vp-info { grid-column: 3; grid-row: 2 / 4; overflow: auto; min-height: 0; padding: 4px 8px; font-size: 11px; line-height: 1.4; color: #9cA3b4; background: #10131b; border-top: 1px solid #303443; font-family: Consolas, ui-monospace, monospace; display: flex; flex-direction: column; gap: 2px; word-break: break-all; }

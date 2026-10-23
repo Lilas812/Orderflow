@@ -58,9 +58,14 @@ type UiStatus = RenderStatus | "INITIALIZING";
 interface Props {
   bubbles: readonly BubbleState[]; vp: Viewport; sizing: BubbleSizing; clustering?: ClusteringOptions;
   filters?: BubbleFilters; colors?: BubbleColors;
+  /** "frame" (unified mode): no internal 250 ms timer; rAF draw only when inputs changed. */
+  scheduler?: "interval" | "frame";
+  revision?: number;
 }
 
-export function BubbleCanvas({ bubbles, vp, sizing, clustering, filters, colors }: Props) {
+export function BubbleCanvas({ bubbles, vp, sizing, clustering, filters, colors, scheduler = "interval", revision }: Props) {
+  const schedulerRef = useRef(scheduler);
+  const flushRef = useRef<() => void>(() => {});
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const pending = useRef({ bubbles, vp, sizing, clustering, filters, colors, dirty: true });
   const pointer = useRef<{ x: number; y: number } | null>(null);
@@ -148,10 +153,12 @@ export function BubbleCanvas({ bubbles, vp, sizing, clustering, filters, colors 
     parent?.addEventListener("pointerleave", leave);
     parent?.addEventListener("pointerdown", pdown);
     parent?.addEventListener("pointerup", pup);
+    flushRef.current = flush;
     flush();
-    const timer = window.setInterval(flush, DISPLAY_INTERVAL_MS);
+    const timer = schedulerRef.current === "frame" ? null : window.setInterval(flush, DISPLAY_INTERVAL_MS);
     return () => {
-      window.clearInterval(timer);
+      if (timer !== null) window.clearInterval(timer);
+      flushRef.current = () => {};
       parent?.removeEventListener("pointermove", move);
       parent?.removeEventListener("pointerleave", leave);
       parent?.removeEventListener("pointerdown", pdown);
@@ -164,6 +171,12 @@ export function BubbleCanvas({ bubbles, vp, sizing, clustering, filters, colors 
     };
   }, []);
 
+  useEffect(() => {
+    if (schedulerRef.current !== "frame") return;
+    const id = window.requestAnimationFrame(() => flushRef.current());
+    return () => window.cancelAnimationFrame(id);
+  });
+
   const failed = status === "RENDER ERROR" || status === "CONTEXT LOST" || drawError !== null;
   const shownStatus: UiStatus = drawError !== null ? "RENDER ERROR" : status;
   const shownError = drawError ?? error;
@@ -172,7 +185,7 @@ export function BubbleCanvas({ bubbles, vp, sizing, clustering, filters, colors 
   return (
     <>
       <canvas ref={canvasRef} className="bb-canvas" style={{ width: b.left + b.width, height: b.top + b.height }}
-        data-testid="bubble-canvas" data-status={shownStatus} data-error={shownError ?? ""}
+        data-testid="bubble-canvas" data-revision={revision ?? ""} data-status={shownStatus} data-error={shownError ?? ""}
         data-draw-count={count} data-vertex-count={verts} data-bubble-count={bubbles.length}
         data-display-count={display} />
       <span className="bb-status" data-testid="bubble-gl-status" data-status={shownStatus}>

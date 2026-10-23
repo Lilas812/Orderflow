@@ -178,9 +178,16 @@ interface Tip { x: number; y: number; cell: HeatmapCell }
 interface DrawInfo { count: number; vertices: number; rects: number; minNs: string; maxNs: string }
 type UiStatus = RenderStatus | "INITIALIZING";
 
-interface Props { cells: readonly HeatmapCell[]; vp: Viewport; style?: HeatmapStyle }
+interface Props {
+  cells: readonly HeatmapCell[]; vp: Viewport; style?: HeatmapStyle;
+  /** "frame" (unified mode): no internal 250 ms timer; draw once per rAF when inputs changed. Default legacy "interval". */
+  scheduler?: "interval" | "frame";
+  revision?: number;
+}
 
-export function HeatmapCanvas({ cells, vp, style }: Props) {
+export function HeatmapCanvas({ cells, vp, style, scheduler = "interval", revision }: Props) {
+  const schedulerRef = useRef(scheduler);
+  const flushRef = useRef<() => void>(() => {});
   const { fmt: fmtJst } = useTimeFormat();
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const rendererRef = useRef<HeatmapRenderer | null>(null);
@@ -230,10 +237,12 @@ export function HeatmapCanvas({ cells, vp, style }: Props) {
     const leave = () => { pointer.current = null; setTip(null); };
     parent?.addEventListener("pointermove", move);
     parent?.addEventListener("pointerleave", leave);
+    flushRef.current = flush;
     flush();
-    const timer = window.setInterval(flush, DISPLAY_INTERVAL_MS);
+    const timer = schedulerRef.current === "frame" ? null : window.setInterval(flush, DISPLAY_INTERVAL_MS);
     return () => {
-      window.clearInterval(timer);
+      if (timer !== null) window.clearInterval(timer);
+      flushRef.current = () => {};
       parent?.removeEventListener("pointermove", move);
       parent?.removeEventListener("pointerleave", leave);
       renderer.dispose();
@@ -242,6 +251,12 @@ export function HeatmapCanvas({ cells, vp, style }: Props) {
       pending.current.dirty = true; // a remounted renderer must draw again
     };
   }, []);
+
+  useEffect(() => {
+    if (schedulerRef.current !== "frame") return;
+    const id = window.requestAnimationFrame(() => flushRef.current());
+    return () => window.cancelAnimationFrame(id);
+  });
 
   const failed = status === "RENDER ERROR" || status === "CONTEXT LOST" || drawError !== null;
   const shownStatus: UiStatus = drawError !== null ? "RENDER ERROR" : status;
@@ -255,7 +270,7 @@ export function HeatmapCanvas({ cells, vp, style }: Props) {
   return (
     <>
       <canvas ref={canvasRef} className="hm-canvas" style={{ width: b.left + b.width, height: b.top + b.height }}
-        data-testid="heatmap-canvas" data-status={shownStatus} data-error={shownError ?? ""}
+        data-testid="heatmap-canvas" data-revision={revision ?? ""} data-status={shownStatus} data-error={shownError ?? ""}
         data-draw-count={info.count} data-rect-count={info.rects}
         data-drawn-min-ns={info.minNs} data-drawn-max-ns={info.maxNs}
         data-style={JSON.stringify(style ?? null)} data-vertex-count={info.vertices} data-cells={JSON.stringify(meta)} />

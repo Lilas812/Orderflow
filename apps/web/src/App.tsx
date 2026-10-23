@@ -6,6 +6,7 @@ import { HeatmapDemo, type HeatmapId } from "./components/HeatmapCanvas";
 import { SettingsDrawer, SettingsErrorBanner } from "./components/SettingsDrawer";
 import { TimeFormatProvider, type HeatmapActions } from "./components/SettingsContext";
 import { useSettings } from "./hooks/useSettings";
+import { useMockAnalysisSession, UNIFIED_SPEEDS } from "./hooks/useMockAnalysisSession";
 
 function App() {
   const [count, setCount] = useState(0); // 0 = MOCK disabled, 2 or 3 loaded MOCK events
@@ -18,6 +19,9 @@ function App() {
   const [deltaRaw, setDeltaRaw] = useState(0);
   const [ladderId, setLadderId] = useState<string | null>(null);
   const [ladderRaw, setLadderRaw] = useState(0);
+  const uni = useMockAnalysisSession();
+  const uniActive = uni.snap.phase !== "OFF";
+  const uniExit = uni.exit;
   const settings = useSettings();
   const heatmapActions = useRef<HeatmapActions | null>(null);
   const gearRef = useRef<HTMLButtonElement>(null);
@@ -30,12 +34,15 @@ function App() {
   const openSettings = useCallback(() => { if (!settingsRef.current.open) settingsRef.current.begin(); }, []);
   const updateDisplay = useCallback((next: (s: DisplaySettings) => DisplaySettings) => settingsRef.current.update(next), []);
   const selectLadder = (id: string | null) => { setLadderId(id); if (!id) setLadderRaw(0); };
-  const selectHeatmap = (id: HeatmapId | null) => { setHmId(id); if (id) { setCount(0); setBubbleId(null); setDeltaId(null); setDeltaRaw(0); } };
-  const selectBubble = (id: string | null) => { setBubbleId(id); if (id) { setHmId(null); setCount(0); setDeltaId(null); setDeltaRaw(0); } else setBubbleRaw(0); };
-  const selectDelta = (id: string | null) => { setDeltaId(id); if (id) { setHmId(null); setBubbleId(null); setCount(0); } else setDeltaRaw(0); };
-  const setTradeCount = (fn: (c: number) => number) => { setHmId(null); setBubbleId(null); setDeltaId(null); setDeltaRaw(0); setCount(fn); };
-  const statusText = deltaId ? `FIXED DELTA MOCK ${deltaId}` : ladderId && !bubbleId && !scene && count === 0 ? `FIXED LADDER MOCK ${ladderId}` : bubbleId ? `FIXED BUBBLE MOCK ${bubbleId}` : scene ? `FIXED HEATMAP MOCK ${scene.id}` : count === 0 ? "NO DATA" : `MOCK DATA ${count}/3`;
-  const footerText = ladderId && !deltaId && !bubbleId && !scene && count === 0
+  const selectHeatmap = (id: HeatmapId | null) => { setHmId(id); if (id) { uniExit(); setCount(0); setBubbleId(null); setDeltaId(null); setDeltaRaw(0); } };
+  const selectBubble = (id: string | null) => { setBubbleId(id); if (id) { uniExit(); setHmId(null); setCount(0); setDeltaId(null); setDeltaRaw(0); } else setBubbleRaw(0); };
+  const selectDelta = (id: string | null) => { setDeltaId(id); if (id) { uniExit(); setHmId(null); setBubbleId(null); setCount(0); } else setDeltaRaw(0); };
+  const setTradeCount = (fn: (c: number) => number) => { uniExit(); setHmId(null); setBubbleId(null); setDeltaId(null); setDeltaRaw(0); setCount(fn); };
+  const startUnified = (ms: number) => { setHmId(null); setBubbleId(null); setBubbleRaw(0); setDeltaId(null); setDeltaRaw(0); setCount(0); uni.start(ms); };
+  const restartUnified = (ms: number) => uni.restart(ms);
+  const uSt = uni.snap.status;
+  const statusText = uniActive ? `UNIFIED MOCK ${uni.snap.phase} (not live)` : deltaId ? `FIXED DELTA MOCK ${deltaId}` : ladderId && !bubbleId && !scene && count === 0 ? `FIXED LADDER MOCK ${ladderId}` : bubbleId ? `FIXED BUBBLE MOCK ${bubbleId}` : scene ? `FIXED HEATMAP MOCK ${scene.id}` : count === 0 ? "NO DATA" : `MOCK DATA ${count}/3`;
+  const footerText = uniActive ? `MOCK / events loaded ${uSt?.processedMarketEvents ?? 0} (unified MOCK; not live)` : ladderId && !deltaId && !bubbleId && !scene && count === 0
     ? `MOCK / events loaded ${ladderRaw} (Ladder MOCK ${ladderId})`
     : deltaId ? `FIXED DELTA MOCK / events loaded ${deltaRaw}`
     : bubbleId ? `MOCK / events loaded ${bubbleRaw + 1} (bubble MOCK ${bubbleId})`
@@ -72,10 +79,13 @@ function App() {
           ladderId={ladderId} onSelectLadder={selectLadder} onLadderRaw={setLadderRaw}
           display={preview} onDisplay={updateDisplay} heatmapActionsRef={heatmapActions} onOpenSettings={openSettings}
           onToggleMock={() => setTradeCount((c) => (c === 0 ? 2 : 0))}
+          unified={{ snap: uni.snap, speeds: UNIFIED_SPEEDS, onStart: startUnified, onStop: uni.stop, onRestart: restartUnified, onExit: uni.exit }}
           onAddThird={() => setTradeCount((c) => (c === 2 ? 3 : c))} />
       </main>
       <footer className="foot" data-testid="text-footer">
-        {ladderId && !deltaId && !bubbleId && !scene && count === 0
+        {uniActive
+          ? `Data source: MOCK / SIMULATED (not live) / Events loaded: ${uSt?.processedMarketEvents ?? 0} market events received, ${uSt?.acceptedMarketEvents ?? 0} accepted (unified MOCK; ${uSt?.processedInputs ?? 0}/${uSt?.sourceInputs ?? 0} inputs)`
+          : ladderId && !deltaId && !bubbleId && !scene && count === 0
           ? `Data source: MOCK / Events loaded: ${ladderRaw} (raw market inputs of independent Ladder MOCK ${ladderId}; not derived from rows)`
           : deltaId
           ? `Data source: FIXED DELTA MOCK / Events loaded: ${deltaRaw} (raw Trade inputs across independent MOCK sources; no L2 snapshot; Delta MOCK ${deltaId})`
