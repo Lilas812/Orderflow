@@ -15,6 +15,13 @@ export interface VolumeProfileTotals {
 export interface VolumeProfileLevel extends VolumeProfileTotals {
   readonly priceTicks: number;
 }
+export interface VolumeProfileValueArea {
+  readonly ratioNumerator: 7n;
+  readonly ratioDenominator: 10n;
+  readonly valTick: number | null;
+  readonly vahTick: number | null;
+  readonly includedVolume: bigint;
+}
 export interface VolumeProfileSnapshot {
   readonly scope: Readonly<TradeScope>;
   /** These are accepted, observed executions, not proof of complete market coverage. */
@@ -23,6 +30,7 @@ export interface VolumeProfileSnapshot {
   readonly totals: VolumeProfileTotals;
   readonly levels: readonly VolumeProfileLevel[];
   readonly pocTick: number | null;
+  readonly valueArea: VolumeProfileValueArea;
   readonly maxPriceLevels: number;
   readonly priceLevels: number;
   readonly unknownTimePrecision: boolean;
@@ -49,6 +57,53 @@ function add(previous: VolumeProfileTotals, trade: Trade): VolumeProfileTotals {
     totalVolume: previous.totalVolume + qty,
     tradeCount: previous.tradeCount + 1,
   });
+}
+
+/** Read-only O(P) exploration of sorted levels; absent ticks are observed-profile zeros,
+ * not evidence of market completeness. No arrays/loops proportional to tick span.
+ */
+function valueArea(
+  levels: readonly VolumeProfileLevel[], total: bigint, poc: number | null,
+): VolumeProfileValueArea {
+  const result = (low: bigint | null, high: bigint | null, volume: bigint): VolumeProfileValueArea =>
+    Object.freeze({
+      ratioNumerator: 7n, ratioDenominator: 10n,
+      valTick: low === null ? null : Number(low),
+      vahTick: high === null ? null : Number(high), includedVolume: volume,
+    });
+  if (total === 0n) return result(null, null, 0n);
+  const positive = levels.filter(level => level.totalVolume > 0n);
+  const center = positive.findIndex(level => level.priceTicks === poc);
+  if (center < 0) throw new Error("VP Value Area: positive total requires an existing POC");
+  const minimum = BigInt(levels[0].priceTicks), maximum = BigInt(levels[levels.length - 1].priceTicks);
+  let low = BigInt(positive[center].priceTicks), high = low;
+  let volume = positive[center].totalVolume, below = center - 1, above = center + 1;
+  while (volume * 10n < total * 7n) {
+    const hasBelow = low > minimum, hasAbove = high < maximum;
+    if (!hasBelow && !hasAbove) throw new Error("VP Value Area: inconsistent total/levels");
+    const lowerTick = below >= 0 ? BigInt(positive[below].priceTicks) : null;
+    const upperTick = above < positive.length ? BigInt(positive[above].priceTicks) : null;
+    const lowerVolume = lowerTick === low - 1n ? positive[below].totalVolume : 0n;
+    const upperVolume = upperTick === high + 1n ? positive[above].totalVolume : 0n;
+    if (lowerVolume === 0n && upperVolume === 0n) {
+      // Skip only simultaneous zero/zero steps, or one-sided zeros at the domain edge.
+      // Stop before the nearest positive neighbor (or at an edge), then compare again.
+      const lowerZeros = lowerTick === null ? low - minimum : low - lowerTick - 1n;
+      const upperZeros = upperTick === null ? maximum - high : upperTick - high - 1n;
+      const steps = !hasBelow ? upperZeros : !hasAbove ? lowerZeros :
+        lowerZeros < upperZeros ? lowerZeros : upperZeros;
+      if (steps <= 0n) throw new Error("VP Value Area: zero expansion cannot make progress");
+      if (hasBelow) low -= steps;
+      if (hasAbove) high += steps;
+    } else {
+      // Decide both directions BEFORE changing volume; an equal pair is indivisible.
+      const takeBelow = hasBelow && (!hasAbove || lowerVolume >= upperVolume);
+      const takeAbove = hasAbove && (!hasBelow || upperVolume >= lowerVolume);
+      if (takeBelow) { low--; volume += lowerVolume; if (lowerVolume > 0n) below--; }
+      if (takeAbove) { high++; volume += upperVolume; if (upperVolume > 0n) above++; }
+    }
+  }
+  return result(low, high, volume);
 }
 
 /**
@@ -119,13 +174,15 @@ export class VolumeProfileAccumulator {
   }
 
   read(): VolumeProfileSnapshot {
+    const levels = Object.freeze([...this.#levels.values()]
+      .sort((a, b) => a.priceTicks - b.priceTicks).map(level => Object.freeze({ ...level })));
     return Object.freeze({
       scope: Object.freeze({ ...this.#scope }),
       volumeBasis: "ACCEPTED_OBSERVED_TRADES", marketCompleteness: "NOT_ASSERTED",
       totals: Object.freeze({ ...this.#totals }),
-      levels: Object.freeze([...this.#levels.values()]
-        .sort((a, b) => a.priceTicks - b.priceTicks).map(level => Object.freeze({ ...level }))),
+      levels,
       pocTick: this.#poc, maxPriceLevels: this.#maximum, priceLevels: this.#levels.size,
+      valueArea: valueArea(levels, this.#totals.totalVolume, this.#poc),
       unknownTimePrecision: this.#unknownTime, nonValidTradeQuality: this.#nonValidQuality,
       classificationComplete: this.#classificationComplete,
     });

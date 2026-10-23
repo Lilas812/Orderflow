@@ -23,6 +23,54 @@ const limits: AnalysisBudget = {
   qualityIntervals: 300, dedupEntries: 200, bookLevels: 100,
 };
 
+describe("read-time Value Area through the analysis hub", () => {
+  it("exposes F04 VA through the existing API and preserves observed-only quality", () => {
+    const hub = createAnalysisHub(definition(F04.events[0],
+      { volumeProfile: { maxPriceLevels: 4 } }), () => 0);
+    F04.events.forEach(t => hub.ingest(envelope(t)));
+    expect(hub.readVolumeProfile()).toMatchObject({
+      revision: 3, marketCompleteness: "NOT_ASSERTED",
+      valueArea: { ratioNumerator: 7n, ratioDenominator: 10n,
+        valTick: 80000, vahTick: 80000, includedVolume: 27n },
+    });
+    const before = hub.read(), first = hub.readVolumeProfile()!, next = hub.readVolumeProfile()!;
+    expect(hub.read()).toEqual(before);
+    expect(first).toEqual(next);
+    expect(first.valueArea).not.toBe(next.valueArea);
+    expect(Object.isFrozen(first.valueArea)).toBe(true);
+  });
+  it("does not include a Trade rejected by the price-level budget in VA", () => {
+    const hub = createAnalysisHub(definition(F04.events[0],
+      { volumeProfile: { maxPriceLevels: 1 } }), () => 0);
+    hub.ingest(envelope(F04.events[0]));
+    const before = hub.readVolumeProfile()!;
+    expect(hub.ingest(envelope({ ...F04.events[1], priceTicks: 80001 })).outcome)
+      .toBe("BUDGET_EXCEEDED");
+    const after = hub.readVolumeProfile()!;
+    expect(after.valueArea).toEqual(before.valueArea);
+    expect(after.totals).toEqual(before.totals);
+    expect(after.status).toBe("STOPPED");
+  });
+  it("does not include a Trade rejected by the existing Trade budget in VA", () => {
+    const hub = createAnalysisHub(definition(F04.events[0], {
+      volumeProfile: { maxPriceLevels: 4 }, budget: { ...limits, trades: 1 },
+    }), () => 0);
+    hub.ingest(envelope(F04.events[0]));
+    const before = hub.readVolumeProfile()!;
+    expect(hub.ingest(envelope({ ...F04.events[1], priceTicks: 80001 })).stop?.limit).toBe("trades");
+    expect(hub.readVolumeProfile()!.valueArea).toEqual(before.valueArea);
+  });
+  it("keeps disabled VP null before and after all normal hub inputs", () => {
+    const hub = createAnalysisHub(definition(F04.events[0]), () => 0);
+    expect(hub.readVolumeProfile()).toBeNull();
+    F04.events.forEach(t => {
+      expect(hub.ingest(envelope(t)).disposition).toBe("ACCEPTED");
+      expect(hub.readVolumeProfile()).toBeNull();
+    });
+    expect(hub.read().scope.volumeProfile).toBeUndefined();
+  });
+});
+
 describe("opt-in incremental Volume Profile connection", () => {
   const create = (patch: Partial<AnalysisScope> = {}) => createAnalysisHub(
     definition(F04.events[0], { volumeProfile: { maxPriceLevels: 4 }, ...patch }), () => 0);

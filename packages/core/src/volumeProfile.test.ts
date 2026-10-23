@@ -1,7 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
 import { F04_TRADES as F04 } from "../../fixtures/src/index";
 import { executedVolume, type Trade } from "./events";
-import { VolumeProfileAccumulator, VolumeProfileCapacityError } from "./volumeProfile";
+import {
+  VolumeProfileAccumulator, VolumeProfileCapacityError, type VolumeProfileSnapshot,
+} from "./volumeProfile";
 
 function trade(priceTicks: number, qty: number, aggressor: Trade["aggressor"] = "BUY"): Trade {
   return { ...F04.events[0], priceTicks, qty: executedVolume(qty), aggressor };
@@ -9,6 +11,174 @@ function trade(priceTicks: number, qty: number, aggressor: Trade["aggressor"] = 
 const profile = (maxPriceLevels = 10) =>
   new VolumeProfileAccumulator(F04.events[0].header, { maxPriceLevels });
 const apply = (vp: VolumeProfileAccumulator, t: Trade) => vp.prepareAccepted(t)();
+
+/** Deliberately literal 1-tick oracle for SMALL test domains only. */
+function referenceValueArea(snapshot: VolumeProfileSnapshot) {
+  const quantities = new Map(snapshot.levels.map(level => [level.priceTicks, level.totalVolume]));
+  let low = snapshot.pocTick, high = low;
+  let included = low === null ? 0n : quantities.get(low)!;
+  if (snapshot.totals.totalVolume > 0n) {
+    const minimum = snapshot.levels[0].priceTicks;
+    const maximum = snapshot.levels[snapshot.levels.length - 1].priceTicks;
+    while (included * 10n < snapshot.totals.totalVolume * 7n) {
+      const lower = low! > minimum ? quantities.get(low! - 1) ?? 0n : null;
+      const upper = high! < maximum ? quantities.get(high! + 1) ?? 0n : null;
+      if (lower === null && upper === null) throw new Error("Invalid test oracle input");
+      const takeLower = lower !== null && (upper === null || lower >= upper);
+      const takeUpper = upper !== null && (lower === null || upper >= lower);
+      if (takeLower) { low = low! - 1; included += lower!; }
+      if (takeUpper) { high = high! + 1; included += upper!; }
+    }
+  }
+  return { ratioNumerator: 7n, ratioDenominator: 10n,
+    valTick: low, vahTick: high, includedVolume: included };
+}
+
+describe("read-time 70% Value Area", () => {
+  const cases: { name: string; levels: [number, number][]; poc: number | null;
+    bounds: [number | null, number | null]; volume: bigint }[] = [
+    { name: "single price", levels: [[100, 27]], poc: 100, bounds: [100, 100], volume: 27n },
+    { name: "multiple prices", levels: [[98, 10], [99, 20], [100, 40], [101, 25], [102, 5]],
+      poc: 100, bounds: [99, 101], volume: 85n },
+    { name: "upper priority and exactly 70%", levels: [[99, 10], [100, 40], [101, 30], [102, 20]],
+      poc: 100, bounds: [100, 101], volume: 70n },
+    { name: "lower priority", levels: [[98, 20], [99, 30], [100, 40], [101, 10]],
+      poc: 100, bounds: [99, 100], volume: 70n },
+    { name: "equal pair is indivisible", levels: [[99, 20], [100, 40], [101, 20]],
+      poc: 100, bounds: [99, 101], volume: 80n },
+    { name: "symmetric missing zeros", levels: [[98, 30], [100, 40], [102, 30]],
+      poc: 100, bounds: [98, 102], volume: 100n },
+    { name: "asymmetric missing zeros retain zero boundary", levels: [[97, 30], [100, 40], [102, 30]],
+      poc: 100, bounds: [99, 102], volume: 70n },
+    { name: "POC alone reaches 70%", levels: [[100, 7], [101, 3]],
+      poc: 100, bounds: [100, 100], volume: 7n },
+    { name: "overshoot stops immediately", levels: [[100, 6], [101, 4]],
+      poc: 100, bounds: [100, 101], volume: 10n },
+    { name: "integer rounding cannot truncate the threshold", levels: [[100, 2], [101, 1]],
+      poc: 100, bounds: [100, 101], volume: 3n },
+    { name: "POC tie remains lower tick", levels: [[100, 5], [101, 5]],
+      poc: 100, bounds: [100, 101], volume: 10n },
+    { name: "zero total", levels: [[100, 0], [101, 0]],
+      poc: null, bounds: [null, null], volume: 0n },
+  ];
+  it.each(cases)("$name", ({ levels, poc, bounds, volume }) => {
+    const vp = profile();
+    levels.forEach(([price, qty]) => apply(vp, trade(price, qty)));
+    const result = vp.read();
+    expect(result.pocTick).toBe(poc);
+    expect(result.valueArea).toEqual({ ratioNumerator: 7n, ratioDenominator: 10n,
+      valTick: bounds[0], vahTick: bounds[1], includedVolume: volume });
+    expect(result.valueArea).toEqual(referenceValueArea(result));
+  });
+  it("empty profile returns null boundaries", () => {
+    expect(profile().read().valueArea).toEqual({ ratioNumerator: 7n, ratioDenominator: 10n,
+      valTick: null, vahTick: null, includedVolume: 0n });
+  });
+  it("preserves bigint quantities above the safe integer limit and an exact threshold", () => {
+    const vp = profile(), q = Number.MAX_SAFE_INTEGER;
+    for (const [price, count] of [[99, 3], [100, 4], [101, 2], [102, 1]]) {
+      for (let i = 0; i < count; i++) apply(vp, trade(price, q));
+    }
+    expect(vp.read().totals.totalVolume).toBe(BigInt(q) * 10n);
+    expect(vp.read().valueArea).toMatchObject({
+      valTick: 99, vahTick: 100, includedVolume: BigInt(q) * 7n,
+    });
+  });
+  it("matches a literal oracle exhaustively for sparse and explicit-zero small domains", () => {
+    for (let pattern = 0; pattern < 3 ** 5; pattern++) {
+      for (const explicitZeros of [false, true]) {
+        const vp = profile();
+        let remaining = pattern;
+        for (const tick of [100, 101, 103, 106, 107]) {
+          const qty = remaining % 3;
+          remaining = Math.floor(remaining / 3);
+          if (qty || explicitZeros) apply(vp, trade(tick, qty));
+        }
+        const snapshot = vp.read();
+        expect(snapshot.valueArea).toEqual(referenceValueArea(snapshot));
+      }
+    }
+  });
+  it("skips enormous symmetric zero runs without materializing ticks", () => {
+    const vp = profile();
+    [[0, 30], [1_000_000_000_000, 40], [2_000_000_000_000, 30]]
+      .forEach(([tick, qty]) => apply(vp, trade(tick, qty)));
+    const result = vp.read();
+    expect(result.levels).toHaveLength(3);
+    expect(result.valueArea).toMatchObject({ valTick: 0,
+      vahTick: 2_000_000_000_000, includedVolume: 100n });
+  });
+  it("handles large tick boundaries and asymmetric zeros with integer-exact arithmetic", () => {
+    const vp = profile(), maximum = Number.MAX_SAFE_INTEGER;
+    [[0, 30], [maximum - 2, 40], [maximum, 30]]
+      .forEach(([tick, qty]) => apply(vp, trade(tick, qty)));
+    expect(vp.read().valueArea).toMatchObject({
+      valTick: maximum - 3, vahTick: maximum, includedVolume: 70n,
+    });
+  });
+  it("handles a one-sided zero run after the other side reaches its observed boundary", () => {
+    const vp = profile();
+    [[99, 0], [100, 40], [1_000_000_000_000, 30], [1_000_000_000_001, 30]]
+      .forEach(([tick, qty]) => apply(vp, trade(tick, qty)));
+    expect(vp.read().valueArea).toMatchObject({
+      valTick: 99, vahTick: 1_000_000_000_000, includedVolume: 70n,
+    });
+  });
+  it.each([[[100, 4], [101, 3], [102, 3]], [[98, 3], [99, 3], [100, 4]]])(
+    "expands only within an observed edge: %j", (...levels) => {
+      const vp = profile();
+      levels.forEach(([tick, qty]) => apply(vp, trade(tick, qty)));
+      const result = vp.read();
+      expect(result.valueArea).toEqual(referenceValueArea(result));
+      expect(result.valueArea.includedVolume).toBe(7n);
+    },
+  );
+  it("is independent of accepted-input order", () => {
+    const levels = [[97, 30], [100, 40], [102, 30], [99, 0]] as const;
+    const a = profile(), b = profile(), c = profile();
+    levels.forEach(([tick, qty]) => apply(a, trade(tick, qty)));
+    [...levels].reverse().forEach(([tick, qty]) => apply(b, trade(tick, qty)));
+    [levels[2], levels[0], levels[3], levels[1]]
+      .forEach(([tick, qty]) => apply(c, trade(tick, qty)));
+    expect(b.read().valueArea).toEqual(a.read().valueArea);
+    expect(c.read().valueArea).toEqual(a.read().valueArea);
+  });
+  it("returns independently frozen VA results without mutating pending or committed state", () => {
+    const vp = profile();
+    apply(vp, trade(100, 6));
+    const before = vp.read(), pending = vp.prepareAccepted(trade(101, 4));
+    const again = vp.read();
+    expect(again).toEqual(before);
+    expect(again.valueArea).not.toBe(before.valueArea);
+    expect(Object.isFrozen(before.valueArea)).toBe(true);
+    expect(() => { (before.valueArea as { valTick: number }).valTick = -1; }).toThrow();
+    pending();
+    expect(vp.read().valueArea).toMatchObject({ valTick: 100, vahTick: 101, includedVolume: 10n });
+    expect(before.valueArea).toMatchObject({ valTick: 100, vahTick: 100, includedVolume: 6n });
+  });
+  it("does not calculate VA on candidate preparation or commit, only on read", () => {
+    const vp = profile(), freeze = Object.freeze;
+    let calculations = 0;
+    const spy = vi.spyOn(Object, "freeze").mockImplementation((value) => {
+      if (value && typeof value === "object" && "ratioNumerator" in value &&
+          value.ratioNumerator === 7n) calculations++;
+      return freeze(value);
+    });
+    try {
+      const pending = vp.prepareAccepted(trade(100, 4));
+      expect(calculations).toBe(0);
+      pending();
+      apply(vp, trade(101, 3));
+      expect(calculations).toBe(0);
+      vp.read();
+      expect(calculations).toBe(1);
+      apply(vp, trade(102, 3));
+      expect(calculations).toBe(1);
+      vp.read();
+      expect(calculations).toBe(2);
+    } finally { spy.mockRestore(); }
+  });
+});
 
 describe("accepted observed Trade Volume Profile", () => {
   it("reproduces F04 without retaining original Trades or inventing market completeness", () => {
