@@ -3,7 +3,7 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { runInNewContext } from "node:vm";
-import { webcrypto } from "node:crypto";
+import { webcrypto, createHash } from "node:crypto";
 const modulePath = "./canvas-lifecycle-smoke.mjs";
 const smoke = await import(modulePath);
 const baselinePath = "./baseline13-driver.mjs";
@@ -361,8 +361,9 @@ it("evidence case failure stops subsequent cases before cleanup orchestration", 
 
 function continuationFixture(layer = "heatmap", scenario = "B") {
   const hash = (revision: number) => revision.toString().padStart(64, "0");
+  const bytes = 6 * (layer === "heatmap" ? 32 : 52);
   const references = Array.from({ length: 7 }, (_, i) => ({ layer, revision: i + 2,
-    bytes: 96, vertices: 6, sha256: hash(i + 2) }));
+    bytes, vertices: 6, sha256: hash(i + 2) }));
   const restoredRevision = scenario === "A" ? 2 : 4;
   const snapshot = (revision: number, lost: boolean, restore: number) => ({
     canvas: { id: 11, connected: true, revision, lost, loss: lost || restore ? 1 : 0, restore },
@@ -370,19 +371,29 @@ function continuationFixture(layer = "heatmap", scenario = "B") {
     size: { width: 403, height: 324, status: lost ? "CONTEXT LOST" : "READY" },
     raf: { reserved: 2, executed: 2, cancelled: 0, live: 0 },
     gl: { errors: 0 }, inputGate: { fault: null }, limited: false, release: { status: "PASS" },
+    emptyPixels: { canvasId: 11, revision, defaultFramebuffer: true, rgba: Array(20).fill(0),
+      colorMask: [true, true, true, true], error: 0 },
     rows: [] as Record<string, unknown>[],
   });
   const draw = (revision: number, native = false) => ({ kind: "draw", layer, canvasId: 11, revision,
-    tokenRevision: native ? null : revision, bytes: 96, vertices: 6, sha256: hash(revision), lost: false });
+    tokenRevision: native ? null : revision, uploadSerial: revision + 1,
+    bytes, vertices: 6, sha256: hash(revision), lost: false });
+  const transfer = (revision: number) => [
+    { kind: "clearColor", layer, canvasId: 11, revision,
+      rgba: layer === "bubble" ? [0, 0, 0, 0] : [8 / 255, 9 / 255, 13 / 255, 1] },
+    { kind: "clear", layer, canvasId: 11, revision, lost: false, mask: 16384, scissor: false },
+    { kind: "upload", layer, canvasId: 11, revision, lost: false, uploadSerial: revision + 1,
+      bytes, sha256: hash(revision) },
+  ];
   const before = snapshot(2, false, 0), lost = snapshot(restoredRevision, true, 0);
   lost.rows.push({ kind: "contextlost", layer, canvasId: 11 });
   const restored = snapshot(restoredRevision, false, 1);
-  restored.rows.push({ kind: "contextrestored", layer, canvasId: 11 }, draw(restoredRevision, true));
+  restored.rows.push({ kind: "contextrestored", layer, canvasId: 11 }, ...transfer(restoredRevision), draw(restoredRevision, true));
   const followups = Array.from({ length: 8 - restoredRevision }, (_, i) => {
     const revision = restoredRevision + i + 1, s = snapshot(revision, false, 1);
     s.raf.reserved += i + 1; s.raf.executed += i + 1;
     s.rows.push({ kind: "reserve", layer, canvasId: 11, revision, rafId: revision },
-      { kind: "execute", layer, canvasId: 11, revision, rafId: revision }, draw(revision));
+      { kind: "execute", layer, canvasId: 11, revision, rafId: revision }, ...transfer(revision), draw(revision));
     return s;
   });
   const stopped = { ...snapshot(8, false, 1), source: null };
@@ -426,9 +437,9 @@ it("E5 missing independent GPU reference is UNKNOWN, never PASS", () => {
 });
 it("E5 R3 reference requires a single nonempty hashed payload for every layer/revision", () => {
   const rows = ["heatmap", "bubble"].flatMap(layer => continuationFixture(layer).references
-    .map(r => ({ kind: "draw", ...r })));
+    .map(r => ({ kind: "draw", canvasId: layer === "heatmap" ? 1 : 2, tokenRevision: r.revision, lost: false, ...r })));
   const report = { status: "PASS", control: { phase: { rows } } };
-  expect(smoke.continuationReferences(report)).toHaveLength(14);
+  expect(smoke.continuationReferences(report, createHash("sha256").update(JSON.stringify(report)).digest("hex"))).toHaveLength(14);
   expect(() => smoke.continuationReferences({ ...report, status: "FAIL" })).toThrow("NOT_PASS");
   expect(() => smoke.continuationReferences({ status: "PASS", control: { phase: { rows: rows.slice(1) } } }))
     .toThrow("AMBIGUOUS");
@@ -485,4 +496,142 @@ it("E5 actual continuation FAIL is preserved in evidence and prevents the next c
   expect(await smoke.runCases([{ name: "E5", gate: "core", run: async () => smoke.assessContinuation(c, references) },
     { name: "not run", run: next }], record)).toBe(false);
   expect(record.mock.calls[0][0].status).toBe("FAIL"); expect(next).not.toHaveBeenCalled();
+});
+
+const emptyPayloadSha = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+const jsonSha = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
+function referenceFixture() {
+  const rows = ["heatmap", "bubble"].flatMap(layer => continuationFixture(layer).references.map(r => ({
+    kind: "draw", canvasId: layer === "heatmap" ? 1 : 2, tokenRevision: r.revision, lost: false, ...r,
+    sha256: createHash("sha256").update(new Uint8Array(r.bytes).fill(r.revision)).digest("hex"),
+  })));
+  Object.assign(rows.find(r => r.layer === "bubble" && r.revision === 2)!,
+    { vertices: 0, bytes: 0, sha256: emptyPayloadSha });
+  const report = { status: "PASS", control: { phase: { rows } } };
+  return { report, rows, pin: jsonSha(report) };
+}
+it("R2 accepts the unique semantically permitted empty reference and fixed nonempty geometry", () => {
+  const { report, pin } = referenceFixture(), refs = smoke.continuationReferences(report, pin);
+  expect(refs).toHaveLength(14);
+  expect(refs.filter((r: { bytes: number }) => r.bytes === 0))
+    .toEqual([{ layer: "bubble", revision: 2, bytes: 0, vertices: 0, sha256: emptyPayloadSha }]);
+  expect(createHash("sha256").update(new Uint8Array()).digest("hex")).toBe(emptyPayloadSha);
+  expect(refs.filter((r: { bytes: number }) => r.bytes > 0)).toHaveLength(13);
+});
+const invalidReference: [string, Record<string, unknown>, boolean][] = [
+  ["negative vertices", { vertices: -6 }, false],
+  ["negative bytes", { bytes: -312 }, false],
+  ["NaN vertices", { vertices: NaN }, false],
+  ["NaN bytes", { bytes: NaN }, false],
+  ["missing vertices", { vertices: undefined }, false],
+  ["missing bytes", { bytes: undefined }, false],
+  ["fractional vertices", { vertices: 6.5 }, false],
+  ["fractional bytes", { bytes: 312.5 }, false],
+  ["zero vertices with nonzero bytes", { vertices: 0 }, false],
+  ["zero bytes with nonzero vertices", { bytes: 0 }, false],
+  ["wrong stride", { bytes: 192 }, false],
+  ["wrong empty SHA", { sha256: "a".repeat(64) }, true],
+  ["missing SHA", { sha256: undefined }, true],
+  ["noninteger zero", { vertices: "0" }, true],
+  ["wrong nonempty SHA", { sha256: "a".repeat(64) }, false],
+  ["empty hash with nonempty geometry", { sha256: emptyPayloadSha }, false],
+  ["empty required-nonempty revision", { vertices: 0, bytes: 0, sha256: emptyPayloadSha }, false],
+  ["wrong revision", { revision: 9 }, false],
+  ["wrong layer", { layer: "delta" }, false],
+  ["invalid Canvas identifier", { canvasId: 0 }, false],
+  ["wrong token revision", { tokenRevision: 77 }, false],
+  ["lost source", { lost: true }, false],
+];
+for (const [name, patch, empty] of invalidReference) {
+  it(`R2 rejects ${name} without weakening the reference pin`, () => {
+    const { report, rows, pin } = referenceFixture();
+    Object.assign(rows.find(r => r.layer === "bubble" && r.revision === (empty ? 2 : 5))!, patch);
+    expect(() => smoke.continuationReferences(report, pin)).toThrow();
+  });
+}
+it("R2 rejects reference duplication and missing references even when content is self-consistent", () => {
+  const { report, rows } = referenceFixture(); rows.push({ ...rows[0] });
+  expect(() => smoke.continuationReferences(report, jsonSha(report))).toThrow("AMBIGUOUS");
+  rows.pop(); rows.shift();
+  expect(() => smoke.continuationReferences(report, jsonSha(report))).toThrow("AMBIGUOUS");
+});
+it("R2 production reference pin cannot be replaced by an artificial matching payload", () => {
+  expect(() => smoke.continuationReferences(referenceFixture().report)).toThrow("CONTENT_HASH");
+});
+function emptyContinuationFixture() {
+  const { c, references } = continuationFixture("bubble", "A");
+  Object.assign(references[0], { bytes: 0, vertices: 0, sha256: emptyPayloadSha });
+  for (const row of c.restored.rows) if (row.kind === "draw" || row.kind === "upload")
+    Object.assign(row, { bytes: 0, sha256: emptyPayloadSha, ...(row.kind === "draw" ? { vertices: 0 } : {}) });
+  return { c, references };
+}
+it("R2 empty native replay still requires observed clear, actual zero upload and zero-vertex draw", () => {
+  const { c, references } = emptyContinuationFixture();
+  expect(smoke.assessContinuation(c, references).status).toBe("PASS");
+  expect(c.restored.rows.filter(r => r.kind === "draw")).toHaveLength(1);
+  expect(c.restored.rows.find(r => r.kind === "draw")!.vertices).toBe(0);
+  expect(c.followups.map(s => s.source.revision)).toEqual([3, 4, 5, 6, 7, 8]);
+});
+for (const kind of ["upload", "clear", "clearColor", "draw"]) {
+  it(`R2 does not mistake absent ${kind} for an empty native frame`, () => {
+    const { c, references } = emptyContinuationFixture();
+    c.restored.rows = c.restored.rows.filter(r => r.kind !== kind);
+    expect(smoke.assessContinuation(c, references).status).toBe("FAIL");
+  });
+}
+it("R2 empty payload does not hide retained visible pixels", () => {
+  const { c, references } = emptyContinuationFixture(); c.restored.emptyPixels.rgba[3] = 255;
+  expect(smoke.assessContinuation(c, references)).toMatchObject({ status: "FAIL",
+    reason: expect.stringContaining("EMPTY_NOT_TRANSPARENT") });
+});
+it("R2 rejects an upload silently reused from a previous draw", () => {
+  const { c, references } = emptyContinuationFixture();
+  c.restored.rows.find(r => r.kind === "draw")!.uploadSerial = 99;
+  expect(smoke.assessContinuation(c, references).status).toBe("FAIL");
+});
+for (const revision of [5, 6, 7, 8]) {
+  it(`R2 missing real draw at continued revision ${revision} remains FAIL`, () => {
+    const { c, references } = emptyContinuationFixture();
+    const frame = c.followups.find(s => s.source.revision === revision)!;
+    frame.rows = frame.rows.filter(r => r.kind !== "draw");
+    expect(smoke.assessContinuation(c, references)).toMatchObject({ status: "FAIL",
+      reason: expect.stringContaining("DRAW_MISSING") });
+  });
+}
+it("R2 observer independently records clear, empty transfer, zero draw and transparent framebuffer samples", async () => {
+  const reads = vi.fn();
+  class GL {
+    ARRAY_BUFFER = 34962; COLOR_BUFFER_BIT = 16384; SCISSOR_TEST = 3089;
+    READ_FRAMEBUFFER_BINDING = 1; DRAW_FRAMEBUFFER_BINDING = 2; COLOR_WRITEMASK = 3;
+    RGBA = 6408; UNSIGNED_BYTE = 5121;
+    createBuffer() { return {}; } deleteBuffer() {} bufferData(_target: number, _data: Float32Array) {}
+    drawArrays(_mode: number, _offset: number, _count: number) {} clearColor(..._color: number[]) {} clear(_mask: number) {}
+    isContextLost() { return false; } isEnabled(_parameter: number) { return false; }
+    getParameter(parameter: number) { return parameter === this.COLOR_WRITEMASK ? [true, true, true, true] : null; }
+    readPixels(...args: unknown[]) { reads(...args); } getError() { return 0; }
+  }
+  const gl = new GL();
+  class Canvas {
+    dataset = { revision: "2" }; classList = { contains: (name: string) => name === "bb-canvas" };
+    width = 403; height = 324; isConnected = true;
+    getContext(_kind: string) { return gl; } addEventListener() {} removeEventListener() {}
+  }
+  const win = { requestAnimationFrame: () => 1, cancelAnimationFrame: () => {} };
+  runInNewContext(`(${smoke.installPhaseObserver.toString()})()`, {
+    window: win, HTMLCanvasElement: Canvas, WebGL2RenderingContext: GL, performance, crypto: webcrypto, structuredClone,
+  });
+  const observer = (win as typeof win & { __canvasPhaseA: {
+    snapshot(): Promise<{ rows: Record<string, unknown>[] }>;
+    emptyPixels(layer: string): { rgba: number[]; sampleCount: number }; dispose(): void;
+  } }).__canvasPhaseA;
+  try {
+    new Canvas().getContext("webgl2"); gl.clearColor(0, 0, 0, 0); gl.clear(16384);
+    gl.bufferData(34962, new Float32Array()); gl.drawArrays(4, 0, 0);
+    const s = await observer.snapshot();
+    expect(s.rows.map(r => r.kind)).toEqual(["clearColor", "clear", "upload", "draw"]);
+    expect(s.rows[2]).toMatchObject({ bytes: 0, sha256: emptyPayloadSha, uploadSerial: 1 });
+    expect(s.rows[3]).toMatchObject({ vertices: 0, bytes: 0, sha256: emptyPayloadSha, uploadSerial: 1 });
+    expect(observer.emptyPixels("bubble")).toMatchObject({ sampleCount: 5, rgba: Array(20).fill(0) });
+    expect(reads).toHaveBeenCalledTimes(5);
+  } finally { observer.dispose(); }
 });

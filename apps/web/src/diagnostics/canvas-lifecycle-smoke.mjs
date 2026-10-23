@@ -88,16 +88,31 @@ export function installContinuationInputGate() {
     dispose() { disposed = true; window.setInterval = saved; },
   };
 }
-export function continuationReferences(report) {
+const R3_REFERENCE_JSON_SHA = "807fd3037e778918e6174a23f351fb14568f25964ce768e8c1d68878cda6d1fe";
+const EMPTY_PAYLOAD_SHA = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+// The production diagnostic always uses the frozen R3 content pin. Artificial
+// unit fixtures may supply their own independently fixed content digest.
+export function continuationReferences(report, expectedDigest = R3_REFERENCE_JSON_SHA) {
   assert.equal(report.status, "PASS", "R3_REFERENCE_NOT_PASS");
   const refs = report.control?.phase?.rows?.filter(r => r.kind === "draw" &&
     LAYERS.includes(r.layer) && r.revision >= 2 && r.revision <= 8);
   assert(Array.isArray(refs), "R3_GPU_REFERENCE_MISSING");
   for (const layer of LAYERS) for (let revision = 2; revision <= 8; revision++) {
     const matches = refs.filter(r => r.layer === layer && r.revision === revision);
-    assert(matches.length === 1 && /^[a-f0-9]{64}$/.test(matches[0].sha256) &&
-      matches[0].bytes > 0 && matches[0].vertices > 0, "R3_GPU_REFERENCE_AMBIGUOUS");
+    assert(matches.length === 1, "R3_GPU_REFERENCE_AMBIGUOUS");
+    const r = matches[0], stride = layer === "heatmap" ? 32 : 52;
+    assert(Number.isSafeInteger(r.canvasId) && r.canvasId > 0 && r.tokenRevision === revision &&
+      r.lost === false, "R3_GPU_REFERENCE_IDENTITY");
+    assert(Number.isSafeInteger(r.vertices) && r.vertices >= 0 && Number.isSafeInteger(r.bytes) &&
+      r.bytes >= 0 && r.vertices % 6 === 0 &&
+      BigInt(r.bytes) === BigInt(r.vertices) * BigInt(stride), "R3_GPU_REFERENCE_GEOMETRY");
+    assert(/^[a-f0-9]{64}$/.test(r.sha256), "R3_GPU_REFERENCE_HASH");
+    if (r.vertices === 0) assert(layer === "bubble" && revision === 2 && r.sha256 === EMPTY_PAYLOAD_SHA,
+      "R3_GPU_REFERENCE_UNEXPECTED_EMPTY");
+    else assert(r.sha256 !== EMPTY_PAYLOAD_SHA, "R3_GPU_REFERENCE_NONEMPTY_HASH");
   }
+  assert(/^[a-f0-9]{64}$/.test(expectedDigest) && digest(JSON.stringify(report)) === expectedDigest,
+    "R3_REFERENCE_CONTENT_HASH");
   return refs.map(({ layer, revision, bytes, vertices, sha256 }) => ({ layer, revision, bytes, vertices, sha256 }));
 }
 export function assessContinuation(c, references) {
@@ -131,6 +146,28 @@ export function assessContinuation(c, references) {
       assert(r.tokenRevision === (native ? null : revision), "NATIVE_VS_RAF_REVISION");
       assert(r.bytes === ref.bytes && r.vertices === ref.vertices && r.sha256 === ref.sha256,
         "CONTINUATION_GPU_MISMATCH");
+      const uploads = s.rows.filter(r => r.kind === "upload");
+      assert(uploads.length === 1 && Number.isSafeInteger(r.uploadSerial) && r.uploadSerial > 0 &&
+        uploads[0].uploadSerial === r.uploadSerial && uploads[0].canvasId === id &&
+        uploads[0].revision === revision && !uploads[0].lost &&
+        uploads[0].bytes === ref.bytes && uploads[0].sha256 === ref.sha256, "CONTINUATION_UPLOAD_MISSING_OR_MISMATCH");
+      const clears = s.rows.filter(r => r.kind === "clear"), colors = s.rows.filter(r => r.kind === "clearColor");
+      assert(clears.length === 1 && colors.length === 1 && clears[0].canvasId === id &&
+        clears[0].revision === revision && !clears[0].lost && clears[0].mask === 16384 &&
+        colors[0].canvasId === id && colors[0].revision === revision &&
+        clears[0].scissor === false &&
+        JSON.stringify(colors[0].rgba) === JSON.stringify(layer === "bubble" ? [0, 0, 0, 0] : [8 / 255, 9 / 255, 13 / 255, 1]) &&
+        s.rows.indexOf(colors[0]) < s.rows.indexOf(clears[0]) &&
+        s.rows.indexOf(clears[0]) < s.rows.indexOf(uploads[0]) &&
+        s.rows.indexOf(uploads[0]) < s.rows.indexOf(r), "CONTINUATION_CLEAR_MISSING_OR_ORDER");
+      if (ref.bytes === 0) {
+        assert(layer === "bubble" && revision === 2 && ref.sha256 === EMPTY_PAYLOAD_SHA,
+          "CONTINUATION_UNEXPECTED_EMPTY");
+        const p = s.emptyPixels;
+        assert(p?.canvasId === id && p.revision === revision && p.defaultFramebuffer &&
+          p.colorMask?.every(Boolean) && p.error === 0 && p.rgba?.length === 20 &&
+          p.rgba.every(v => v === 0), "CONTINUATION_EMPTY_NOT_TRANSPARENT");
+      }
       if (!native) {
         const reserved = s.rows.filter(r => r.kind === "reserve"), executed = s.rows.filter(r => r.kind === "execute");
         assert(reserved.length === 1 && executed.length === 1 &&
@@ -176,7 +213,9 @@ export function continuationCases({ evaluate, snap, click, wait, references }) {
         const s = await snap(), rows = s.phase.rows.slice(cursor).filter(r => r.layer === layer);
         cursor = s.phase.rows.length;
         const canvas = s.phase.contexts.find(c => c.layer === layer && c.connected);
-        return { canvas, rows, source: s.progress?.status ?? null, raf: s.phase.totals[layer], gl: s.gl.totals[layer],
+        const emptyPixels = layer === "bubble" && canvas?.revision === 2 && !canvas.lost
+          ? await evaluate(`window.__canvasPhaseA.emptyPixels("${layer}")`) : null;
+        return { canvas, rows, emptyPixels, source: s.progress?.status ?? null, raf: s.phase.totals[layer], gl: s.gl.totals[layer],
           size: s.layers.find(c => c.layer === layer), inputGate: s.inputGate,
           release: resourceReleaseGate(s.resources, s.ownership),
           limited: s.phase.limited || s.gl.limited || !!s.phase.unrecorded };
@@ -365,7 +404,7 @@ export function installPhaseObserver() {
     if (args[0] === "webgl2" && gl && layer && !contexts.has(gl)) {
       if (contexts.size >= 16) { limited = true; return gl; }
       const c = { canvas: this, layer, id: ++serial, buffers: new Set(), invalidated: 0,
-        created: 0, deleted: 0, lost: false, upload: null, loss: 0, restore: 0 };
+         created: 0, deleted: 0, lost: false, upload: null, uploadSerial: 0, loss: 0, restore: 0 };
       contexts.set(gl, c);
       c.onLost = () => {
         c.lost = true; c.loss++; c.invalidated += c.buffers.size; c.buffers.clear();
@@ -380,18 +419,25 @@ export function installPhaseObserver() {
     }
     return gl;
   };
-  for (const name of ["createBuffer", "deleteBuffer", "bufferData", "drawArrays"]) {
+  for (const name of ["createBuffer", "deleteBuffer", "bufferData", "drawArrays", "clearColor", "clear"]) {
     saved[name] = proto[name];
     proto[name] = function (...args) {
       const result = saved[name].apply(this, args), c = contexts.get(this);
       if (!c) return result;
       if (name === "createBuffer" && result) { c.buffers.add(result); c.created++; }
       if (name === "deleteBuffer" && args[0] && c.buffers.delete(args[0])) c.deleted++;
+      if (name === "clearColor" || name === "clear") push({
+        kind: name, layer: c.layer, canvasId: c.id, revision: revision(c.canvas), lost: this.isContextLost(),
+        ...(name === "clear" ? { mask: args[0], scissor: this.isEnabled(this.SCISSOR_TEST) } : { rgba: [...args] }),
+      });
       if (name === "bufferData" && args[0] === 34962 && ArrayBuffer.isView(args[1])) {
         const data = args[1];
         if (data.byteLength > 262144 || pending.size >= 8) { limited = true; unrecorded++; return result; }
         const bytes = new Uint8Array(data.buffer, data.byteOffset, data.byteLength).slice();
         const upload = c.upload = { bytes: bytes.byteLength, sha256: null };
+        const uploadSerial = ++c.uploadSerial;
+        push({ kind: "upload", layer: c.layer, canvasId: c.id, revision: revision(c.canvas),
+          uploadSerial, lost: this.isContextLost(), upload });
         const job = crypto.subtle.digest("SHA-256", bytes).then(hash => {
           upload.sha256 = [...new Uint8Array(hash)].map(v => v.toString(16).padStart(2, "0")).join("");
         }).catch(() => { limited = true; }).finally(() => pending.delete(job));
@@ -400,7 +446,8 @@ export function installPhaseObserver() {
       if (name === "drawArrays") {
         const token = window.__orderflowMockDiagnostics?.activeDraw();
         push({ kind: "draw", layer: c.layer, canvasId: c.id, revision: revision(c.canvas),
-          tokenRevision: token?.revision ?? null, vertices: args[2], lost: this.isContextLost(), upload: c.upload });
+          tokenRevision: token?.revision ?? null, vertices: args[2], lost: this.isContextLost(),
+          uploadSerial: c.uploadSerial, upload: c.upload });
       }
       return result;
     };
@@ -440,6 +487,23 @@ export function installPhaseObserver() {
           lost: c.lost, loss: c.loss, restore: c.restore,
         })) };
     },
+    // Read-only observations of the real default framebuffer. Five samples are
+    // reported as samples, not a full-frame pixel comparison.
+    emptyPixels(layer) {
+      const entry = [...contexts.entries()].find(([, c]) => c.layer === layer && c.canvas.isConnected);
+      if (!entry) return null;
+      const [gl, c] = entry, w = c.canvas.width, h = c.canvas.height, rgba = [];
+      const defaultFramebuffer = gl.getParameter(gl.READ_FRAMEBUFFER_BINDING) === null &&
+        gl.getParameter(gl.DRAW_FRAMEBUFFER_BINDING) === null;
+      if (gl.isContextLost() || !defaultFramebuffer) return { canvasId: c.id, defaultFramebuffer, lost: true };
+      for (const [x, y] of [[0, 0], [w - 1, 0], [0, h - 1], [w - 1, h - 1], [Math.floor(w / 2), Math.floor(h / 2)]]) {
+        const pixel = new Uint8Array(4);
+        gl.readPixels(x, y, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, pixel); rgba.push(...pixel);
+      }
+      return { canvasId: c.id, revision: revision(c.canvas), defaultFramebuffer,
+        scissor: gl.isEnabled(gl.SCISSOR_TEST), colorMask: [...gl.getParameter(gl.COLOR_WRITEMASK)],
+        rgba, error: gl.getError(), sampleCount: 5 };
+    },
     // Actual extension invocation is an intervention, separate from snapshots.
     intervene(layer, action) {
       const entry = [...contexts.entries()].find(([, c]) => c.layer === layer && c.canvas.isConnected);
@@ -451,7 +515,7 @@ export function installPhaseObserver() {
     },
     dispose() {
       HTMLCanvasElement.prototype.getContext = saved.getContext;
-      for (const name of ["createBuffer", "deleteBuffer", "bufferData", "drawArrays"]) proto[name] = saved[name];
+      for (const name of ["createBuffer", "deleteBuffer", "bufferData", "drawArrays", "clearColor", "clear"]) proto[name] = saved[name];
       window.requestAnimationFrame = saved.raf; window.cancelAnimationFrame = saved.cancel;
       for (const c of contexts.values()) {
         c.canvas.removeEventListener("webglcontextlost", c.onLost);
