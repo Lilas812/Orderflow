@@ -2,7 +2,7 @@
 // Offline codec capacity: node .../baseline13-driver.mjs [new output.json] capacity
 // Legacy browser preflight entry remains separate; never invoked by capacity/tests.
 import { spawn } from "node:child_process";
-import { mkdtemp, mkdir, rm, writeFile, readdir, readFile } from "node:fs/promises";
+import { mkdtemp, mkdir, rm, writeFile, readdir, readFile, lstat } from "node:fs/promises";
 import { resolve, dirname } from "node:path";
 import { createHash } from "node:crypto";
 import assert from "node:assert/strict";
@@ -80,6 +80,290 @@ export function verifyCompactMeaning(wire, reference) {
     comparisonMs: performance.now() - started };
 }
 
+const EVIDENCE_LIMIT = 2 * 1024 * 1024;
+const ROW_KEYS = ["stage", "at", "ms", "revision", "seq", "layer", "a", "b", "c"];
+const digest = text => createHash("sha256").update(text).digest("hex");
+
+/** Normalized legacy JSON, not native undefined/Map/BigInt identity.
+ * Only numeric diagnostic rows are replaced; every other field stays in body.
+ */
+export function encodeEvidence(value) {
+  const original = JSON.stringify(value), body = JSON.parse(original), tables = [];
+  function walk(v, path) {
+    if (!v || typeof v !== "object") return;
+    if (!Array.isArray(v) && Object.hasOwn(v, "allocatedBytes") && Array.isArray(v.rows)) {
+      const rows = v.rows;
+      assert(rows.length <= 2048, "EVIDENCE_ROW_LIMIT");
+      const tuples = rows.map(row => {
+        assert.deepEqual(Object.keys(row), ROW_KEYS, "EVIDENCE_ROW_SCHEMA");
+        return ROW_KEYS.map(k => row[k]);
+      });
+      tables.push({ path: [...path, "rows"], count: rows.length, sha256: digest(JSON.stringify(rows)), tuples });
+      v.rows = null;
+    }
+    for (const key of Object.keys(v)) walk(v[key], [...path, key]);
+  }
+  walk(body, []);
+  return JSON.stringify({ version: 1, serializer: "legacy-json-v1", rowKeys: ROW_KEYS,
+    legacyBytes: Buffer.byteLength(original), sha256: digest(original), tables, body });
+}
+
+export function decodeEvidence(wire, reference) {
+  const p = JSON.parse(wire);
+  assert.equal(JSON.stringify(p), wire, "EVIDENCE_NONCANONICAL");
+  assert.deepEqual(Object.keys(p), ["version", "serializer", "rowKeys", "legacyBytes", "sha256", "tables", "body"]);
+  assert(p.version === 1 && p.serializer === "legacy-json-v1", "EVIDENCE_VERSION");
+  assert.deepEqual(p.rowKeys, ROW_KEYS, "EVIDENCE_ROW_SCHEMA");
+  assert(Array.isArray(p.tables), "EVIDENCE_TABLES");
+  const paths = new Set();
+  for (const t of p.tables) {
+    assert.deepEqual(Object.keys(t), ["path", "count", "sha256", "tuples"]);
+    assert(Array.isArray(t.path) && t.path.length > 0 && t.path.at(-1) === "rows", "EVIDENCE_PATH");
+    const key = JSON.stringify(t.path); assert(!paths.has(key), "EVIDENCE_DUPLICATE_PATH"); paths.add(key);
+    let parent = p.body;
+    for (const component of t.path.slice(0, -1)) {
+      assert(typeof component === "string" && parent && Object.hasOwn(parent, component), "EVIDENCE_PATH");
+      parent = parent[component];
+    }
+    assert(parent && Object.hasOwn(parent, "allocatedBytes") && parent.rows === null, "EVIDENCE_PLACEHOLDER");
+    assert(Number.isSafeInteger(t.count) && t.count >= 0 && t.count <= 2048 &&
+      Array.isArray(t.tuples) && t.tuples.length === t.count, "EVIDENCE_ROW_COUNT");
+    const rows = t.tuples.map(tuple => {
+      assert(Array.isArray(tuple) && tuple.length === ROW_KEYS.length, "EVIDENCE_ROW_ARITY");
+      return Object.fromEntries(ROW_KEYS.map((k, i) => [k, tuple[i]]));
+    });
+    assert.equal(digest(JSON.stringify(rows)), t.sha256, "EVIDENCE_ROW_HASH");
+    parent.rows = rows;
+  }
+  const text = JSON.stringify(p.body);
+  assert.equal(Buffer.byteLength(text), p.legacyBytes, "EVIDENCE_BYTES");
+  assert.equal(digest(text), p.sha256, "EVIDENCE_HASH");
+  assert.equal(encodeEvidence(p.body), wire, "EVIDENCE_SCHEMA_OR_TABLE_ORDER");
+  if (reference !== undefined) {
+    const trusted = JSON.stringify(reference);
+    assert(sameOrderedJson(p.body, JSON.parse(trusted)) && text === trusted, "EVIDENCE_REFERENCE");
+    assert.equal(digest(trusted), p.sha256, "EVIDENCE_REFERENCE_HASH");
+  }
+  return { value: p.body, text, sha256: p.sha256 };
+}
+
+export function boundedEvidence(value) {
+  const wire = encodeEvidence(value);
+  decodeEvidence(wire, value);
+  assert(Buffer.byteLength(wire + "\n") <= EVIDENCE_LIMIT, "REPORT_SIZE_LIMIT");
+  return wire + "\n";
+}
+
+export function comparisonPlan(workload, phase) {
+  assert(["preflight", "formal"].includes(phase), "COMPARISON_PHASE");
+  const cases = phase === "formal" ? ["cells128", "cells512"] : [workload];
+  assert(phase !== "formal" || workload === "both", "FORMAL_REQUIRES_BOTH_CASES");
+  cases.forEach(browserCasePolicy);
+  return cases.flatMap(w => Array.from({ length: phase === "formal" ? 3 : 1 }, (_, i) =>
+    ["control", "on"].map(mode => ({ id: `${w}-${i + 1}-${mode}`, workload: w, mode, repetition: i + 1 }))).flat());
+}
+
+export function timeStats(samples) {
+  assert(samples.every(v => typeof v === "number" && Number.isFinite(v)), "TIME_SAMPLE");
+  const a = [...samples].sort((x, y) => x - y), n = a.length;
+  if (!n) return { status: "UNKNOWN", n: 0 };
+  return { status: "MEASURED", n, mean: a.reduce((s, v) => s + v, 0) / n,
+    median: n % 2 ? a[(n - 1) / 2] : (a[n / 2 - 1] + a[n / 2]) / 2,
+    p95: a[Math.ceil(n * .95) - 1], max: a[n - 1],
+    note: "nearest-rank p95; finite samples, not a stable tail-latency guarantee" };
+}
+
+export function samplePhase(row) {
+  // React c is its explicit mount flag; all other rows use public revision.
+  return row.revision <= 0 || (row.stage === "react" && row.c === 1)
+    ? "initialization" : "steady";
+}
+
+export function timingSamples(runs) {
+  const groups = {};
+  const add = (r, name, value) => {
+    assert(Number.isFinite(value) && (value >= 0 || name.endsWith("TimerDelay")), `INVALID_TIME:${name}`);
+    (groups[`${samplePhase(r)}:${name}`] ??= []).push(value);
+  };
+  for (const run of runs) {
+    if (run.mode !== "on" || !run.telemetry) continue;
+    for (const r of run.telemetry.rows) {
+      if (r.stage === "ingest" || r.stage === "publish")
+        assert(Number.isFinite(r.a) && Number.isFinite(r.b), "TIMER_TIMESTAMP_UNKNOWN");
+      if (r.stage === "ingest") { add(r, "ingestSync", r.ms); add(r, "inputTimerDelay", r.b - r.a); }
+      if (r.stage === "publish") add(r, "noticeTimerDelay", r.b - r.a);
+      if (r.stage === "frame") add(r, r.a === 1 ? "frameHIT" : "frameMISS", r.ms);
+      if (r.stage === "react") add(r, `react:${r.layer}`, r.ms);
+      if (r.stage === "draw") add(r, `drawCPU:${r.layer}`, r.ms);
+      if (r.stage === "raf") add(r, `rAFWait:${r.layer}`, r.ms);
+    }
+  }
+  return groups;
+}
+
+export function summarizeRuns(runs) {
+  const summarize = subset => {
+    const samples = timingSamples(subset);
+    const names = ["ingestSync", "inputTimerDelay", "noticeTimerDelay", "frameMISS", "frameHIT",
+      ...["root", "heatmap", "bubble", "delta", "vp"].map(l => `react:${l}`),
+      ...["heatmap", "bubble", "delta"].map(l => `drawCPU:${l}`),
+      ...["heatmap", "bubble"].map(l => `rAFWait:${l}`)];
+    for (const phase of ["initialization", "steady"]) for (const name of names) samples[`${phase}:${name}`] ??= [];
+    return { times: Object.fromEntries(Object.entries(samples).map(([k, v]) => [k, timeStats(v)])),
+      phaseDefinition: "initialization: revision <= 0 or explicit React mount c=1; steady: other positive revisions",
+      timerDefinition: "signed entered-minus-scheduled offset, including early (<0) callbacks; no clamping",
+      missingTimes: "UNKNOWN, never zero; especially OFF internals and absent frame HITs",
+      completionMs: timeStats(subset.map(r => r.completionObservedMs).filter(Number.isFinite)),
+      completionDefinition: "Includes 300ms input cadence and driver DOM polling; not pure processing throughput",
+      glCountTotals: Object.fromEntries(["heatmap", "bubble"].map(layer => [layer,
+        Object.fromEntries(["draws", "vertices", "uploads", "bytes"].map(key => [key,
+          subset.length && subset.every(r => Number.isFinite(r.gl?.totals?.[layer]?.[key]))
+            ? subset.reduce((n, r) => n + r.gl.totals[layer][key], 0) : "UNKNOWN"]))])),
+      gl: subset.map(r => ({ mode: r.mode, observation: r.gl?.observation ?? "PERFORMANCE_OBSERVER",
+        performanceComparable: r.mode === "on", totals: r.gl?.totals ?? "UNKNOWN",
+        phases: r.mode === "on" && r.gl?.frames ? Object.fromEntries(["initialization", "steady"].map(phase => [phase,
+          Object.fromEntries(["heatmap", "bubble"].map(layer => [layer,
+            Object.fromEntries(["draws", "vertices", "uploads", "bytes"].map(key => [key,
+              r.gl.frames.filter(f => (f.revision <= 0 ? "initialization" : "steady") === phase)
+                .reduce((n, f) => n + f.layers[layer][key], 0)]))]))])) : "UNKNOWN" })) };
+  };
+  const cases = Object.fromEntries(["cells128", "cells512"].map(w => [w, {
+      on: summarize(runs.filter(r => r.workload === w && r.mode === "on" && !r.failed)),
+      off: summarize(runs.filter(r => r.workload === w && r.mode !== "on" && !r.failed)) }]));
+  return { trials: runs.map(r => ({ workload: r.workload, mode: r.mode, repetition: r.repetition, ...summarize([r]) })),
+    cases, pooling: "Case times pool all successful ON samples; inspect individual trials too",
+    meanRatios512over128: Object.fromEntries(Object.keys(cases.cells128.on.times).map(k => {
+      const a = cases.cells128.on.times[k], b = cases.cells512.on.times[k];
+      return [k, a.status === "MEASURED" && b?.status === "MEASURED" && a.mean > 0 ? b.mean / a.mean : "UNKNOWN"];
+    })),
+    gpuMs: "UNKNOWN", presentationAt: "UNKNOWN", physicalGPU: "UNKNOWN", heap: "UNKNOWN", rss: "UNKNOWN", gc: "UNKNOWN" };
+}
+
+export function validateFormalTrial(t, job) {
+  assert(!t.failed && !["FAIL", "HOLD", "UNKNOWN"].includes(t.status), "TRIAL_NOT_PASS");
+  assert.equal(t.workload, job.workload); assert.equal(t.mode, job.mode); assert.equal(t.repetition, job.repetition);
+  assert.deepEqual(t.counts, { inputs: 128, accepted: 128, duplicate: 0, rejected: 0 });
+  assert.equal(t.revision, 128); assert(t.layerRevisions.length === 6 && t.layerRevisions.every(r => r === 128));
+  assert(t.golden.length === 8 && t.golden.every(g => g.ok), "GOLDEN_MISMATCH");
+  assert(typeof t.meaningHash === "string" && /^[a-f0-9]{64}$/.test(t.meaningHash), "MISSING_HASH");
+  assert(t.meaningEncoding.wireBytes <= 65536, "DIAGNOSTIC_SEMANTIC_LIMIT");
+  assert.equal(t.afterReleaseGate?.status, "PASS", "RESOURCE_GATE");
+  assert(t.chromiumCleanup?.live.length === 0 && t.chromiumCleanup.zombies.length === 0 &&
+    t.chromiumCleanup.profileRemoved, "CHROMIUM_REMAINING");
+  assert(Object.values(t.afterReleaseGL).every(c => c.buffers === c.deletes), "BUFFER_NOT_RELEASED");
+  assert(!t.gl.limited && t.gl.unrecordedApiCalls === 0, "GL_RECORD_LIMIT");
+  for (const layer of ["heatmap", "bubble"]) {
+    assert.equal(t.viewport[layer].status, "READY");
+    assert.equal(t.gl.totals[layer].errors, 0);
+    assert(t.gl.totals[layer].loss === 0 && t.gl.totals[layer].restore === 0, "CONTEXT_EVENT_DURING_COMPARISON");
+    assert.equal(t.gl.lastDraws[layer].revision, 128);
+    assert.equal(t.gl.lastDraws[layer].vertices,
+      layer === "heatmap" ? (job.workload === "cells128" ? 128 : 512) * 6 : t.viewport.bubble.vertices);
+  }
+  if (job.mode === "on") {
+    assert(t.telemetry.sessionId === 1 && t.telemetry.dropped === 0 && !t.telemetry.saturated &&
+      t.telemetry.records < 2048 && t.telemetry.allocatedBytes === 147456, "NUMERIC_RECORD_LIMIT");
+  } else {
+    assert(t.telemetry === null && t.gl.observation === "OFF_SAFETY_ONLY", "OFF_NOT_SAFETY_ONLY");
+    assert(Object.values(t.gl.totals).every(c => c.contexts > 0 && c.errorChecks > 0 &&
+      c.cpuMs === "UNKNOWN"), "OFF_SAFETY_NOT_OBSERVED");
+  }
+}
+
+export function comparisonEnvironment(t) {
+  assert(typeof t.chromium === "string" && t.gpu?.webgl2 === true &&
+    /SwiftShader/.test(t.gpu.renderer), "ENVIRONMENT_UNKNOWN_OR_NOT_SWIFTSHADER");
+  const v = t.viewport, p = v.viewport;
+  assert(Number.isFinite(p.dpr) && p.dpr > 0, "DPR_UNKNOWN");
+  assert([v.heatmap.width, v.heatmap.height, v.bubble.width, v.bubble.height].every(x =>
+    Number.isFinite(x) && x > 0), "CANVAS_SIZE_UNKNOWN");
+  assert(t.completionLimitMs === 44400 && t.browserLimitMs === 59400, "WAIT_CONDITION_MISMATCH");
+  return JSON.stringify({ chromium: t.chromium, gpu: t.gpu, dpr: p.dpr,
+    canvas: [v.heatmap.width, v.heatmap.height, v.bubble.width, v.bubble.height],
+    bounds: p.bounds, time: p.time, price: p.price,
+    inputEveryMs: 300, completionLimitMs: t.completionLimitMs, browserLimitMs: t.browserLimitMs,
+    profiler: "same existing development React Profiler boundaries",
+    timers: "same D2 ownership observer; no forced HMR cancellation",
+    on: "v2/v3 common numeric collector; v3 semantic export outside timed samples",
+    off: "constant safety counters, not GL performance measurements" });
+}
+
+/** Injectable runner/checkpoint for offline protocol tests; no automatic retry. */
+export async function executeComparison(plan, runTrial, checkpoint) {
+  assert.deepEqual(plan, comparisonPlan("both", "formal"), "FORMAL_PLAN_INVALID");
+  const report = { phase: "formal", plan, runs: [], failure: null, status: "RUNNING" };
+  let environment;
+  for (const job of plan) {
+    let trial;
+    try {
+      trial = await runTrial({ ...job });
+      assert(trial && typeof trial === "object", "MISSING_TRIAL");
+      report.runs.push(trial);
+      validateFormalTrial(trial, job);
+      const observedEnvironment = comparisonEnvironment(trial);
+      if (environment === undefined) environment = observedEnvironment;
+      assert.equal(observedEnvironment, environment, "COMPARISON_ENVIRONMENT_MISMATCH");
+      const peers = report.runs.filter(r => r.workload === job.workload);
+      assert(peers.every(r => r.meaningHash === trial.meaningHash), "ON_OFF_MEANING_HASH_MISMATCH");
+      await checkpoint(report, trial, job);
+    } catch (error) {
+      if (!trial) report.runs.push(trial = { ...(error.partialResult ?? {}), ...job, failed: true });
+      trial.failed = true;
+      report.failure = String(error); report.status = "HOLD";
+      // Checkpoint must preserve the failed trial separately even if aggregate is full.
+      await checkpoint(report, trial, job);
+      return report;
+    }
+  }
+  report.status = "PASS";
+  return report;
+}
+
+/** Per-trial files and the all-trial aggregate EACH retain the old 2MiB file limit.
+ * On aggregate overflow a HOLD manifest references preserved trial files; it is
+ * explicitly NOT a successful complete aggregate or a bypass of that limit.
+ */
+async function formalComparison(output) {
+  const plan = comparisonPlan("both", "formal"), trialDir = output + ".trials", refs = [];
+  try { await lstat(output); throw Error("OUTPUT_ALREADY_EXISTS"); }
+  catch (e) { if (e.code !== "ENOENT") throw e; }
+  await mkdir(trialDir, { recursive: true });
+  assert.equal((await readdir(trialDir)).length, 0, "TRIAL_DIRECTORY_NOT_EMPTY");
+  let reference, lastWire;
+  const report = await executeComparison(plan, async job => {
+    if (job.workload === "cells512" && !reference) reference = await capacityOnly(undefined, true);
+    return browserRun(job.mode, job.repetition, false, job.workload, reference);
+  }, async (r, trial, job) => {
+    const file = `${job.id}-${r.failure ? "failed" : "completed"}.json`;
+    let trialWire;
+    try { trialWire = boundedEvidence({ job, trial, failure: r.failure }); }
+    catch (e) {
+      if (!r.failure) throw e;
+      trialWire = boundedEvidence({ status: "HOLD", job, failure: r.failure, fullTrialAvailable: false,
+        note: "Trial itself cannot be saved losslessly within its file budget. No successful evidence claim.",
+        normalizedTrialSha256: digest(JSON.stringify(trial)) });
+    }
+    await writeFile(resolve(trialDir, file), trialWire, { flag: "wx" });
+    refs.push({ file, bytes: Buffer.byteLength(trialWire), sha256: digest(trialWire) });
+    r.evidenceLimits = { perTrialFile: EVIDENCE_LIMIT, completeAggregateFile: EVIDENCE_LIMIT,
+      directorySumIsNotTheAggregateLimit: true };
+    r.trialFiles = refs;
+    r.summary = summarizeRuns(r.runs.filter(s => !s.failed));
+    r.summary.failedTrialsNotUsedForCompleteStatistics = r.runs.filter(s => s.failed).map(s => ({
+      workload: s.workload, mode: s.mode, repetition: s.repetition, failure: r.failure }));
+    try { lastWire = boundedEvidence(r); }
+    catch (e) {
+      if (!r.failure) throw e;
+      lastWire = boundedEvidence({ status: "HOLD", failure: r.failure, aggregateAvailable: false,
+        note: "Complete aggregate exceeded capacity or was invalid. No trial omitted from the preserved file index.",
+        plan, trialFiles: refs });
+    }
+  });
+  if (report.status === "PASS") lastWire = boundedEvidence(report);
+  await writeFile(output, lastWire, { flag: "wx" });
+  if (report.failure) { process.exitCode = 1; console.error(report.failure); }
+}
+
 export function browserCasePolicy(workload) {
   assert(["baseline13", "cells128", "cells512"].includes(workload), "CASE_NOT_APPROVED_FOR_THIS_FUNCTIONAL_VERIFICATION");
   return { version: workload === "baseline13" ? 1 : workload === "cells128" ? 2 : 3,
@@ -103,6 +387,64 @@ export function resolveBrowserMeaning(workload, wire, reference) {
   assert(bytes <= 65536, "DIAGNOSTIC_SEMANTIC_LIMIT");
   return { text: wire, value: JSON.parse(wire), wireBytes: bytes, legacyBytes: bytes,
     sha256: createHash("sha256").update(wire).digest("hex"), verified: null };
+}
+
+/** OFF only: constant counters, no performance.now, active token, row log or extra GL calls. */
+export function installSafetyGLObserver() {
+  const proto = WebGL2RenderingContext.prototype, saved = new Map(), contexts = new WeakMap(), listeners = [];
+  const totals = Object.fromEntries(["heatmap", "bubble"].map(layer => [layer, {
+    contexts: 0, draws: 0, vertices: 0, uploads: 0, bytes: 0, buffers: 0, deletes: 0,
+    errors: 0, errorChecks: 0, loss: 0, restore: 0, cpuMs: "UNKNOWN",
+  }]));
+  const lastDraws = {};
+  let limited = false;
+  const nativeGetContext = HTMLCanvasElement.prototype.getContext;
+  HTMLCanvasElement.prototype.getContext = function (...args) {
+    const gl = nativeGetContext.apply(this, args);
+    const layer = this.classList.contains("hm-canvas") ? "heatmap" : this.classList.contains("bb-canvas") ? "bubble" : null;
+    if (args[0] === "webgl2" && gl && layer && !contexts.has(gl)) {
+      if (listeners.length === 16) { limited = true; return gl; }
+      contexts.set(gl, { layer, canvas: this, uploadedBytes: 0 }); totals[layer].contexts++;
+      const lost = () => totals[layer].loss++, restored = () => totals[layer].restore++;
+      this.addEventListener("webglcontextlost", lost); this.addEventListener("webglcontextrestored", restored);
+      listeners.push([this, lost, restored]);
+    }
+    return gl;
+  };
+  for (const name of ["createBuffer", "deleteBuffer", "bufferData", "drawArrays", "getError"]) {
+    const original = proto[name]; saved.set(name, original);
+    proto[name] = function (...args) {
+      const value = original.apply(this, args), info = contexts.get(this);
+      if (!info) return value;
+      const c = totals[info.layer];
+      if (name === "createBuffer" && value) c.buffers++;
+      if (name === "deleteBuffer" && args[0]) c.deletes++;
+      if (name === "bufferData") {
+        info.uploadedBytes = typeof args[1] === "number" ? args[1] : args[1]?.byteLength ?? 0;
+        c.uploads++; c.bytes += info.uploadedBytes;
+      }
+      if (name === "drawArrays") {
+        c.draws++; c.vertices += args[2];
+        const marker = info.canvas.dataset?.revision;
+        lastDraws[info.layer] = { revision: marker !== undefined && marker !== "" ? Number(marker) : -1,
+          vertices: args[2], uploadedBytes: info.uploadedBytes, revisionSource: "CANVAS_COMMIT_MARKER" };
+      }
+      if (name === "getError") { c.errorChecks++; if (value !== 0) c.errors++; }
+      return value;
+    };
+  }
+  window.__b2gl = {
+    snapshot: () => ({ version: 0, observation: "OFF_SAFETY_ONLY", totals, lastDraws,
+      limited, unrecordedApiCalls: limited ? 1 : 0 }),
+    dispose() {
+      for (const [name, fn] of saved) proto[name] = fn;
+      HTMLCanvasElement.prototype.getContext = nativeGetContext;
+      for (const [canvas, lost, restored] of listeners) {
+        canvas.removeEventListener("webglcontextlost", lost); canvas.removeEventListener("webglcontextrestored", restored);
+      }
+      listeners.length = 0; saved.clear(); delete window.__b2gl;
+    },
+  };
 }
 
 export function resourceReleaseGate(snapshot, ownership, requireRaf = true) {
@@ -320,7 +662,8 @@ function captureViewport() {
       status: bubble.dataset.status, width: bubble.width, height: bubble.height } : null };
 }
 async function browserRun(mode, repetition, lifecycle, workload, reference) {
-  const policy = browserCasePolicy(workload), observeGL = mode === "on" || workload === "cells512";
+  const policy = browserCasePolicy(workload), observeGL = mode === "on" || workload !== "baseline13";
+  const observeResources = workload !== "baseline13", safetyOnly = observeGL && mode !== "on";
   const expectedInputs = workload === "baseline13" ? 13 : 128;
   const completionLimitMs = expectedInputs * 300 + 6000;
   const browserLimitMs = completionLimitMs + 15000;
@@ -377,10 +720,11 @@ async function browserRun(mode, repetition, lifecycle, workload, reference) {
     await page("Page.enable");
     await page("Network.enable");
     await page("Network.setBlockedURLs", { urls: ["*tick-stream.xyz*"] });
-    if (workload === "cells512") await page("Page.addScriptToEvaluateOnNewDocument", {
+    if (observeResources) await page("Page.addScriptToEvaluateOnNewDocument", {
       source: `(${installResourceObserver.toString()})()\n//# sourceURL=orderflow-resource-observer.js` });
     if (observeGL) await page("Page.addScriptToEvaluateOnNewDocument", {
-      source: `(${installGLObserver.toString()})(${policy.compactGL},${mode !== "on"})` });
+      source: safetyOnly ? `(${installSafetyGLObserver.toString()})()` :
+        `(${installGLObserver.toString()})(${policy.compactGL},false)` });
     await page("Page.navigate", { url: `http://127.0.0.1:80/?mockDiagnostics=${mode === "on" ? "1" : "control"}&mockCase=${workload}` });
     await wait(`!!document.querySelector('[data-testid="button-unified-start"]')`);
     const initial = await evaluate(`({text:document.body.textContent, bridge:!!window.__orderflowMockDiagnostics})`);
@@ -423,19 +767,23 @@ async function browserRun(mode, repetition, lifecycle, workload, reference) {
     const layerRevisions = ["book", "heatmap", "bubbles", "delta", "volumeProfile", "quality"].map(l => meaning.frame[l].revision);
     assert(layerRevisions.every(r => r === revision), "MIXED_FRAME");
     assert(!sample.errors.some(s => /RENDER ERROR|WebGL2 unavailable/i.test(s)), "RENDER_ERROR");
-    if (workload === "cells512") {
-      assert.equal(meaning.frame.heatmap.cells.length, 512);
+    if (workload !== "baseline13") {
+      const cellCount = workload === "cells512" ? 512 : 128;
+      assert.equal(meaning.frame.heatmap.cells.length, cellCount);
       assert.equal(revision, 128);
       assert(!sample.gl.limited && sample.gl.unrecordedApiCalls === 0, "GL_RECORD_LIMIT");
-      assert(sample.gl.frames.length <= 256);
+      if (!safetyOnly) assert(sample.gl.frames.length <= 256);
       for (const layer of ["heatmap", "bubble"]) {
         assert.equal(sample.gl.totals[layer].errors, 0, `GL_ERRORS:${layer}`);
+        assert.equal(preflight.viewport[layer].status, "READY", `LAYER_NOT_READY:${layer}`);
+        if (safetyOnly) assert(sample.gl.totals[layer].contexts > 0 && sample.gl.totals[layer].errorChecks > 0,
+          `OFF_SAFETY_NOT_OBSERVED:${layer}`);
         const last = sample.gl.lastDraws[layer];
         assert.equal(last.revision, revision, `FINAL_NATIVE_DRAW_REVISION:${layer}`);
-        assert.equal(last.vertices, layer === "heatmap" ? 512 * 6 : preflight.viewport.bubble.vertices,
+        assert.equal(last.vertices, layer === "heatmap" ? cellCount * 6 : preflight.viewport.bubble.vertices,
           `FINAL_NATIVE_VERTICES:${layer}`);
         assert.equal(last.uploadedBytes, last.vertices * (layer === "heatmap" ? 32 : 52), `FINAL_NATIVE_UPLOAD:${layer}`);
-        for (const key of ["draws", "vertices", "uploads", "bytes", "buffers", "deletes", "loss", "restore", "errors"])
+        if (!safetyOnly) for (const key of ["draws", "vertices", "uploads", "bytes", "buffers", "deletes", "loss", "restore", "errors"])
           assert.equal(sample.gl.frames.reduce((n, f) => n + f.layers[layer][key], 0), sample.gl.totals[layer][key],
             `GL_TOTAL:${layer}:${key}`);
       }
@@ -512,7 +860,7 @@ async function browserRun(mode, repetition, lifecycle, workload, reference) {
       await evaluate(`document.querySelector('[data-testid="button-unified-stop"]').click()`);
       await wait("!window.__orderflowMockDiagnostics");
       result.stopReleased = true;
-      if (workload === "cells512") {
+      if (observeResources) {
         result.afterStopResources = await evaluate("window.__b2resources.snapshot()");
         result.afterStopOwnership = await evaluate("window.__b2resources.ownership()");
         result.afterStopGate = resourceReleaseGate(result.afterStopResources, result.afterStopOwnership, false);
@@ -536,7 +884,7 @@ async function browserRun(mode, repetition, lifecycle, workload, reference) {
       assert(Object.values(result.afterReleaseGL).every(t => t.buffers === t.deletes), "BUFFER_NOT_RELEASED");
       await evaluate("window.__b2gl.dispose()");
     }
-    if (workload === "cells512") {
+    if (observeResources) {
       result.afterReleaseResources = await evaluate("window.__b2resources.snapshot()");
       result.afterReleaseOwnership = await evaluate("window.__b2resources.ownership()");
       result.afterReleaseGate = resourceReleaseGate(result.afterReleaseResources, result.afterReleaseOwnership);
@@ -690,16 +1038,17 @@ const output = resolve(process.argv[2] ?? ".local/diagnostics/task28-b2-b1/resul
 assert(output.startsWith(resolve(".local/diagnostics") + "/"), "OUTPUT_MUST_BE_IGNORED_DIAGNOSTICS");
 if (process.argv[3] === "capacity") { await capacityOnly(output); return; }
 const workload = process.argv[3] ?? "baseline13", phase = process.argv[4] ?? "preflight";
-browserCasePolicy(workload);
-assert(phase === "preflight", "FORMAL_COMPARISON_NOT_APPROVED");
+const plan = comparisonPlan(workload, phase);
+if (phase === "formal") { await formalComparison(output); return; }
 assert(output.startsWith(resolve(".local/diagnostics") + "/"), "OUTPUT_MUST_BE_IGNORED_DIAGNOSTICS");
 const report = { workload, phase, runs: [], failure: null,
-  gpuMs: "UNKNOWN", presentationAt: "UNKNOWN", note: "No heavy trace; OFF has only explicit control-mode semantic readout. Completion includes DOM polling uncertainty." };
+  gpuMs: "UNKNOWN", presentationAt: "UNKNOWN",
+  note: "OFF has control-mode semantic readout and, for cells128/512, untimed safety counters only. Completion includes DOM polling uncertainty." };
 try {
   const reference = workload === "cells512" ? await capacityOnly(undefined, true) : undefined;
   if (reference) report.reference = { source: "INDEPENDENT_NODE_LEGACY_REPLAY",
     bytes: Buffer.byteLength(reference), sha256: createHash("sha256").update(reference).digest("hex") };
-  for (let r = 1; r <= (phase === "preflight" ? 1 : 3); r++) for (const mode of r % 2 ? ["control", "on"] : ["on", "control"]) {
+  for (const { repetition: r, mode } of plan) {
     const sample = await browserRun(mode, r, mode === "on" && r === 1, workload, reference);
     report.runs.push(sample);
     assert(report.runs.every(x => x.meaningHash === sample.meaningHash), "ON_OFF_MEANING_HASH_MISMATCH");

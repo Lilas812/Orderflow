@@ -656,3 +656,255 @@ it("release without a recorded baseline or with unmatched identities is HOLD", a
   expect(resourceReleaseGate(h.observer.snapshot(), changed).status).toBe("HOLD");
   expect(resourceReleaseGate({ intervals: 999, raf: 0 }, h.observer.ownership()).status).toBe("HOLD");
 });
+
+// E1 protocol tests use synthetic runners, never Chromium or market input.
+function evidenceRow(revision = 1, stage = "ingest") {
+  return { stage, at: 10, ms: .25, revision, seq: revision, layer: "session", a: 5, b: 8, c: 1 };
+}
+function protocolTrial(job: { workload: string; mode: string; repetition: number }) {
+  const vertices = job.workload === "cells128" ? 768 : 3072;
+  const counters = { draws: 1, vertices, uploads: 1, bytes: vertices * 32, buffers: 2, deletes: 2,
+    errors: 0, loss: 0, restore: 0, contexts: 1, errorChecks: 1,
+    cpuMs: job.mode === "on" ? 1 : "UNKNOWN" };
+  return { ...job, chromium: "SYNTHETIC Chromium", gpu: { webgl2: true, renderer: "SYNTHETIC SwiftShader" },
+    completionLimitMs: 44400, browserLimitMs: 59400, completionObservedMs: 38000,
+    counts: { inputs: 128, accepted: 128, duplicate: 0, rejected: 0 }, revision: 128,
+    layerRevisions: [128, 128, 128, 128, 128, 128], golden: Array.from({ length: 8 }, () => ({ ok: true })),
+    meaningHash: (job.workload === "cells128" ? "a" : "b").repeat(64), meaningEncoding: { wireBytes: 64043 },
+    afterReleaseGate: { status: "PASS" }, afterReleaseGL: { heatmap: { ...counters }, bubble: { ...counters } },
+    chromiumCleanup: { live: [], zombies: [], profileRemoved: true },
+    viewport: { viewport: { dpr: 1, bounds: { width: 403, height: 324 }, time: { minNs: "0", maxNs: "8" },
+      price: { minTick: 79998, maxTick: 80067 } },
+      heatmap: { width: 403, height: 324, status: "READY" },
+      bubble: { width: 403, height: 324, status: "READY", vertices: 24 } },
+    gl: { version: job.mode === "on" ? 2 : 0, observation: job.mode === "on" ? "PERFORMANCE_OBSERVER" : "OFF_SAFETY_ONLY",
+      limited: false, unrecordedApiCalls: 0, totals: { heatmap: { ...counters }, bubble: { ...counters } },
+      lastDraws: { heatmap: { revision: 128, vertices }, bubble: { revision: 128, vertices: 24 } }, frames: [] },
+    telemetry: job.mode === "on" ? { sessionId: 1, records: 1, allocatedBytes: 147456,
+      saturated: false, dropped: 0, rows: [evidenceRow()], receipts: [] } : null };
+}
+it("formal whitelist fixes 12 trials while all three preflights retain one OFF/ON pair", async () => {
+  const { comparisonPlan, browserCasePolicy } = await import(driverUrl);
+  expect(comparisonPlan("both", "formal").map((j: { id: string }) => j.id)).toEqual(
+    ["cells128", "cells512"].flatMap(w => [1, 2, 3].flatMap(r => ["control", "on"].map(m => `${w}-${r}-${m}`))));
+  for (const w of ["baseline13", "cells128", "cells512"]) {
+    expect(comparisonPlan(w, "preflight").map((j: { mode: string }) => j.mode)).toEqual(["control", "on"]);
+    expect(browserCasePolicy(w).version).toBe(w === "baseline13" ? 1 : w === "cells128" ? 2 : 3);
+    expect(() => comparisonPlan(w, "formal")).toThrow("FORMAL_REQUIRES_BOTH_CASES");
+  }
+  expect(() => comparisonPlan("both", "preflight")).toThrow();
+  expect(() => comparisonPlan("cells128", "other")).toThrow("COMPARISON_PHASE");
+});
+it("synthetic formal runner creates 12 distinct trials with checkpoints and no retry", async () => {
+  const { comparisonPlan, executeComparison } = await import(driverUrl);
+  const plan = comparisonPlan("both", "formal"), calls: unknown[] = [], checkpoints: unknown[] = [];
+  const r = await executeComparison(plan, async (job: any) => {
+    calls.push(job); return protocolTrial(job);
+  }, async (_r: unknown, trial: unknown) => { checkpoints.push(trial); });
+  expect(r.status).toBe("PASS"); expect(r.failure).toBeNull();
+  expect(calls).toHaveLength(12); expect(new Set(calls).size).toBe(12);
+  expect(new Set(r.runs).size).toBe(12); expect(checkpoints).toEqual(r.runs);
+  await expect(executeComparison(plan.slice(1), vi.fn(), vi.fn())).rejects.toThrow("FORMAL_PLAN_INVALID");
+});
+it.each(Array.from({ length: 12 }, (_, i) => i + 1))(
+  "failure/UNKNOWN/capacity at trial %i stops the plan with preserved evidence", async at => {
+    const { comparisonPlan, executeComparison } = await import(driverUrl);
+    for (const failure of ["throw", "unknown", "capacity"]) {
+      let calls = 0; const evidence: any[] = [];
+      const r = await executeComparison(comparisonPlan("both", "formal"), async (job: any) => {
+        calls++;
+        if (calls === at && failure === "throw") throw Object.assign(Error("ARTIFICIAL_FAILURE"), {
+          partialResult: { diagnosticMarker: "partial-evidence" } });
+        const t: any = protocolTrial(job);
+        if (calls === at && failure === "unknown") t.afterReleaseGate.status = "HOLD";
+        return t;
+      }, async (report: any, trial: any) => {
+        if (calls === at && failure === "capacity" && !report.failure) throw Error("REPORT_SIZE_LIMIT");
+        evidence.push({ trial: JSON.parse(JSON.stringify(trial)), failure: report.failure });
+      });
+      expect(calls).toBe(at); expect(r.runs).toHaveLength(at); expect(r.status).toBe("HOLD");
+      expect(r.runs.at(-1).failed).toBe(true); expect(evidence.at(-1).failure).toBeTruthy();
+      if (at <= 6) expect(r.runs.every((v: any) => v.workload === "cells128")).toBe(true);
+      if (failure === "throw") expect(r.runs.at(-1).diagnosticMarker).toBe("partial-evidence");
+    }
+  });
+it("environment mismatch and missing trials stop instead of silently proceeding", async () => {
+  const { comparisonPlan, executeComparison } = await import(driverUrl);
+  let count = 0;
+  const r = await executeComparison(comparisonPlan("both", "formal"), async (job: any) => {
+    const t = protocolTrial(job); if (++count === 2) t.viewport.viewport.dpr = 2; return t;
+  }, async () => {});
+  expect(count).toBe(2); expect(r.failure).toContain("COMPARISON_ENVIRONMENT_MISMATCH");
+  const missing = await executeComparison(comparisonPlan("both", "formal"), async () => undefined, async () => {});
+  expect(missing.runs).toHaveLength(1); expect(missing.failure).toContain("MISSING_TRIAL");
+});
+it.each(["cells128", "cells512"])("%s requires owned-resource PASS and OFF safety only", async workload => {
+  const { validateFormalTrial } = await import(driverUrl);
+  const job = { workload, mode: "control", repetition: 1 }, t: any = protocolTrial(job);
+  expect(() => validateFormalTrial(t, job)).not.toThrow();
+  for (const status of ["HOLD", "UNKNOWN", "FAIL"]) {
+    t.afterReleaseGate.status = status; expect(() => validateFormalTrial(t, job)).toThrow("RESOURCE_GATE");
+  }
+  t.afterReleaseGate.status = "PASS"; t.gl.observation = "PERFORMANCE_OBSERVER";
+  expect(() => validateFormalTrial(t, job)).toThrow("OFF_NOT_SAFETY_ONLY");
+});
+
+function evidenceFixture() {
+  return { runs: [{ telemetry: { version: 3, allocatedBytes: 147456, rows: [evidenceRow(1), evidenceRow(2)],
+    receipts: [{ revision: 1, heatmapAt: 12.5, bubbleAt: null }] } }],
+    explicitNull: null, omitted: undefined, encodedQuantity: { bigint: "900719925474099312345" } };
+}
+it("fixed-schema evidence preserves all normalized fields, order, nulls and SHA", async () => {
+  const { encodeEvidence, decodeEvidence, boundedEvidence } = await import(driverUrl);
+  const value: any = evidenceFixture(); value.runs[0].telemetry.rows[1].b = null;
+  const legacy = JSON.stringify(value), wire = encodeEvidence(value), p = JSON.parse(wire);
+  expect(p.version).toBe(1); expect(p.tables[0].count).toBe(2);
+  expect(p.tables[0].tuples[1][7]).toBeNull();
+  const d = decodeEvidence(wire, value);
+  expect(d.text).toBe(legacy); expect(d.value).toEqual(JSON.parse(legacy));
+  expect(Object.keys(d.value.runs[0].telemetry.rows[0])).toEqual(p.rowKeys);
+  expect(d.sha256).toBe(createHash("sha256").update(legacy).digest("hex"));
+  expect(boundedEvidence(value)).toBe(wire + "\n");
+});
+it.each(["version", "schema", "missing-row", "missing-value", "row-order", "value", "missing-table",
+  "duplicate-table", "hash", "bytes", "unknown-envelope"])("evidence rejects %s tampering", async mode => {
+  const { encodeEvidence, decodeEvidence } = await import(driverUrl), p = JSON.parse(encodeEvidence(evidenceFixture()));
+  if (mode === "version") p.version = 99;
+  if (mode === "schema") [p.rowKeys[0], p.rowKeys[1]] = [p.rowKeys[1], p.rowKeys[0]];
+  if (mode === "missing-row") p.tables[0].tuples.pop();
+  if (mode === "missing-value") p.tables[0].tuples[0].pop();
+  if (mode === "row-order") p.tables[0].tuples.reverse();
+  if (mode === "value") p.tables[0].tuples[0][2] = null;
+  if (mode === "missing-table") p.tables.pop();
+  if (mode === "duplicate-table") p.tables.push(p.tables[0]);
+  if (mode === "hash") p.sha256 = "0".repeat(64);
+  if (mode === "bytes") p.legacyBytes++;
+  if (mode === "unknown-envelope") p.extra = 1;
+  expect(() => decodeEvidence(JSON.stringify(p))).toThrow();
+});
+it("coherent forged evidence, unknown row keys and changed field order are rejected", async () => {
+  const { encodeEvidence, decodeEvidence } = await import(driverUrl), original = evidenceFixture();
+  const altered = evidenceFixture(); altered.runs[0].telemetry.rows.reverse();
+  expect(() => decodeEvidence(encodeEvidence(altered), original)).toThrow("EVIDENCE_REFERENCE");
+  const unknown: any = evidenceFixture(); unknown.runs[0].telemetry.rows[0].extra = 1;
+  expect(() => encodeEvidence(unknown)).toThrow("EVIDENCE_ROW_SCHEMA");
+  unknown.runs[0].telemetry.rows[0] = Object.fromEntries(Object.entries(evidenceRow()).reverse());
+  expect(() => encodeEvidence(unknown)).toThrow("EVIDENCE_ROW_SCHEMA");
+});
+it("evidence preserves all tables in encounter order and rejects a permuted table registry", async () => {
+  const { encodeEvidence, decodeEvidence } = await import(driverUrl), v = evidenceFixture();
+  v.runs.push(evidenceFixture().runs[0]);
+  const p = JSON.parse(encodeEvidence(v)); expect(p.tables).toHaveLength(2);
+  expect(decodeEvidence(JSON.stringify(p), v).value).toEqual(JSON.parse(JSON.stringify(v)));
+  p.tables.reverse();
+  expect(() => decodeEvidence(JSON.stringify(p))).toThrow("EVIDENCE_SCHEMA_OR_TABLE_ORDER");
+});
+it("evidence enforces the exact 2MiB file boundary including newline without truncation", async () => {
+  const { boundedEvidence } = await import(driverUrl), v = { padding: "" };
+  v.padding = "x".repeat(2 * 1024 * 1024 - Buffer.byteLength(boundedEvidence(v)) - 6);
+  for (let i = 0; i < 3; i++) {
+    const size = Buffer.byteLength(boundedEvidence(v)); v.padding += "x".repeat(2 * 1024 * 1024 - size);
+  }
+  expect(Buffer.byteLength(boundedEvidence(v))).toBe(2 * 1024 * 1024);
+  v.padding += "x"; expect(() => boundedEvidence(v)).toThrow("REPORT_SIZE_LIMIT");
+});
+it("statistics distinguish unknown samples, signed timer offsets and initialization", async () => {
+  const { timeStats, timingSamples, samplePhase, summarizeRuns } = await import(driverUrl);
+  expect(timeStats([4, 1, 3, 2])).toMatchObject({ n: 4, mean: 2.5, median: 2.5, p95: 4, max: 4 });
+  expect(timeStats([])).toEqual({ status: "UNKNOWN", n: 0 }); expect(timeStats([-1, 0, 1]).mean).toBe(0);
+  expect(() => timeStats([NaN])).toThrow("TIME_SAMPLE");
+  expect(samplePhase({ ...evidenceRow(0), stage: "react", c: 0 })).toBe("initialization");
+  expect(samplePhase({ ...evidenceRow(128), stage: "react", c: 1 })).toBe("initialization");
+  expect(samplePhase(evidenceRow(1))).toBe("steady");
+  const t: any = protocolTrial({ workload: "cells128", mode: "on", repetition: 1 });
+  t.telemetry.rows = [evidenceRow(0, "frame"), { ...evidenceRow(1, "frame"), a: 1, ms: .1 },
+    { ...evidenceRow(1), a: 10, b: 9.9 }];
+  const samples = timingSamples([t]);
+  expect(samples["steady:inputTimerDelay"][0]).toBeCloseTo(-.1);
+  expect(samples["steady:frameHIT"]).toEqual([.1]);
+  const off = protocolTrial({ workload: "cells128", mode: "control", repetition: 1 });
+  expect(summarizeRuns([off]).cases.cells128.off.times["steady:ingestSync"]).toEqual({ status: "UNKNOWN", n: 0 });
+});
+it("all timing families, pooled case ratios and initialization/steady GL totals remain distinct", async () => {
+  const { summarizeRuns } = await import(driverUrl);
+  const t: any = protocolTrial({ workload: "cells128", mode: "on", repetition: 1 });
+  t.telemetry.rows = [evidenceRow(), { ...evidenceRow(1, "publish"), a: 10, b: 11 },
+    { ...evidenceRow(1, "frame"), a: 0, ms: 2 }, { ...evidenceRow(2, "frame"), a: 1, ms: .1 },
+    { ...evidenceRow(1, "react"), layer: "root", ms: 7, c: 1 },
+    ...["heatmap", "bubble", "delta"].map((layer, i) => ({ ...evidenceRow(1, "draw"), layer, ms: 3 + i })),
+    { ...evidenceRow(1, "raf"), layer: "heatmap", ms: 6 }];
+  const c = (n: number) => ({ draws: n, vertices: n * 6, uploads: n, bytes: n * 32 });
+  t.gl.frames = [{ revision: 0, layers: { heatmap: c(1), bubble: c(1) } },
+    { revision: 1, layers: { heatmap: c(2), bubble: c(2) } }];
+  const u = JSON.parse(JSON.stringify(t)); u.workload = "cells512";
+  u.telemetry.rows.find((r: any) => r.stage === "draw" && r.layer === "heatmap").ms = 12;
+  const summary = summarizeRuns([t, u]), s = summary.cases.cells128.on;
+  expect(s.times["steady:ingestSync"].mean).toBe(.25);
+  expect(s.times["steady:noticeTimerDelay"].mean).toBe(1);
+  expect(s.times["steady:frameMISS"].mean).toBe(2);
+  expect(s.times["steady:frameHIT"].mean).toBe(.1);
+  expect(s.times["initialization:react:root"].mean).toBe(7);
+  for (const [name, value] of [["heatmap", 3], ["bubble", 4], ["delta", 5]])
+    expect(s.times[`steady:drawCPU:${name}`].mean).toBe(value);
+  expect(s.times["steady:rAFWait:heatmap"].mean).toBe(6);
+  expect(s.gl[0].phases.initialization.heatmap.draws).toBe(1);
+  expect(s.gl[0].phases.steady.heatmap.draws).toBe(2);
+  expect(summary.meanRatios512over128["steady:drawCPU:heatmap"]).toBe(4);
+});
+
+it.each(["heatmap", "bubble"])("OFF %s safety counters never clock or log native calls", async layer => {
+  const { installSafetyGLObserver } = await import(driverUrl);
+  let error = 0;
+  const native = { createBuffer: vi.fn(() => ({})), deleteBuffer: vi.fn(), bufferData: vi.fn(),
+    drawArrays: vi.fn((..._args: unknown[]) => "native-return"), getError: vi.fn(() => error) };
+  class GL {
+    createBuffer() { return native.createBuffer(); } deleteBuffer(x: unknown) { native.deleteBuffer(x); }
+    bufferData(...args: unknown[]) { native.bufferData(...args); }
+    drawArrays(...args: unknown[]) { return native.drawArrays(...args); }
+    getError() { return native.getError(); }
+  }
+  const gl = new GL(), listeners = new Map<string, () => void>();
+  class Canvas {
+    classList = { contains: (s: string) => s === (layer === "heatmap" ? "hm-canvas" : "bb-canvas") };
+    dataset = { revision: "128" }; getContext(..._args: unknown[]) { return gl; }
+    addEventListener(n: string, fn: () => void) { listeners.set(n, fn); }
+    removeEventListener(n: string) { listeners.delete(n); }
+  }
+  const win: any = {};
+  runInNewContext(`(${installSafetyGLObserver.toString()})()`, { window: win,
+    HTMLCanvasElement: Canvas, WebGL2RenderingContext: GL,
+    performance: { now: () => { throw Error("OFF_CLOCK_FORBIDDEN"); } } });
+  new Canvas().getContext("webgl2"); const b = gl.createBuffer();
+  gl.bufferData(1, new Float32Array(8), 2);
+  expect(gl.drawArrays(4, 0, 6)).toBe("native-return");
+  expect(gl.getError()).toBe(0); error = 1282; expect(gl.getError()).toBe(1282);
+  listeners.get("webglcontextlost")!(); listeners.get("webglcontextrestored")!(); gl.deleteBuffer(b);
+  const snapshot = win.__b2gl.snapshot();
+  expect(snapshot).toMatchObject({ version: 0, observation: "OFF_SAFETY_ONLY", limited: false });
+  expect(snapshot.totals[layer]).toMatchObject({ contexts: 1, draws: 1, vertices: 6, uploads: 1,
+    bytes: 32, errors: 1, errorChecks: 2, loss: 1, restore: 1, buffers: 1, deletes: 1, cpuMs: "UNKNOWN" });
+  expect(snapshot.frames).toBeUndefined(); expect(snapshot.draws).toBeUndefined();
+  expect(native.getError).toHaveBeenCalledTimes(2);
+  win.__b2gl.dispose(); expect(listeners.size).toBe(0); expect(win.__b2gl).toBeUndefined();
+  gl.drawArrays(4, 0, 6); expect(native.drawArrays).toHaveBeenCalledTimes(2);
+});
+it("OFF context observation is bounded, flags overflow and never blocks native creation", async () => {
+  const { installSafetyGLObserver } = await import(driverUrl);
+  let nativeCalls = 0;
+  class GL {
+    createBuffer() { return {}; } deleteBuffer() {} bufferData() {} drawArrays() {} getError() { return 0; }
+  }
+  class Canvas {
+    classList = { contains: (s: string) => s === "hm-canvas" }; dataset = { revision: "0" };
+    getContext(..._args: unknown[]) { nativeCalls++; return new GL(); }
+    addEventListener() {} removeEventListener() {}
+  }
+  const win: any = {};
+  runInNewContext(`(${installSafetyGLObserver.toString()})()`, {
+    window: win, HTMLCanvasElement: Canvas, WebGL2RenderingContext: GL });
+  for (let i = 0; i < 17; i++) expect(new Canvas().getContext("webgl2")).toBeInstanceOf(GL);
+  const s = win.__b2gl.snapshot();
+  expect(nativeCalls).toBe(17); expect(s.totals.heatmap.contexts).toBe(16);
+  expect(s.limited).toBe(true); expect(s.unrecordedApiCalls).toBe(1);
+  win.__b2gl.dispose();
+});
