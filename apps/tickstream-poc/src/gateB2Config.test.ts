@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { authorizeLiveStorage } from "@workspace/tickstream-storage/live-authorization";
-import { B2_ENDPOINT, bindLiveStoragePort, assertLiveStoragePort, LIVE_FLAGS, parseB2Mode, readB2Capture, b2FailureReason } from "./gateB2Config";
+import { B2_ENDPOINT, B2_CONNECTION_POLICY, assertB2ConnectionPolicy, bindLiveStoragePort, assertLiveStoragePort, LIVE_FLAGS, parseB2Mode, readB2Capture, b2FailureReason } from "./gateB2Config";
 import { GateBTicks } from "./gateBTransport";
 import { FakeClock } from "./transport";
 
@@ -9,12 +9,32 @@ function fixture() {
     close: () => {}, terminate: () => {}, jsonPong: () => {} }), "LOOPBACK_TEST");
   p.start(); p.finish();
   const { schema: _, persistence: _p, ...transport } = p.report();
-  return { schema: "TICKSTREAM_GATE_B2B_CAPTURE_V1", captureMode: "ARTIFICIAL_PROTOCOL_TEST", phase: "STOPPED",
+  return { schema: "TICKSTREAM_GATE_B2B_CAPTURE_V1", connectionPolicy: B2_CONNECTION_POLICY, captureMode: "ARTIFICIAL_PROTOCOL_TEST", phase: "STOPPED",
     reason: "COMPLETED", transport, storage: { mode: "AUTHORIZED_LIVE_TRIAL", phase: "STOPPED", reason: "LIVE_FINISHED",
       offered: 0, enqueued: 0, persisted: 0, pending: 0, pendingBytes: 0, unknown: 0, refused: 0, unpersisted: 0,
       peakCount: 0, peakBytes: 0, accountingMatches: true }, commit: { position: 0, bytes: 0, head: "0".repeat(64) } };
 }
 describe("B-2B explicit entry and fixed reports", () => {
+  it("fails closed for every policy mismatch and cannot mutate the fixed B-2B policy", () => {
+    expect(Object.isFrozen(B2_CONNECTION_POLICY)).toBe(true);
+    expect(assertB2ConnectionPolicy()).toBe(B2_CONNECTION_POLICY);
+    for (const [key, value] of [["effectiveReconnectLimit", 1], ["maxConnectionAttempts", 2],
+      ["reconnectSchedulerDisabled", false], ["parentRestartDisabled", false]] as const) {
+      const policy = { ...B2_CONNECTION_POLICY, [key]: value };
+      expect(() => assertB2ConnectionPolicy(policy)).toThrow("B2_CONNECTION_POLICY_HOLD");
+      expect(readB2Capture({ ...fixture(), connectionPolicy: policy })).toBeNull();
+    }
+    expect(() => assertB2ConnectionPolicy(null)).toThrow("B2_CONNECTION_POLICY_HOLD");
+  });
+  it("rejects reports with an actual retry or a second connection attempt", () => {
+    const f = fixture();
+    for (const counters of [{ ...f.transport.counters, connectionAttempts: 2 },
+      { ...f.transport.counters, reconnectAttempts: 1 }]) {
+      expect(readB2Capture({ ...f, transport: { ...f.transport, counters } })).toBeNull();
+    }
+    expect(readB2Capture({ ...f, connectionPolicy: null })).toBeNull();
+    expect(readB2Capture({ ...f, connectionPolicy: undefined })).toBeNull();
+  });
   it("does not weaken the fixed endpoint and requires EVERY exact live flag", () => {
     expect(B2_ENDPOINT).toBe("wss://stream.tick-stream.xyz/v1/stream");
     expect(parseB2Mode([...LIVE_FLAGS])).toBe("LIVE");

@@ -23,7 +23,7 @@ const { recoverLive } = await import("@workspace/tickstream-storage/live-recover
 const { TRIAL_ID } = await import("@workspace/tickstream-storage/live-authorization");
 const { gateBWatchdog } = await import("./gateBProcess.ts");
 const { GATE_B_SELECTED_TRIAL, LIMITS } = await import("./gateBConfig.ts");
-const { b2FailureReason, B2_REASONS, parseB2Mode, readB2Capture } = await import("./gateB2Config.ts");
+const { assertB2ConnectionPolicy, b2FailureReason, B2_REASONS, parseB2Mode, readB2Capture } = await import("./gateB2Config.ts");
 
 const confirmation = Object.freeze({ explicitMode: "GATE_B2B" as const, dataPermission: true,
   replitStoragePermission: true, manualCleanupConfirmed: true });
@@ -55,12 +55,20 @@ export async function isolatedB2<T>(input: {
   spawn: () => ChildProcess; decode: (value: unknown) => T | null;
   activeBudget?: boolean; budgetMs?: number; cleanupMs?: number;
 }): Promise<IsolatedResult<T>> {
+  const policy = assertB2ConnectionPolicy();
   const budget = input.budgetMs ?? LIMITS.wallMs, cleanup = input.cleanupMs ?? LIMITS.cleanupMs;
   if (!Number.isInteger(budget) || budget < 1 || budget > LIMITS.wallMs ||
     !Number.isInteger(cleanup) || cleanup < 1 || cleanup > LIMITS.cleanupMs) throw Error("B2_UNSAFE_BUDGET");
   const started = performance.now(), startNs = process.hrtime.bigint();
+  let spawnAttempts = 0;
+  const launchOnce = () => {
+    if (!policy.parentRestartDisabled || spawnAttempts++ !== 0) {
+      throw Object.assign(Error(), { code: "B2_CONNECTION_POLICY_HOLD" });
+    }
+    return input.spawn(); // no retry on throw, exit, error, watchdog STOP or SIGKILL
+  };
   let child: ChildProcess;
-  try { child = input.spawn(); } catch { return { result: null, reason: "B2_CHILD_FAILURE", forced: false, childRssPeak: null, totalRssPeak: null }; }
+  try { child = launchOnce(); } catch { return { result: null, reason: "B2_CHILD_FAILURE", forced: false, childRssPeak: null, totalRssPeak: null }; }
   return await new Promise(resolveDone => {
     let result: T | null = null, reason: B2Reason | null = null, stopping: number | null = null;
     let active: bigint | null = null, reportAt: number | null = null, done = false, forced = false;
@@ -229,6 +237,7 @@ async function worker(kind: WorkerKind, id: string, mode: CaptureMode): Promise<
       const { runGateB2Session } = await import("./gateB2Session.ts");
       let target: Parameters<typeof runGateB2Session>[0];
       if (mode === "PRODUCTION") {
+        assertB2ConnectionPolicy(); // independently check before child key access
         const key = process.env.TICKSTREAM_API_KEY;
         if (!key || key.length > 4096) throw Object.assign(Error(), { code: "KEY_NOT_CONFIGURED" });
         target = { kind: "PRODUCTION", review: GATE_B_SELECTED_TRIAL, explicitExecution: true, secret: key };
@@ -251,6 +260,7 @@ async function worker(kind: WorkerKind, id: string, mode: CaptureMode): Promise<
 }
 export async function runB2Trial(mode: CaptureMode, key?: string, privacyProof?: object,
   onCreated?: (info: Readonly<{ trialId: string; captureMode: CaptureMode; deleteByMs: number }>) => void) {
+  const connectionPolicy = assertB2ConnectionPolicy();
   if (mode === "PRODUCTION" && (!privacyProof || !privateProofs.has(privacyProof))) {
     throw Object.assign(Error(), { code: "B2_PRIVATE_PROBE_FAILED" });
   }
@@ -296,6 +306,7 @@ export async function runB2Trial(mode: CaptureMode, key?: string, privacyProof?:
     catch (error) { reason ??= b2FailureReason(error, "B2_DELETE_FAILED"); }
   }
   return { schema: "TICKSTREAM_GATE_B2B_TRIAL_V1", captureMode: mode, trialId: id,
+    connectionPolicy,
     phase: reason ? "FAILED" : "COMPLETED", reason: reason ?? capture?.reason ?? "COMPLETED",
     capture, recovery, cleanup, elapsedWallMs: Math.ceil(performance.now() - started),
     deletionWhileStopped: "NOT_GUARANTEED_MANUAL_CONFIRMATION_REQUIRED" };
@@ -321,9 +332,10 @@ async function main(): Promise<void> {
       deletionWhileStopped: "NOT_GUARANTEED_MANUAL_CONFIRMATION_REQUIRED" }); return;
   }
   if (mode === "HOLD") { output({ phase: "HOLD", reason: "LIVE_MODE_REQUIRED" }); return; }
+  const connectionPolicy = assertB2ConnectionPolicy(); // before preflight IO and parent key access
   prepareTrialRoot(DEFAULT_LIVE_ROOT, true);
   const privacy = await privateProbe();
-  if (mode === "PREFLIGHT") { output({ schema: "TICKSTREAM_STORAGE_PREFLIGHT_V1", ...privacy }); return; }
+  if (mode === "PREFLIGHT") { output({ schema: "TICKSTREAM_STORAGE_PREFLIGHT_V1", connectionPolicy, ...privacy }); return; }
   // This is the ONLY parent key access; wrong flags / failed preflight / expiry
   // never inspect Secrets. Offline trials do not even test key existence.
   const key = mode === "LIVE" ? process.env.TICKSTREAM_API_KEY : undefined;

@@ -2,7 +2,7 @@ import { REASON_CODES } from "@workspace/tickstream-adapter/envelope";
 import { parseObservation, type ObservationRecord, type ReceiveContext } from "@workspace/tickstream-adapter/live-observation";
 import type { Clock } from "./transport";
 import { classifyMessage } from "./liveControl";
-import { assertLiveStoragePort, type BLiveStoragePort } from "./gateB2Config";
+import { assertLiveStoragePort, assertB2ConnectionPolicy, type B2ConnectionPolicy, type BLiveStoragePort } from "./gateB2Config";
 import {
   LIMITS, B_COUNTERS, B_PHASES, emptyGateBReport, readGateBReport,
   type BExecution, type BPhase, type BReason, type GateBReport,
@@ -49,6 +49,7 @@ export class GateBTicks {
   private started = false;
   private offlineStorageFailed = false;
   private terminalCallback: (() => void) | undefined;
+  private readonly connectionPolicy: B2ConnectionPolicy | null;
   constructor(private readonly clock: Clock, private readonly factory: () => BTicksSocket,
     execution: Exclude<BExecution, "NOT_RUN">, private readonly options: {
       manualDrain?: boolean; finishAfter?: number; offlineStorage?: BOfflineStoragePort;
@@ -62,6 +63,7 @@ export class GateBTicks {
       if (options.offlineStorage) throw new Error("LIVE_AUTH_SCOPE");
       assertLiveStoragePort(options.liveStorage, execution);
     }
+    this.connectionPolicy = options.liveStorage ? assertB2ConnectionPolicy() : null;
     if (!["LOOPBACK_TEST", "PRODUCTION"].includes(execution) || (options.finishAfter !== undefined &&
       (!Number.isInteger(options.finishAfter) || options.finishAfter < 1 || options.finishAfter > LIMITS.messages))) {
       throw new Error("GATE_B_OPTIONS");
@@ -110,18 +112,26 @@ export class GateBTicks {
     return readGateBReport(r)!; // one fixed whitelist for IPC and console
   }
   private timer(name: string, ms: number, callback: () => void): void {
+    if (name === "reconnect" && this.connectionPolicy?.reconnectSchedulerDisabled) {
+      this.stop("RECONNECT_LIMIT"); return; // never call Clock.schedule, even for a future caller
+    }
     this.timers.get(name)?.();
     this.timers.set(name, this.clock.schedule(ms, () => {
       this.timers.delete(name); if (!this.terminal) callback();
     }));
   }
   start(): void {
+    if (this.connectionPolicy && this.terminal) return;
     if (this.started) throw new Error("GATE_B_ALREADY_STARTED");
     this.started = true; this.startedAt = this.clock.monoNs();
     this.timer("wall", LIMITS.wallMs, () => this.stop("WALL_TIME_LIMIT"));
     this.connect();
   }
   private connect(): void {
+    if (this.connectionPolicy && (this.terminal ||
+      this.reportValue.counters!.connectionAttempts >= this.connectionPolicy.maxConnectionAttempts)) {
+      this.stop("RECONNECT_LIMIT"); return; // before factory/native WebSocket construction
+    }
     this.phase("CONNECTING"); this.epoch++; const generation = ++this.generation;
     this.reportValue.counters!.connectionAttempts++;
     this.timer("handshake", LIMITS.handshakeMs, () => this.stop("HANDSHAKE_TIMEOUT"));
@@ -174,6 +184,7 @@ export class GateBTicks {
       case "handshakeRejected": this.stop("HTTP_HANDSHAKE_REJECTED"); return;
       case "close":
         c.disconnects++;
+        if (this.connectionPolicy?.reconnectSchedulerDisabled) { this.stop("RECONNECT_LIMIT"); return; }
         if (c.reconnectAttempts >= LIMITS.reconnects) { this.stop("RECONNECT_LIMIT"); return; }
         this.generation++; this.socket?.terminate();
         for (const key of ["heartbeat", "handshake"]) { this.timers.get(key)?.(); this.timers.delete(key); }

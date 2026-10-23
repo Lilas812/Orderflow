@@ -5,7 +5,7 @@ import { GateBTicks, type BTicksSocket, type BEvent } from "./gateBTransport";
 import { GateBWireSocket, type BTarget } from "./gateBSession";
 import { LIMITS, type BReason } from "./gateBConfig";
 import type { Clock } from "./transport";
-import { B2_ENDPOINT, bindLiveStoragePort, readB2Capture, type B2CaptureReport } from "./gateB2Config";
+import { B2_ENDPOINT, assertB2ConnectionPolicy, bindLiveStoragePort, readB2Capture, type B2CaptureReport } from "./gateB2Config";
 
 export interface B2ManagedSocket extends BTicksSocket { closed: Promise<void>; forcedCleanup: boolean }
 export async function runGateB2Session(target: BTarget, authorization: LiveAuthorization, options: {
@@ -16,6 +16,7 @@ export async function runGateB2Session(target: BTarget, authorization: LiveAutho
   /** Artificial tests only; never changes production socket or budgets. */
   artificial?: { socketFactory?: () => B2ManagedSocket; store?: Pick<LiveAppendOptions, "quotaBytes" | "fault">; queue?: LiveQueueOptions };
 } = {}): Promise<B2CaptureReport> {
+  const connectionPolicy = assertB2ConnectionPolicy(); // before store creation or socket construction
   assertLiveAuthorization(authorization);
   const production = authorization.captureMode === "PRODUCTION";
   if (production !== (target.kind === "PRODUCTION") ||
@@ -52,7 +53,8 @@ export async function runGateB2Session(target: BTarget, authorization: LiveAutho
   const monitor = setInterval(sample, 50);
   try {
     options.onStopReady?.(reason => pipeline.stop(reason, reason !== "ACTIVE_TIME_LIMIT"));
-    pipeline.start(); sample(); await stopped;
+    if (!pipeline.terminal) pipeline.start(); // a supervisor STOP received before START must never dial
+    sample(); await stopped;
     await Promise.all(sockets.map(socket => socket.closed)); sample();
     const transport = pipeline.liveReport().transport;
     transport.endpointBasis = production ? "USER_SELECTED_OFFICIAL_STREAMING" : "LOOPBACK_TEST";
@@ -61,7 +63,7 @@ export async function runGateB2Session(target: BTarget, authorization: LiveAutho
     transport.memory = { measurement: "NOT_MEASURED", childRssPeak: peak || null, totalRssPeak: null };
     if (sockets.some(s => s.forcedCleanup)) { transport.phase = "FAILED"; transport.stopReason = "FORCED_TERMINATION"; }
     const storage = queue.report();
-    const result = readB2Capture({ schema: "TICKSTREAM_GATE_B2B_CAPTURE_V1", captureMode: authorization.captureMode,
+    const result = readB2Capture({ schema: "TICKSTREAM_GATE_B2B_CAPTURE_V1", connectionPolicy, captureMode: authorization.captureMode,
       phase: transport.phase, reason: storage.phase === "FAILED" ? storage.reason : transport.stopReason,
       transport, storage, commit: store.commitState });
     if (!result) throw Error("B2_IPC_INVALID");

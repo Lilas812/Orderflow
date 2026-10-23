@@ -5,6 +5,7 @@ import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { DEFAULT_LIVE_ROOT, createTrial, purgeTrial, scanExpiredTrials } from "@workspace/tickstream-storage/live-trial-directory";
 import { isolatedB2, privateProbe, runB2Trial } from "./gateB2Process";
+import { LIVE_FLAGS } from "./gateB2Config";
 
 const ids: string[] = [];
 afterEach(() => { for (const id of ids.splice(0)) {
@@ -35,6 +36,45 @@ describe("B-2B independent supervisor, restart verification and immediate purge"
   it("requires an in-process privacy proof before even considering a production run", async () => {
     await expect(runB2Trial("PRODUCTION", "ARTIFICIAL_KEY_NEVER_USED", {})).rejects.toMatchObject({ code: "B2_PRIVATE_PROBE_FAILED" });
   });
+  it("faulted connection policy HOLDs before key access, network IO or child launch, even with all live flags", async () => {
+    const before = existsSync(DEFAULT_LIVE_ROOT) ? readdirSync(DEFAULT_LIVE_ROOT) : [];
+    // In-memory test-only fault injection. No product file is rewritten, and the
+    // subprocess has an EMPTY env plus traps which forbid any key/network access.
+    const preload = `
+      import {registerHooks,syncBuiltinESMExports} from 'node:module';
+      import net from 'node:net'; import cp from 'node:child_process';
+      let secretReads=0,networkAttempts=0,childLaunches=0;
+      process.env=new Proxy(process.env,{get(t,k){
+        if(k==='TICKSTREAM_API_KEY'){secretReads++;throw Error('ARTIFICIAL_SECRET_READ_FORBIDDEN')}
+        return Reflect.get(t,k);
+      }});
+      net.Socket.prototype.connect=function(){networkAttempts++;throw Error('ARTIFICIAL_NETWORK_FORBIDDEN')};
+      cp.fork=function(){childLaunches++;throw Error('ARTIFICIAL_CHILD_FORBIDDEN')};
+      syncBuiltinESMExports();
+      registerHooks({load(url,ctx,next){
+        const r=next(url,ctx);
+        if(url.endsWith('/gateB2Config.ts')){
+          const source=typeof r.source==='string'?r.source:Buffer.from(r.source).toString();
+          const expected='effectiveReconnectLimit: 0, maxConnectionAttempts: 1';
+          if(!source.includes(expected))throw Error('ARTIFICIAL_FAULT_HOOK_FAILED');
+          return {...r,source:source.replace(expected,'effectiveReconnectLimit: 1, maxConnectionAttempts: 1')};
+        }
+        return r;
+      }});
+      process.on('exit',()=>process.stderr.write(JSON.stringify({secretReads,networkAttempts,childLaunches})));
+    `;
+    const script = fileURLToPath(new URL("./gateB2Process.ts", import.meta.url));
+    const p = spawn(process.execPath, ["--import", `data:text/javascript,${encodeURIComponent(preload)}`,
+      "--experimental-transform-types", "--disable-warning=ExperimentalWarning", script, ...LIVE_FLAGS],
+    { env: {}, stdio: ["ignore", "pipe", "pipe"] });
+    let stdout = "", stderr = "";
+    p.stdout.on("data", b => { stdout += b; }); p.stderr.on("data", b => { stderr += b; });
+    const code = await new Promise<number | null>(resolve => p.once("close", resolve));
+    expect(code).toBe(1);
+    expect(JSON.parse(stdout)).toMatchObject({ phase: "HOLD", reason: "B2_CONNECTION_POLICY_HOLD" });
+    expect(JSON.parse(stderr)).toEqual({ secretReads: 0, networkAttempts: 0, childLaunches: 0 });
+    expect(existsSync(DEFAULT_LIVE_ROOT) ? readdirSync(DEFAULT_LIVE_ROOT) : []).toEqual(before);
+  });
   it("reports malformed IPC as a fixed code, never a raw secret/URL", async () => {
     const r = await isolatedB2({ spawn: () => child(`process.on("message",m=>{
       if(m.type==="START")process.send({type:"RESULT",value:{raw:"ARTIFICIAL_KEY_SENTINEL"}});
@@ -54,6 +94,11 @@ describe("B-2B independent supervisor, restart verification and immediate purge"
     await expect(isolatedB2({ spawn: () => { called = true; return child(""); }, decode: () => null,
       budgetMs: 120001 })).rejects.toThrow("B2_UNSAFE_BUDGET");
     expect(called).toBe(false);
+  });
+  it("does not retry a failed child creation", async () => {
+    let attempts = 0;
+    const r = await isolatedB2({ spawn: () => { attempts++; throw Error("ARTIFICIAL_SPAWN_FAILURE"); }, decode: () => null });
+    expect(attempts).toBe(1); expect(r.reason).toBe("B2_CHILD_FAILURE"); expect(r.result).toBeNull();
   });
   it.each([1, 2, 3])("does not fabricate MEMORY_NOT_MEASURED when a validated child exits immediately (%s)", async () => {
     const r = await isolatedB2({ spawn: () => child(`process.on("message",m=>{
