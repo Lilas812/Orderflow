@@ -207,7 +207,7 @@ describe("single-stream lightweight projection boundary", () => {
   it("a TWA projection exception publishes no partial frame or cache entry", () => {
     const hub = create(); run(hub);
     const before = hub.readRenderFrame(unified.query);
-    const spy = vi.spyOn(twaModule, "calculateTimeWeightedDepth").mockImplementationOnce(() => {
+    const spy = vi.spyOn(twaModule, "calculateTimeWeightedDepthCells").mockImplementationOnce(() => {
       throw new Error("Artificial TWA failure");
     });
     try {
@@ -215,11 +215,24 @@ describe("single-stream lightweight projection boundary", () => {
     } finally { spy.mockRestore(); }
     expect(hub.readRenderFrame(unified.query)).toBe(before);
   });
+  it("an intermediate cell failure preserves the previous complete frame and other layers", () => {
+    const hub = create(); run(hub);
+    const before = hub.readRenderFrame(unified.query);
+    const invalid = { ...unified.query, cells: [
+      unified.query.cells[0], { ...unified.query.cells[1], side: "BUY" },
+    ] } as unknown as Parameters<typeof hub.readRenderFrame>[0];
+    expect(() => hub.readRenderFrame(invalid)).toThrow("Side must be BID or ASK");
+    expect(hub.readRenderFrame(unified.query)).toBe(before);
+    expect(hub.readRenderFrame({ ...unified.query, cells: [] })).toMatchObject({
+      revision: before.revision, stateRevision: before.stateRevision,
+      bubbles: before.bubbles, delta: before.delta, volumeProfile: before.volumeProfile,
+    });
+  });
   it("rejects a reentrant revision change rather than publishing mixed derived results", () => {
     const hub = create();
     unified.inputs.slice(0, 3).forEach(input => hub.ingest(input));
-    const original = twaModule.calculateTimeWeightedDepth;
-    const spy = vi.spyOn(twaModule, "calculateTimeWeightedDepth").mockImplementationOnce((...args) => {
+    const original = twaModule.calculateTimeWeightedDepthCells;
+    const spy = vi.spyOn(twaModule, "calculateTimeWeightedDepthCells").mockImplementationOnce((...args) => {
       hub.ingest(unified.inputs[3]);
       return original(...args);
     });

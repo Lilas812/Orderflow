@@ -11,7 +11,7 @@ import {
   type TradeStore, type TradeIngestResult,
 } from "./tradeStore";
 import {
-  calculateTimeWeightedDepth, type DepthHistory, type DepthRecord,
+  calculateTimeWeightedDepthCells, type DepthHistory, type DepthRecord,
   type DepthQuery, type TimeWeightedDepth,
 } from "./timeWeightedDepth";
 import type { MbpBook } from "./mbpBook";
@@ -539,7 +539,7 @@ export function createAnalysisHub(definition: AnalysisScope, monotonicNowMs: () 
       events: depth, qualityState: observedQuality,
       qualityTimeAlignmentEvidence: scope.depthTimeAlignmentEvidence,
     };
-    const cells = history ? query.cells.map(cell => calculateTimeWeightedDepth(history, cell)) : [];
+    const cells = history ? calculateTimeWeightedDepthCells(history, query.cells) : [];
     const deltaEnd = end < BigInt(observedThroughNs) ? end : BigInt(observedThroughNs);
     const bins = deltaEnd > start ? displayDeltaBins.filter(bin =>
       BigInt(bin.endNs) > start && BigInt(bin.startNs) < deltaEnd) : [];

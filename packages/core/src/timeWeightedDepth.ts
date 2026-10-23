@@ -122,22 +122,60 @@ function ratio(numerator: bigint, denominator: bigint): number {
  * No UI sampling, filters, aggregation of trades, or persistent history store.
  */
 export function calculateTimeWeightedDepth(history: DepthHistory, query: DepthQuery): TimeWeightedDepth {
+  const checked = validateQuery(query);
+  return integrate(history, query, checked, prepareHistory(history));
+}
+
+/** Frame-local sharing only. Queries, including their failures, retain caller order. */
+export function calculateTimeWeightedDepthCells(
+  history: DepthHistory, queries: readonly DepthQuery[],
+): readonly TimeWeightedDepth[] {
+  let prepared: ReturnType<typeof prepareHistory> | undefined;
+  return queries.map(query => {
+    // Do not inspect history for [] or prepare it before the first query is valid.
+    const checked = validateQuery(query);
+    prepared ??= prepareHistory(history);
+    return integrate(history, query, checked, prepared);
+  });
+}
+
+function validateQuery(query: DepthQuery) {
   ensure(query.side === "BID" || query.side === "ASK", "Side must be BID or ASK");
   const start = ns(query.startNs);
   const end = ns(query.endNs);
   ensure(end > start, "TWA interval must have positive duration");
   const binId = priceBinId(query.priceTicks, query.width);
   priceBinTicks(query.priceTicks, query.width);
+  return { start, end, binId };
+}
+
+function prepareHistory(history: DepthHistory) {
   const quality = validateQuality(history);
   const records = prepare(history);
-  // Sorting integration boundaries does not reorder the source events.
-  const boundaries = new Set<bigint>([start, end]);
-  for (const record of records) if (record.at < end) boundaries.add(record.at);
-  for (const interval of quality) {
-    const at = ns(interval.startNs);
-    if (at < end) boundaries.add(at);
-  }
+  const qualityStarts = quality.map(interval => ns(interval.startNs));
+  // Validate ALL records, including future ones, before sharing sorted time keys.
+  // The records and zero-length quality transitions themselves remain in source order.
+  const boundaries = new Set<bigint>(qualityStarts);
+  for (const record of records) boundaries.add(record.at);
   const times = [...boundaries].sort((a, b) => a < b ? -1 : a > b ? 1 : 0);
+  return { quality, qualityStarts, records, times };
+}
+
+function integrate(
+  history: DepthHistory, query: DepthQuery, { start, end, binId }: ReturnType<typeof validateQuery>,
+  { quality, qualityStarts, records, times: sharedTimes }: ReturnType<typeof prepareHistory>,
+): TimeWeightedDepth {
+  // Merge [start,end) into the common sorted prefix; retain earlier keys for replay.
+  const times: bigint[] = [];
+  let insertedStart = false;
+  for (const at of sharedTimes) {
+    if (at >= end) break;
+    if (!insertedStart && start < at) { times.push(start); insertedStart = true; }
+    if (at === start) insertedStart = true;
+    times.push(at);
+  }
+  if (!insertedStart) times.push(start);
+  times.push(end);
   let book = createMbpBook();
   let fresh = false;
   let eventIndex = 0;
@@ -146,7 +184,7 @@ export function calculateTimeWeightedDepth(history: DepthHistory, query: DepthQu
   let integral = 0n;
   for (let index = 0; index < times.length - 1; index++) {
     const at = times[index];
-    while (qualityIndex + 1 < quality.length && ns(quality[qualityIndex + 1].startNs) <= at) {
+    while (qualityIndex + 1 < quality.length && qualityStarts[qualityIndex + 1] <= at) {
       const interval = quality[++qualityIndex];
       if (interval.status !== "VALID" || interval.sequenceVerification !== "CONTIGUOUS") fresh = false;
     }

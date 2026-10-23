@@ -1,4 +1,5 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import * as mbpModule from "./mbpBook";
 import { F01_BOOK as F01, F02_TWO_TICKS as F02, F03_GAP_TWA as F03 } from "../../fixtures/src/index";
 import { validateMarketEvent, type L2Snapshot } from "./events";
 import {
@@ -6,8 +7,12 @@ import {
   transitionQuality, type MarketQualityState,
 } from "./qualityTimeline";
 import {
-  calculateTimeWeightedDepth, type DepthHistory, type DepthQuery, type DepthRecord,
+  calculateTimeWeightedDepth, calculateTimeWeightedDepthCells,
+  type DepthHistory, type DepthQuery, type DepthRecord,
 } from "./timeWeightedDepth";
+
+// Compatibility cases first passed on the original per-cell path.
+const runCells = calculateTimeWeightedDepthCells;
 
 const origin = BigInt(F01.expected.startNs);
 const at = (seconds: number) => (origin + BigInt(seconds) * 1_000_000_000n).toString();
@@ -415,5 +420,148 @@ describe("R04 input validation, not silent repair", () => {
     expect(fixture.events.map((event) => event.header.sequence)).toEqual(
       fixture.fixtureId === "F-02" ? ["1", "2", "3", "4", "5"] : ["1", "2"],
     );
+  });
+});
+
+describe("28-C3 frame-local preparation compatibility", () => {
+  function outcome(run: () => unknown): unknown {
+    try { return { value: run() }; }
+    catch (error) {
+      if (!(error instanceof Error)) throw error;
+      return { name: error.name, message: error.message };
+    }
+  }
+  it.each([["F01", () => history()], ["F02", () => history(F02.events)], ["F03", gapHistory]] as const)(
+    "%s matches every scalar field over deterministic overlapping ranges", (_, make) => {
+      const h = make();
+      const cells = Array.from({ length: 96 }, (_, i) => query(0, 10, {
+        startNs: (origin + BigInt(i % 13) * 750_000_000n).toString(),
+        endNs: (origin + BigInt(i % 13) * 750_000_000n + 1_250_000_001n).toString(),
+        side: i % 3 ? "BID" : "ASK", width: [1, 2, 4, 8][i % 4] as 1 | 2 | 4 | 8,
+      }));
+      const before = JSON.stringify(h), bids = [...h.qualityState.lastGoodBook.bids];
+      expect(runCells(h, cells)).toEqual(cells.map(cell => calculateTimeWeightedDepth(h, cell)));
+      expect(JSON.stringify(h)).toBe(before);
+      expect([...h.qualityState.lastGoodBook.bids]).toEqual(bids);
+    },
+  );
+  it("retains fixed F01 and F03 exact integral goldens", () => {
+    const one = runCells(history(), [query()])[0];
+    expect(one).toMatchObject({ status: "VALID", twa: 38, partialTWA: 38,
+      coverageRatio: 1, coveredDuration: "10000000000", integralQuantityNs: "380000000000" });
+    expect(runCells(history(), Array.from({ length: 5 }, (_, i) => query(i * 2, i * 2 + 2)))
+      .map(cell => cell.twa)).toEqual([60, 40, 30, 60, 0]);
+    expect(runCells(gapHistory(), [query(8, 12)])[0]).toMatchObject({
+      status: "NO DATA", twa: null, partialTWA: 35, coverageRatio: .5,
+      coveredDuration: "2000000000", integralQuantityNs: "70000000000",
+    });
+  });
+  it.each([1, 2, 4, 8] as const)("preserves negative ticks and width %i", width => {
+    const snapshot = depth({ ...F01.events[0],
+      depthScope: { type: "PRICE_RANGE", minTick: -8, maxTick: 0 },
+      bids: Array.from({ length: 8 }, (_, i) => ({ priceTicks: -8 + i, qty: 1 })), asks: [],
+    });
+    const cells = [query(0, 10, { priceTicks: -1, width })];
+    expect(runCells(history([snapshot]), cells)[0]).toMatchObject({ status: "VALID", twa: width });
+  });
+  it("retains adjacent nanoseconds, endpoint exclusion and original output order", () => {
+    const cells = [query(1, 2), query(0, 1), query(0, 10, {
+      startNs: (BigInt(at(1)) - 1n).toString(), endNs: (BigInt(at(1)) + 1n).toString(),
+    })];
+    expect(runCells(history(), cells).map(c => c.twa)).toEqual([80, 40, 60]);
+  });
+  it("retains exact large integrals without converting epoch nanoseconds", () => {
+    const snap = depth({ ...F01.events[0], bids: [{ priceTicks: 80000, qty: Number.MAX_SAFE_INTEGER }] });
+    expect(runCells(history([snap]), [query()])[0]).toMatchObject({
+      twa: Number.MAX_SAFE_INTEGER,
+      integralQuantityNs: (BigInt(Number.MAX_SAFE_INTEGER) * 10_000_000_000n).toString(),
+    });
+  });
+  it("does not inspect any history for an empty cell list", () => {
+    expect(runCells({} as DepthHistory, [])).toEqual([]);
+  });
+  it.each([
+    { side: "BUY" }, { width: 3 }, { startNs: "1.5" }, { endNs: at(0) },
+  ])("validates the first query before malformed history: %j", patch => {
+    const cells = [{ ...query(), ...patch } as DepthQuery];
+    expect(outcome(() => runCells({} as DepthHistory, cells))).toEqual(
+      outcome(() => cells.map(c => calculateTimeWeightedDepth({} as DepthHistory, c))));
+  });
+  it("rejects malformed history before inspecting a later invalid query", () => {
+    const h = { ...history(), qualityTimeAlignmentEvidence: "" };
+    expect(() => runCells(h, [query(), { ...query(), side: "BUY" } as unknown as DepthQuery]))
+      .toThrow("Event/quality time alignment evidence is required");
+  });
+  it("does not inspect later cells after an intermediate failure", () => {
+    const cells = [query(), { ...query(), side: "BUY" } as unknown as DepthQuery];
+    Object.defineProperty(cells, 2, { get() { throw new Error("Later cell inspected"); } });
+    expect(() => runCells(history(), cells)).toThrow("Side must be BID or ASK");
+  });
+  it("validates future raw events even when every query ends earlier", () => {
+    const bad = depth({ ...F01.events[0],
+      header: { ...F01.events[0].header, exchangeTimeNs: at(20), quality: "SUSPECT" },
+    });
+    expect(() => runCells({ ...history(), events: [F01.events[0], bad] }, [query(0, 1)]))
+      .toThrow("Non-VALID raw events cannot establish depth");
+  });
+  it("rejects reversed raw event order rather than sorting it", () => {
+    expect(() => runCells({ ...history(), events: [F01.events[0], F01.events[2], F01.events[1]] },
+      [query(0, 1)])).toThrow("Depth events are out of order");
+  });
+  it("retains first-cell derived-quantity rejection before a later bad query", () => {
+    const snap = depth({ ...F02.events[0], bids: [
+      { priceTicks: 80000, qty: Number.MAX_SAFE_INTEGER },
+      { priceTicks: 80001, qty: Number.MAX_SAFE_INTEGER },
+    ] });
+    expect(() => runCells(history([snap]), [query(0, 1, { width: 2 }),
+      { ...query(), side: "BUY" } as unknown as DepthQuery])).toThrow("Derived quantity exceeds safe Number output");
+  });
+  it("retains zero-length GAP transitions and same-time Snapshot/SET/DELETE ordering", () => {
+    const h = history([F01.events[0]]), intervals = h.qualityState.timeline.L2_MBP;
+    const valid = intervals.at(-1)!;
+    const qualityState = { ...h.qualityState, timeline: { ...h.qualityState.timeline, L2_MBP: [
+      ...intervals.slice(0, -1), { ...valid, endNs: at(1) },
+      { ...valid, status: "GAP" as const, startNs: at(1), endNs: at(1) },
+      { ...valid, startNs: at(1) },
+    ] } };
+    const missing = { ...h, qualityState };
+    expect(runCells(missing, [query(0, 2), query(1, 2)]).map(c => [c.twa, c.coverageRatio, c.partialTWA]))
+      .toEqual([[null, .5, 40], [null, 0, null]]);
+    const snapshot = depth({ ...F01.events[0], snapshotCoversSequence: "2",
+      header: { ...F01.events[0].header, eventId: "MOCK-C3-SNAP", sequence: "2", exchangeTimeNs: at(1) } });
+    const updates = [depth({ ...F01.events[1],
+      header: { ...F01.events[1].header, eventId: "MOCK-C3-SET", sequence: "3" } }),
+    depth({ ...F01.events[1], kind: "L2_DELETE_LEVEL", qty: 0,
+      header: { ...F01.events[1].header, eventId: "MOCK-C3-DELETE", sequence: "4" } })];
+    const recovered = { ...missing, events: [F01.events[0], snapshot, ...updates] };
+    expect(runCells(recovered, [query(0, 2), query(1, 2)]).map(c => [c.twa, c.coverageRatio]))
+      .toEqual([[20, 1], [0, 1]]);
+  });
+  it("keeps explicit batch intermediate states durationless and rejects incomplete envelopes", () => {
+    const updates = [80, 60].map((qty, i) => validateMarketEvent({
+      ...F01.events[1], qty, updateBatchId: "MOCK-C3-BATCH",
+      header: { ...F01.events[1].header, sequence: String(i + 2), eventId: `MOCK-C3-BATCH-${i}` },
+    }));
+    const h = history([F01.events[0], { batch: updates } as DepthRecord]);
+    expect(runCells(h, [query(0, 2), query(1, 2)]).map(c => c.twa)).toEqual([50, 60]);
+    expect(() => runCells({ ...h, events: [F01.events[0], updates[0] as DepthRecord] }, [query(0, 1)]))
+      .toThrow("Tagged updates require an explicit complete batch envelope");
+  });
+  it("shares history preparation and sorting, not cell book reconstruction or later calls", () => {
+    const base = history(), cells = [query(0, 2), query(2, 4), query(4, 6)];
+    let reads = 0;
+    const h = { ...base, get events() { reads++; return base.events; } };
+    const apply = vi.spyOn(mbpModule, "applyMbpEvent");
+    const sort = vi.spyOn(Array.prototype, "sort");
+    try {
+      const results = runCells(h, cells);
+      expect(results.map(c => c.twa)).toEqual([60, 40, 30]);
+      expect(reads).toBe(1);
+      expect(sort).toHaveBeenCalledTimes(1);
+      expect(apply.mock.calls.filter(([, event]) => (event as L2Snapshot).kind === "L2_SNAPSHOT")).toHaveLength(3);
+      runCells(h, cells);
+      expect(reads).toBe(2);
+      expect(sort).toHaveBeenCalledTimes(2);
+    } finally { apply.mockRestore(); sort.mockRestore(); }
   });
 });
