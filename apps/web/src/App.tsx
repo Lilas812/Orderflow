@@ -80,7 +80,8 @@ function App() {
           ladderId={ladderId} onSelectLadder={selectLadder} onLadderRaw={setLadderRaw}
           display={preview} onDisplay={updateDisplay} heatmapActionsRef={heatmapActions} onOpenSettings={openSettings}
           onToggleMock={() => setTradeCount((c) => (c === 0 ? 2 : 0))}
-          unified={{ snap: uni.snap, speeds: UNIFIED_SPEEDS, onStart: startUnified, onStop: uni.stop, onRestart: restartUnified, onExit: uni.exit }}
+          unified={{ snap: uni.snap, speeds: UNIFIED_SPEEDS, onStart: startUnified, onStop: uni.stop, onRestart: restartUnified, onExit: uni.exit,
+            diagnosticDisplay: uni.diagnosticDisplay, diagnosticChecks: uni.diagnosticChecks }}
           onAddThird={() => setTradeCount((c) => (c === 2 ? 3 : c))} />
       </main>
       <footer className="foot" data-testid="text-footer">

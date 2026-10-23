@@ -1,3 +1,60 @@
+import { UNIFIED_MOCK_STREAM } from "@workspace/fixtures";
+import { makeWorkload, type Workload } from "../bench/finiteMockWorkload";
+import type { AnalysisRenderFrame, AnalysisScope, AnalysisInput, AnalysisRenderQuery } from "@workspace/core/analysis-hub";
+
+export interface DiagnosticDisplay {
+  id: "baseline13" | "cells128" | "cells512";
+  sourceId: string; sessionId: string; inputs: number; markets: number; trades: number;
+  seed: { endNs: string; spanNs: bigint; priceMinTick: number; priceMaxTick: number };
+}
+export interface DiagnosticCase {
+  id: DiagnosticDisplay["id"];
+  scope: AnalysisScope; inputs: readonly AnalysisInput[]; query: AnalysisRenderQuery;
+  display: DiagnosticDisplay; expected: Workload["expected"] | null;
+}
+/** Whitelist only; construction is lazy, once per explicit diagnostic page. No generator parameters. */
+export function selectDiagnosticCase(): DiagnosticCase {
+  const requested = diagnosticMode() === "off" ? "baseline13"
+    : new URLSearchParams(window.location.search).get("mockCase") ?? "baseline13";
+  if (requested !== "baseline13" && requested !== "cells128" && requested !== "cells512")
+    throw new Error("UNKNOWN_DIAGNOSTIC_CASE");
+  if (requested === "baseline13") return {
+    id: requested, ...UNIFIED_MOCK_STREAM, expected: null,
+    display: { id: requested, sourceId: UNIFIED_MOCK_STREAM.scope.config.identity.sourceId,
+      sessionId: UNIFIED_MOCK_STREAM.scope.config.identity.sessionId, inputs: 13, markets: 11, trades: 6,
+      seed: { endNs: (BigInt(UNIFIED_MOCK_STREAM.query.startNs) + 15_000_000_000n).toString(),
+        spanNs: 16_000_000_000n, priceMinTick: 79998, priceMaxTick: 80005 } },
+  };
+  const w = makeWorkload(requested);
+  return { ...w, id: requested, display: { id: requested, sourceId: w.scope.config.identity.sourceId,
+    sessionId: w.scope.config.identity.sessionId, inputs: w.inputs.length,
+    markets: w.expected.acceptedMarkets, trades: w.expected.acceptedTrades,
+    // Explicit diagnostic range includes Snapshot ask 80065 and SETs at 80064, not only Trades.
+    seed: { endNs: "1767225607000000000", spanNs: 8_000_000_000n, priceMinTick: 79998, priceMaxTick: 80067 } } };
+}
+export function caseChecks(frame: AnalysisRenderFrame, c: DiagnosticCase) {
+  if (!c.expected) throw new Error("BASELINE_REQUIRES_EXISTING_GOLDEN");
+  const e = c.expected, vp = frame.volumeProfile.value;
+  const equal = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
+  return [
+    { name: "VP B/S/U/V", ok: !!vp && equal([vp.totals.buyVolume, vp.totals.sellVolume,
+      vp.totals.unknownVolume, vp.totals.totalVolume].map(String), [e.B, e.S, e.U, e.V]), detail: e.V },
+    { name: "VP POC/VAL/VAH", ok: !!vp && equal([vp.pocTick, vp.valueArea.valTick, vp.valueArea.vahTick],
+      [e.poc, e.val, e.vah]), detail: `${e.poc}/${e.val}/${e.vah}` },
+    { name: "Trade count", ok: !!vp && String(vp.totals.tradeCount) === String(e.acceptedTrades), detail: String(e.acceptedTrades) },
+    { name: "Bubble B/S/U/V", ok: equal(["B", "S", "U", "V_raw"].map(k =>
+      frame.bubbles.items.reduce((sum, b) => sum + b.bucket[k as "B" | "S" | "U" | "V_raw"], 0n).toString()),
+      [e.B, e.S, e.U, e.V]), detail: e.V },
+    { name: "TWA and coverage", ok: equal(frame.heatmap.cells.map(v => v.twa), e.twa) &&
+      equal(frame.heatmap.cells.map(v => v.coverageRatio), e.coverage), detail: String(c.query.cells.length) },
+    { name: "Delta bins", ok: equal(frame.delta.items.map(v => v.delta === null ? null : String(v.delta)), e.delta), detail: e.delta.join(",") },
+    { name: "Common revision", ok: [frame.book, frame.heatmap, frame.bubbles, frame.delta,
+      frame.volumeProfile, frame.quality].every(v => v.revision === frame.revision), detail: String(frame.revision) },
+    { name: "Quality", ok: frame.quality.channels.L2_MBP.status === "VALID" &&
+      frame.quality.channels.TRADES.status === "VALID" && frame.status !== "STOPPED", detail: frame.quality.channels.L2_MBP.status },
+  ];
+}
+
 /** Finite numeric telemetry only. No events, timers, console output or renderer changes. */
 export const ROW_LIMIT = 2048;
 const WIDTH = 9;
@@ -29,12 +86,14 @@ export function createRecorder(sessionId: number) {
       return { sessionId, limit: ROW_LIMIT, allocatedBytes: data?.byteLength ?? 0, saturated, dropped, rows,
         gpuMs: "UNKNOWN", presentationAt: "UNKNOWN" };
     },
+    stats() { return { records: size, dropped, saturated, allocatedBytes: data?.byteLength ?? 0 }; },
     dispose() { data?.fill(0); data = null; size = dropped = 0; saturated = false; },
   };
 }
 export type Recorder = ReturnType<typeof createRecorder>;
 let active: Recorder | undefined;
 let reader: (() => unknown) | undefined;
+let progress: (() => unknown) | undefined;
 let draw: { layer: Layer; revision: number; start: number; origin: number } | undefined;
 
 export function diagnosticMode(): "off" | "control" | "on" {
@@ -47,11 +106,13 @@ interface Bridge {
   meaning(): string | null;
   activeDraw(): typeof draw;
   gl(layer: Layer, kind: number, ms: number, a: number, b: number): void;
+  progress(): { status: unknown; recording: ReturnType<Recorder["stats"]> | null };
+  inspectMeaning(): { bytes: number; limit: number; allowed: boolean; summary: unknown };
 }
 declare global { interface Window { __orderflowMockDiagnostics?: Bridge } }
 
 export function releaseDiagnostics() {
-  active?.dispose(); active = undefined; reader = undefined; draw = undefined;
+  active?.dispose(); active = undefined; reader = undefined; progress = undefined; draw = undefined;
   if (typeof window !== "undefined") delete window.__orderflowMockDiagnostics;
 }
 export function startDiagnostics(sessionId: number) {
@@ -59,22 +120,46 @@ export function startDiagnostics(sessionId: number) {
   const mode = diagnosticMode();
   if (mode === "off") return undefined;
   if (mode === "on") active = createRecorder(sessionId);
+  const text = () => reader ? JSON.stringify(reader(), (_k, v) => typeof v === "bigint" ? { bigint: v.toString() }
+    : v instanceof Map ? { map: [...v] } : v) : null;
   window.__orderflowMockDiagnostics = {
     snapshot: () => active?.snapshot() ?? null,
     // Read on demand, outside timed ingest/frame sections. Derived frame only, never raw input.
     meaning: () => {
       if (!reader) return null;
-      const text = JSON.stringify(reader(), (_k, v) => typeof v === "bigint" ? { bigint: v.toString() }
-        : v instanceof Map ? { map: [...v] } : v);
-      if (text.length > 65536) throw new Error("DIAGNOSTIC_SEMANTIC_LIMIT");
-      return text;
+      const value = text()!;
+      if (new TextEncoder().encode(value).byteLength > 65536) throw new Error("DIAGNOSTIC_SEMANTIC_LIMIT");
+      return value;
     },
     activeDraw: () => draw ? { ...draw } : undefined,
     gl: (layer, kind, ms, a, b) => active?.add("gl", draw?.revision ?? -1, -1, layer, ms, kind, a, b),
+    progress: () => ({ status: progress?.(), recording: active?.stats() ?? null }),
+    inspectMeaning: () => {
+      const content = reader?.() as { frame?: AnalysisRenderFrame; checks?: unknown; counts?: unknown } | undefined;
+      const value = content === undefined ? null : JSON.stringify(content, (_k, v) =>
+        typeof v === "bigint" ? { bigint: v.toString() } : v instanceof Map ? { map: [...v] } : v);
+      const bytes = value === null ? 0 : new TextEncoder().encode(value).byteLength;
+      const f = content?.frame, vp = f?.volumeProfile.value;
+      // Explicit summary, NOT a truncated replacement for the full semantic payload or its hash.
+      const summary = f ? { summaryOnly: true, revision: f.revision, stateRevision: f.stateRevision,
+        scope: f.scope, checks: content?.checks, counts: content?.counts,
+        layerRevisions: [f.book, f.heatmap, f.bubbles, f.delta, f.volumeProfile, f.quality].map(v => v.revision),
+        cellCount: f.heatmap.cells.length, noDataCells: f.heatmap.cells.filter(v => v.status === "NO DATA").length,
+        quality: f.quality.channels, book: f.book.levels,
+        bubbles: f.bubbles.items.map(b => ({ revision: b.revision, status: b.status,
+          minTick: b.bucket.minTick, maxTick: b.bucket.maxTick, startNs: b.bucket.startNs, endNs: b.bucket.endNs,
+          B: String(b.bucket.B), S: String(b.bucket.S), U: String(b.bucket.U), V: String(b.bucket.V_raw) })),
+        vp: vp ? { B: String(vp.totals.buyVolume), S: String(vp.totals.sellVolume),
+          U: String(vp.totals.unknownVolume), V: String(vp.totals.totalVolume),
+          poc: vp.pocTick, val: vp.valueArea.valTick, vah: vp.valueArea.vahTick } : null,
+      } : null;
+      return { bytes, limit: 65536, allowed: bytes <= 65536, summary };
+    },
   };
   return active;
 }
 export const setDiagnosticReader = (next: () => unknown) => { if (diagnosticMode() !== "off") reader = next; };
+export const setDiagnosticProgress = (next: () => unknown) => { if (diagnosticMode() !== "off") progress = next; };
 export const diagnostics = () => active;
 export function profiler(layer: Layer, actual: number, start: number, commit: number, mount: boolean, revision: number) {
   active?.add("react", revision, -1, layer, actual, start, commit, Number(mount));

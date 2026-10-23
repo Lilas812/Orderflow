@@ -5,6 +5,7 @@ import { unifiedChecks } from "../hooks/useMockAnalysisSession";
 import {
   ROW_LIMIT, createRecorder, startDiagnostics, releaseDiagnostics, setDiagnosticReader,
   diagnostics, beginDraw, endDraw, diagnosticMode,
+  selectDiagnosticCase, setDiagnosticProgress,
 } from "./mockDiagnostics";
 
 afterEach(() => { releaseDiagnostics(); vi.useRealTimers(); vi.unstubAllGlobals(); });
@@ -101,4 +102,48 @@ it("session stop releases recording and leaves no timer after dispose", () => {
   s.setNotificationsEnabled(false); s.start(); vi.advanceTimersByTime(300);
   s.stop(); expect(d.snapshot().allocatedBytes).toBe(0);
   s.dispose(); expect(vi.getTimerCount()).toBe(0);
+});
+it("normal mode ignores diagnostic case selection and preserves the original source", () => {
+  vi.stubGlobal("window", { location: { search: "?mockCase=cells512" } });
+  const c = selectDiagnosticCase();
+  expect(c.id).toBe("baseline13"); expect(c.inputs).toBe(UNIFIED_MOCK_STREAM.inputs);
+  expect(c.expected).toBeNull();
+});
+it("rejects unlisted diagnostic cases instead of generating arbitrary input", () => {
+  vi.stubGlobal("window", { location: { search: "?mockDiagnostics=1&mockCase=near500" } });
+  expect(selectDiagnosticCase).toThrow("UNKNOWN_DIAGNOSTIC_CASE");
+});
+it("cells128 has an independent explicit source, query, budget and viewport", () => {
+  vi.stubGlobal("window", { location: { search: "?mockDiagnostics=1&mockCase=cells128" } });
+  const c = selectDiagnosticCase(), s = c.display.seed;
+  expect(c.inputs.length).toBe(128); expect(c.query.cells.length).toBe(128);
+  expect(c.scope.config.identity.sessionId).toBe("MOCK-BENCH-cells128-SESSION");
+  expect(c.query.cells.every(v => BigInt(v.startNs) >= BigInt(s.endNs) - s.spanNs &&
+    BigInt(v.endNs) <= BigInt(s.endNs) && v.priceTicks >= s.priceMinTick &&
+    v.priceTicks <= s.priceMaxTick)).toBe(true);
+  expect([s.priceMinTick, s.priceMaxTick]).toEqual([79998, 80067]);
+  expect(c.scope.budget.inputs).toBe(512);
+});
+it("measures UTF-8 bytes and refuses an oversized semantic export without truncation", () => {
+  vi.stubGlobal("window", { location: { search: "?mockDiagnostics=control" } });
+  startDiagnostics(1); setDiagnosticReader(() => "あ".repeat(22000));
+  expect(window.__orderflowMockDiagnostics?.inspectMeaning()).toMatchObject({ bytes: 66002, allowed: false, limit: 65536 });
+  expect(() => window.__orderflowMockDiagnostics?.meaning()).toThrow("SEMANTIC_LIMIT");
+});
+it("progress is bounded metadata, cleared on release and does not copy the row slab", () => {
+  vi.stubGlobal("window", { location: { search: "?mockDiagnostics=1" } });
+  startDiagnostics(1); setDiagnosticProgress(() => ({ processedInputs: 3 }));
+  diagnostics()?.add("ingest", 3);
+  expect(window.__orderflowMockDiagnostics?.progress()).toMatchObject({
+    status: { processedInputs: 3 }, recording: { records: 1, saturated: false, dropped: 0 } });
+  releaseDiagnostics(); startDiagnostics(2);
+  expect(window.__orderflowMockDiagnostics?.progress().status).toBeUndefined();
+});
+it("labels identical-object frame reads as HIT without introducing additional reads", () => {
+  vi.useFakeTimers(); const d = createRecorder(1);
+  const s = createMockAnalysisSession({ ...UNIFIED_MOCK_STREAM, diagnostics: d });
+  s.setNotificationsEnabled(false); s.start(); vi.advanceTimersByTime(50);
+  expect(s.readFrame()).toBe(s.readFrame());
+  expect(d.snapshot().rows.filter(r => r.stage === "frame").map(r => r.a)).toEqual([0, 1]);
+  s.dispose();
 });

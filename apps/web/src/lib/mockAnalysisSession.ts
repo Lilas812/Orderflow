@@ -51,6 +51,7 @@ export function createMockAnalysisSession(options: MockSessionOptions) {
   let notificationsEnabled = true;
   let delivering = false;
   let startedAt = 0;
+  let lastRead: AnalysisRenderFrame | null = null;
   const now = () => performance.now();
   function clearTimers() {
     if (inputTimer !== null) clearInterval(inputTimer);
@@ -112,6 +113,7 @@ export function createMockAnalysisSession(options: MockSessionOptions) {
       hub = createAnalysisHub(definition.scope, now);
       processed = 0; marketEvents = 0; acceptedMarketEvents = 0;
       decision = null; state = "RUNNING"; reason = "STARTED";
+      lastRead = null;
       if (options.diagnostics) startedAt = performance.now();
       if (definition.inputs.length === 0) { finish("COMPLETED", "INPUT_EXHAUSTED"); return; }
       inputTimer = setInterval(nextInput, interval);
@@ -124,6 +126,7 @@ export function createMockAnalysisSession(options: MockSessionOptions) {
     dispose() {
       finish("DISPOSED", "DISPOSED");
       listeners.clear(); hub = null; decision = null;
+      lastRead = null;
       options.diagnostics?.dispose();
     },
     subscribe(listener: (frame: AnalysisRenderFrame) => void) {
@@ -143,7 +146,8 @@ export function createMockAnalysisSession(options: MockSessionOptions) {
       if (!hub) throw new Error("No active analysis hub");
       const d = options.diagnostics, started = d ? performance.now() : 0;
       const frame = hub.readRenderFrame(query);
-      d?.add("frame", frame.revision, processed, "session", performance.now() - started);
+      d?.add("frame", frame.revision, processed, "session", performance.now() - started, Number(frame === lastRead));
+      if (d) lastRead = frame;
       return frame;
     },
     getStatus() {

@@ -55,6 +55,7 @@ import { TimeAxis } from "./TimeAxis";
 import { VolumeProfilePanel } from "./VolumeProfilePanel";
 import { UNIFIED_MOCK_STREAM } from "@workspace/fixtures";
 import { unifiedChecks, type UnifiedSnapshot } from "../hooks/useMockAnalysisSession";
+import type { DiagnosticDisplay } from "../diagnostics/mockDiagnostics";
 
 /** Integrated finite MOCK controller surface (owned by App via useMockAnalysisSession). */
 export interface UnifiedProps {
@@ -64,6 +65,8 @@ export interface UnifiedProps {
   onStop: () => void;
   onRestart: (inputEveryMs: number) => void;
   onExit: () => void;
+  diagnosticDisplay?: DiagnosticDisplay;
+  diagnosticChecks?: ReturnType<typeof unifiedChecks>;
 }
 const UNI_START = BigInt(UNIFIED_MOCK_STREAM.query.startNs);
 /** Fixed bounded source range (0..14 s, 7 cells); reused by the shared Viewport seed. Never the 30 min default. */
@@ -251,7 +254,7 @@ export function ChartShell({ trades, mockOn, onToggleMock, onAddThird, heatmap: 
   const uniRun = unified?.snap.runId ?? 0;
   // Seed only on explicit start/restart: notifications, pan, zoom and resize never reset HISTORY.
   useEffect(() => {
-    if (uniOn) setHmVp((v) => verificationViewport(UNI_SEED, v.bounds, v.dpr));
+    if (uniOn) setHmVp((v) => verificationViewport(unified?.diagnosticDisplay?.seed ?? UNI_SEED, v.bounds, v.dpr));
   }, [uniRun, uniOn]);
   const uniRev = uniFrame?.revision;
   const uniCells = useMemo<readonly HeatmapCell[]>(() => (uniFrame?.heatmap.cells ?? []).map((r, i) => ({
@@ -259,7 +262,7 @@ export function ChartShell({ trades, mockOn, onToggleMock, onAddThird, heatmap: 
     ...(r.status === "NO DATA" ? { missingReason: "UNKNOWN" as const } : {}),
   })), [uniFrame]);
   const uniBubbles = useMemo(() => uniFrame?.bubbles.items ?? [], [uniFrame]);
-  const uniChecks = useMemo(() => (uniFrame ? unifiedChecks(uniFrame) : []), [uniFrame]);
+  const uniChecks = useMemo(() => unified?.diagnosticChecks ?? (uniFrame ? unifiedChecks(uniFrame) : []), [uniFrame, unified?.diagnosticChecks]);
   /* ---- R09 bubble verification (independent of heatmap F01; viewport reset on scenario id only) ---- */
   const scn = useMemo(() => (bubbleId ? ALL_SCN.find((s) => s.id === bubbleId) ?? null : null), [bubbleId]);
   const isR10 = !!scn && R10_SCENARIOS.some((s) => s.id === scn.id);
@@ -738,9 +741,12 @@ export function ChartShell({ trades, mockOn, onToggleMock, onAddThird, heatmap: 
         <span data-testid="text-span">Span {hasData ? spanMin.toFixed(1) : "—"} min (recommended max {String(MAX_SPAN_NS / 60_000_000_000n / 60n)} h)</span>
       </div>
       {uniOn && unified && (
-        <div className="dbg bb-dbg" data-testid="unified-controls">
+        <div className="dbg bb-dbg" data-testid="unified-controls"
+          data-diagnostic-viewport={unified.diagnosticDisplay ? JSON.stringify(vp) : undefined}>
           <div className="dbg-row dbg-wrap">
-            <span data-testid="text-unified-source">MOCK / SIMULATED (NOT LIVE) single finite artificial stream {UNIFIED_MOCK_STREAM.scope.config.identity.sourceId}: {UNIFIED_MOCK_STREAM.inputs.length} inputs / 11 market events / 6 Trades. Only readRenderFrame(query) feeds the layers.</span>
+            <span data-testid="text-unified-source">MOCK / SIMULATED (NOT LIVE) single finite artificial stream {unified.diagnosticDisplay
+              ? `${unified.diagnosticDisplay.sourceId} / session ${unified.diagnosticDisplay.sessionId}: ${unified.diagnosticDisplay.inputs} inputs / ${unified.diagnosticDisplay.markets} market events / ${unified.diagnosticDisplay.trades} Trades.`
+              : `${UNIFIED_MOCK_STREAM.scope.config.identity.sourceId}: ${UNIFIED_MOCK_STREAM.inputs.length} inputs / 11 market events / 6 Trades.`} Only readRenderFrame(query) feeds the layers.</span>
             <span data-testid="text-unified-bubble-preset">Unified verification: volume/Delta/imbalance display filters OFF; incomplete bubbles withheld, quantities unchanged. Legacy filter settings are preserved.</span>
           </div>
           <div data-testid="text-unified-counts">

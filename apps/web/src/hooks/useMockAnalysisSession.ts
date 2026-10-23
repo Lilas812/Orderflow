@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { UNIFIED_MOCK_STREAM } from "@workspace/fixtures";
 import type { AnalysisRenderFrame } from "@workspace/core/analysis-hub";
 import { createMockAnalysisSession } from "../lib/mockAnalysisSession";
-import { startDiagnostics, releaseDiagnostics, setDiagnosticReader, diagnosticMode } from "../diagnostics/mockDiagnostics";
+import { startDiagnostics, releaseDiagnostics, setDiagnosticReader, setDiagnosticProgress, diagnosticMode,
+  selectDiagnosticCase, caseChecks } from "../diagnostics/mockDiagnostics";
 
 /** Explicit finite-demo speeds. 300 ms/input lets a 250 ms notification observe the transient L2 GAP. */
 export const UNIFIED_SPEEDS = [50, 300, 800] as const;
@@ -61,6 +62,7 @@ export function unifiedChecks(frame: AnalysisRenderFrame): UnifiedCheck[] {
  * once per publication, never per input/Trade. Frames come only from readFrame(query).
  */
 export function useMockAnalysisSession() {
+  const definition = useMemo(selectDiagnosticCase, []);
   const [snap, setSnap] = useState<UnifiedSnapshot>(OFF);
   const live = useRef<{ session: ReturnType<typeof createMockAnalysisSession>; timer: number } | null>(null);
   const counters = useRef({ notices: 0, runId: 0, lastRevision: -1 });
@@ -79,9 +81,10 @@ export function useMockAnalysisSession() {
     const diagnostic = startDiagnostics(c.runId);
     const inspection = diagnosticMode() !== "off";
     const session = createMockAnalysisSession({
-      scope: UNIFIED_MOCK_STREAM.scope, inputs: UNIFIED_MOCK_STREAM.inputs,
-      query: UNIFIED_MOCK_STREAM.query, inputEveryMs, diagnostics: diagnostic,
+      scope: definition.scope, inputs: definition.inputs,
+      query: definition.query, inputEveryMs, diagnostics: diagnostic,
     });
+    setDiagnosticProgress(() => session.getStatus());
     session.setNotificationsEnabled(false);
     const runId = c.runId;
     let tick = 0;
@@ -96,12 +99,12 @@ export function useMockAnalysisSession() {
         performance.now() - entered, timerStart + tick * UNIFIED_NOTICE_MS, entered, 0);
       if (changed) {
         try {
-          const frame = session.readFrame(UNIFIED_MOCK_STREAM.query);
+          const frame = session.readFrame(definition.query);
           c.lastRevision = status.revision; c.notices++;
           const phase: UnifiedPhase = terminal ? (status.state === "COMPLETED" ? "COMPLETED" : "STOPPED") : "RUNNING";
           if (inspection) {
             const publishedAt = performance.now();
-            setDiagnosticReader(() => ({ frame, checks: unifiedChecks(frame), counts: status.counts,
+            setDiagnosticReader(() => ({ frame, checks: definition.expected ? caseChecks(frame, definition) : unifiedChecks(frame), counts: status.counts,
               revision: status.revision, processedInputs: status.processedInputs, state: status.state }));
             diagnostic?.add("publish", frame.revision, status.processedInputs, "root", publishedAt - entered,
               timerStart + tick * UNIFIED_NOTICE_MS, entered, publishedAt);
@@ -132,7 +135,7 @@ export function useMockAnalysisSession() {
     const timer = window.setInterval(publish, UNIFIED_NOTICE_MS);
     live.current = { session, timer };
     setSnap({ phase: "RUNNING", frame: null, status: session.getStatus(), notices: 0, runId, inputEveryMs });
-  }, [teardown]);
+  }, [teardown, definition]);
 
   const stop = useCallback(() => {
     const l = live.current; if (!l) return;
@@ -140,16 +143,19 @@ export function useMockAnalysisSession() {
     window.clearInterval(l.timer);
     const status = l.session.getStatus();
     let frame: AnalysisRenderFrame | null = null;
-    try { frame = status.revision > 0 ? l.session.readFrame(UNIFIED_MOCK_STREAM.query) : null; } catch { frame = null; }
+    try { frame = status.revision > 0 ? l.session.readFrame(definition.query) : null; } catch { frame = null; }
     const c = counters.current;
     if (frame) { c.notices++; c.lastRevision = status.revision; }
     setSnap(s => ({ ...s, phase: "STOPPED", status, frame: frame ?? s.frame, notices: c.notices }));
     releaseDiagnostics();
-  }, []);
+  }, [definition]);
 
   const exit = useCallback(() => { teardown(); setSnap(OFF); }, [teardown]);
   const restart = useCallback((inputEveryMs?: number) => start(inputEveryMs ?? snap.inputEveryMs), [start, snap.inputEveryMs]);
 
   useEffect(() => teardown, [teardown]);
-  return { snap, start, stop, restart, exit };
+  const diagnosticChecks = useMemo(() => definition.expected && snap.frame
+    ? caseChecks(snap.frame, definition) : undefined, [definition, snap.frame]);
+  return { snap, start, stop, restart, exit, diagnosticChecks,
+    diagnosticDisplay: definition.id === "baseline13" ? undefined : definition.display };
 }

@@ -1,5 +1,5 @@
 // Existing Chromium + native CDP pipe only. No dependencies, external URLs or application timers.
-// Usage: node apps/web/src/diagnostics/baseline13-driver.mjs [new .local/diagnostics/.../results.json]
+// Usage: node apps/web/src/diagnostics/baseline13-driver.mjs [new output.json] [baseline13|cells128|cells512] [preflight|compare]
 import { spawn } from "node:child_process";
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { resolve, dirname } from "node:path";
@@ -75,7 +75,28 @@ function installGLObserver() {
   };
 }
 
-async function browserRun(mode, repetition, lifecycle) {
+function captureViewport() {
+  const root = document.querySelector('[data-testid="unified-controls"]');
+  const value = root?.getAttribute("data-diagnostic-viewport");
+  if (!value) return null; // baseline uses its unchanged existing surface.
+  const vp = JSON.parse(value), b = vp.bounds, p = vp.price;
+  const y = tick => b.top + (p.maxTick - tick) / (p.maxTick - p.minTick) * b.height;
+  const rows = [...document.querySelectorAll('[data-testid^="vp-level-"]')].map(e => ({
+    tick: Number(e.getAttribute("data-tick")), actualY: Number(e.getAttribute("data-y")),
+    errorPx: Math.abs(Number(e.getAttribute("data-y")) - y(Number(e.getAttribute("data-tick")))),
+  }));
+  const h = document.querySelector(".hm-canvas"), bubble = document.querySelector(".bb-canvas");
+  return { viewport: vp, source: document.querySelector('[data-testid="text-unified-source"]')?.textContent,
+    vpRows: rows, heatmap: h ? { revision: Number(h.dataset.revision), rects: Number(h.dataset.rectCount),
+      minNs: h.dataset.drawnMinNs, maxNs: h.dataset.drawnMaxNs, status: h.dataset.status,
+      width: h.width, height: h.height } : null,
+    bubble: bubble ? { revision: Number(bubble.dataset.revision), vertices: Number(bubble.dataset.vertexCount),
+      status: bubble.dataset.status, width: bubble.width, height: bubble.height } : null };
+}
+async function browserRun(mode, repetition, lifecycle, workload) {
+  const expectedInputs = workload === "baseline13" ? 13 : 128;
+  const completionLimitMs = expectedInputs * 300 + 6000;
+  const browserLimitMs = completionLimitMs + 15000;
   const dir = await mkdtemp("/tmp/orderflow-b2b1-browser-");
   const browser = spawn("/repl/tools/bin/chromium", ["--headless=new", "--no-sandbox", "--disable-dev-shm-usage",
     "--disable-background-networking", "--disable-component-update", "--disable-sync", "--no-first-run",
@@ -99,8 +120,9 @@ async function browserRun(mode, repetition, lifecycle) {
     pending.set(n, { resolve, reject, timer });
     browser.stdio[3].write(JSON.stringify({ id: n, method, params, ...(sessionId ? { sessionId } : {}) }) + "\0");
   });
-  const hardStop = setTimeout(() => { try { process.kill(-browser.pid, "SIGKILL"); } catch {} }, 45000);
+  const hardStop = setTimeout(() => { try { process.kill(-browser.pid, "SIGKILL"); } catch {} }, browserLimitMs);
   let captured;
+  let rescue;
   try {
     const version = await call("Browser.getVersion"), target = await call("Target.createTarget", { url: "about:blank" });
     const { sessionId } = await call("Target.attachToTarget", { targetId: target.targetId, flatten: true });
@@ -110,9 +132,15 @@ async function browserRun(mode, repetition, lifecycle) {
       if (r.exceptionDetails) throw Error(`BROWSER_EVALUATION:${r.exceptionDetails.text}:${r.exceptionDetails.exception?.description}`);
       return r.result.value;
     };
-    const wait = async expression => {
-      const deadline = performance.now() + 10000;
+    rescue = async () => evaluate(`({progress:window.__orderflowMockDiagnostics?.progress(),
+      inspection:window.__orderflowMockDiagnostics?.inspectMeaning(),
+      telemetry:window.__orderflowMockDiagnostics?.snapshot(),gl:window.__b2gl?.snapshot(),
+      viewport:(${captureViewport.toString()})()})`);
+    const wait = async (expression, limit = 10000) => {
+      const deadline = performance.now() + limit;
       while (performance.now() < deadline) {
+        const budget = await evaluate("window.__orderflowMockDiagnostics?.progress().recording");
+        if (budget?.saturated || budget?.dropped) throw Error("DIAGNOSTIC_RECORD_LIMIT");
         if (await evaluate(expression)) return;
         await new Promise(r => setTimeout(r, 100));
       }
@@ -122,7 +150,7 @@ async function browserRun(mode, repetition, lifecycle) {
     await page("Network.enable");
     await page("Network.setBlockedURLs", { urls: ["*tick-stream.xyz*"] });
     if (mode === "on") await page("Page.addScriptToEvaluateOnNewDocument", { source: `(${installGLObserver.toString()})()` });
-    await page("Page.navigate", { url: `http://127.0.0.1:80/?mockDiagnostics=${mode === "on" ? "1" : "control"}` });
+    await page("Page.navigate", { url: `http://127.0.0.1:80/?mockDiagnostics=${mode === "on" ? "1" : "control"}&mockCase=${workload}` });
     await wait(`!!document.querySelector('[data-testid="button-unified-start"]')`);
     const initial = await evaluate(`({text:document.body.textContent, bridge:!!window.__orderflowMockDiagnostics})`);
     assert(initial.text.includes("Events loaded: 0")); assert(!initial.bridge);
@@ -133,14 +161,29 @@ async function browserRun(mode, repetition, lifecycle) {
       g.getExtension('WEBGL_lose_context')?.loseContext();return out})()`);
     assert(gpu.webgl2, "WEBGL2_UNAVAILABLE");
     const start = await evaluate(`(()=>{const t=performance.now();document.querySelector('[data-testid="button-unified-start"]').click();return t})()`);
-    await wait(`document.querySelector('[data-testid="status-data"]')?.textContent.includes("COMPLETED")`);
+    await wait(`document.querySelector('[data-testid="status-data"]')?.textContent.includes("COMPLETED")`, completionLimitMs);
     const observedCompletion = await evaluate("performance.now()");
     await new Promise(r => setTimeout(r, 400));
+    const preflight = await rescue();
+    captured = { mode, repetition, workload, chromium: version.product, gpu, ...preflight,
+      completionLimitMs, browserLimitMs, completionObservedMs: observedCompletion - start };
+    const summary = preflight.inspection?.summary;
+    assert(summary?.checks.every(c => c.ok), "GOLDEN_MISMATCH");
+    if (workload !== "baseline13") {
+      const view = preflight.viewport, p = view.viewport.price, t = view.viewport.time;
+      assert(BigInt(t.minNs) <= 1767225600000000000n && BigInt(t.maxNs) >= 1767225606000000000n, "TIME_OUTSIDE_VIEWPORT");
+      assert(p.minTick <= 79999.5 && p.maxTick >= 80065.5, "PRICE_OUTSIDE_VIEWPORT");
+      assert(view.vpRows.length === 8 && view.vpRows.every(r => r.errorPx <= .001), "VP_COORDINATE_MISMATCH");
+      assert.equal(view.heatmap.rects, workload === "cells128" ? 128 : 512);
+      assert.equal(view.heatmap.revision, summary.revision); assert.equal(view.bubble.revision, summary.revision);
+      assert.equal(view.heatmap.status, "READY"); assert.equal(view.bubble.status, "READY");
+    }
+    assert(preflight.inspection?.allowed, "DIAGNOSTIC_SEMANTIC_LIMIT");
     const sample = await evaluate(`({meaning:window.__orderflowMockDiagnostics.meaning(),
       telemetry:window.__orderflowMockDiagnostics.snapshot(),gl:window.__b2gl?.snapshot(),
       errors:[...document.querySelectorAll('[role="alert"]')].map(e=>e.textContent)})`);
     const meaning = JSON.parse(sample.meaning);
-    assert.equal(meaning.processedInputs, 13); assert.equal(meaning.counts.inputs, 13);
+    assert.equal(meaning.processedInputs, expectedInputs); assert.equal(meaning.counts.inputs, expectedInputs);
     assert(meaning.checks.every(c => c.ok), "GOLDEN_MISMATCH");
     const revision = meaning.frame.revision;
     const layerRevisions = ["book", "heatmap", "bubbles", "delta", "volumeProfile", "quality"].map(l => meaning.frame[l].revision);
@@ -160,10 +203,12 @@ async function browserRun(mode, repetition, lifecycle) {
       assert(sample.gl.draws.some(d => d.layer === "heatmap" && d.revision === revision && d.vertices > 0));
       assert(sample.gl.draws.some(d => d.layer === "bubble" && d.revision === revision && d.vertices > 0));
     }
-    const result = captured = { mode, repetition, chromium: version.product, gpu, counts: meaning.counts,
+    const result = captured = { ...captured, mode, repetition, chromium: version.product, gpu, counts: meaning.counts,
       revision, layerRevisions, golden: meaning.checks, quality: meaning.frame.quality,
       meaningHash: createHash("sha256").update(sample.meaning).digest("hex"),
       completionObservedMs: observedCompletion - start, telemetry: sample.telemetry, gl: sample.gl ?? null };
+    if (workload === "baseline13") assert.equal(result.meaningHash,
+      "dfe56d920917807ed5265bae6ba1c3039a36a3729207c4d1ae38da2c0dc54d27", "BASELINE_HASH_REGRESSION");
     if (lifecycle) {
       // The existing UI intentionally disables Stop after COMPLETED. Exercise it while RUNNING.
       await evaluate(`document.querySelector('[data-testid="button-unified-restart"]').click()`);
@@ -194,6 +239,9 @@ async function browserRun(mode, repetition, lifecycle) {
     }
     return result;
   } catch (error) {
+    if (rescue && !captured) {
+      try { captured = { mode, repetition, workload, completionLimitMs, browserLimitMs, ...(await rescue()) }; } catch {}
+    }
     if (captured) error.partialResult = captured;
     throw error;
   } finally {
@@ -208,12 +256,15 @@ async function browserRun(mode, repetition, lifecycle) {
 }
 
 const output = resolve(process.argv[2] ?? ".local/diagnostics/task28-b2-b1/results.json");
+const workload = process.argv[3] ?? "baseline13", phase = process.argv[4] ?? "compare";
+assert(["baseline13", "cells128", "cells512"].includes(workload), "UNKNOWN_CASE");
+assert(["preflight", "compare"].includes(phase), "UNKNOWN_PHASE");
 assert(output.startsWith(resolve(".local/diagnostics") + "/"), "OUTPUT_MUST_BE_IGNORED_DIAGNOSTICS");
-const report = { workload: "existing unified baseline13 only", runs: [], failure: null,
+const report = { workload, phase, runs: [], failure: null,
   gpuMs: "UNKNOWN", presentationAt: "UNKNOWN", note: "No heavy trace; OFF has only explicit control-mode semantic readout. Completion includes DOM polling uncertainty." };
 try {
-  for (let r = 1; r <= 3; r++) for (const mode of r % 2 ? ["control", "on"] : ["on", "control"]) {
-    const sample = await browserRun(mode, r, mode === "on" && r === 1);
+  for (let r = 1; r <= (phase === "preflight" ? 1 : 3); r++) for (const mode of r % 2 ? ["control", "on"] : ["on", "control"]) {
+    const sample = await browserRun(mode, r, workload === "baseline13" && mode === "on" && r === 1, workload);
     report.runs.push(sample);
     assert(report.runs.every(x => x.meaningHash === sample.meaningHash), "ON_OFF_MEANING_HASH_MISMATCH");
     console.log(JSON.stringify({ mode, repetition: r, hash: sample.meaningHash, rows: sample.telemetry?.rows.length ?? 0,
