@@ -66,7 +66,7 @@ it("observer counts actual callback/cancel paths and restores using the pre-loss
     classList = { contains: (name: string) => name === "hm-canvas" };
     dataset = { revision: "1" };
     isConnected = true;
-    getContext() { return gl; }
+    getContext(_contextId?: string) { return gl; }
     addEventListener(name: string, cb: () => void) { listeners.set(name, cb); }
     removeEventListener(name: string) { listeners.delete(name); }
   }
@@ -84,7 +84,7 @@ it("observer counts actual callback/cancel paths and restores using the pre-loss
       contexts: { loss: number; restore: number }[] }>;
     intervene: (layer: string, action: string) => string;
   } }).__canvasPhaseA;
-  new Canvas().getContext();
+  new Canvas().getContext("webgl2");
   const first = fakeWindow.requestAnimationFrame(() => {});
   callbacks.get(first)!(10);
   fakeWindow.cancelAnimationFrame(fakeWindow.requestAnimationFrame(() => {}));
