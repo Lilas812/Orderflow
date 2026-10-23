@@ -63,7 +63,7 @@ export const LAYERS = ["session", "root", "heatmap", "bubble", "delta", "vp"] as
 type Stage = typeof STAGES[number];
 export type Layer = typeof LAYERS[number];
 export type Row = { stage: Stage; at: number; ms: number; revision: number; seq: number; layer: Layer; a: number; b: number; c: number };
-export type RecordingVersion = 1 | 2;
+export type RecordingVersion = 1 | 2 | 3;
 export interface Receipt {
   recordIndex: number; revision: number; at: number; mask: number;
   heatmapAt: number | null; bubbleAt: number | null; deltaAt: number | null; vpAt: number | null; domAt: number | null;
@@ -84,9 +84,9 @@ export function createRecorder(sessionId: number, version: RecordingVersion = 1)
       }
       // v2 delegates GL API telemetry to the driver's exact bounded counters.
       // This is an explicit schema change, not sampling or a missing time sample.
-      if (version === 2 && stage === "gl") { delegatedGL++; return; }
+      if (version !== 1 && stage === "gl") { delegatedGL++; return; }
       if (saturated) { dropped = Math.min(Number.MAX_SAFE_INTEGER, dropped + 1); return; }
-      const member = version !== 2 ? -1 : stage === "dom" && layer === "vp" ? 4
+      const member = version === 1 ? -1 : stage === "dom" && layer === "vp" ? 4
         : stage === "received" ? ["heatmap", "bubble", "delta", "vp"].indexOf(layer) : -1;
       if (member >= 0) {
         const bit = 1 << member;
@@ -147,9 +147,56 @@ export function diagnosticMode(): "off" | "control" | "on" {
   const v = new URLSearchParams(window.location.search).get("mockDiagnostics");
   return v === "1" ? "on" : v === "control" ? "control" : "off";
 }
+const CELL_FIELDS = ["side", "binId", "width", "startNs", "endNs", "coveredDuration",
+  "coverageRatio", "partialTWA", "integralQuantityNs", "status", "twa"];
+/**
+ * v3 is lossless relative to the legacy SERIALIZED JSON, not its pre-JSON JS graph.
+ * Object undefined/functions/symbols are absent; array holes/undefined and nonfinite
+ * numbers are null; -0 is 0. BigInt/Map remain legacy {bigint:...}/{map:...} JSON,
+ * including legacy wrapper collisions. We do not revive native JS types.
+ *
+ * Only the 512-cell table is transformed. All other serialized fields remain intact.
+ * Each schema is the original ordered list of ALL eleven TWA field names.
+ */
+export async function encodeCompactMeaning(legacy: string) {
+  const started = performance.now();
+  if (typeof legacy !== "string") throw new Error("COMPACT_LEGACY_REQUIRED");
+  const body = JSON.parse(legacy);
+  if (JSON.stringify(body) !== legacy) throw new Error("COMPACT_NONCANONICAL_LEGACY");
+  const cells: unknown[] = body?.frame?.heatmap?.cells;
+  if (!Array.isArray(cells) || cells.length !== 512) throw new Error("COMPACT_CELL_COUNT");
+  const schemas: string[][] = [], schemaIds = new Map<string, number>();
+  const rows = cells.map(cell => {
+    if (!cell || typeof cell !== "object" || Array.isArray(cell)) throw new Error("COMPACT_CELL_OBJECT");
+    const keys = Object.keys(cell);
+    if (keys.length !== CELL_FIELDS.length || keys.some(k => !CELL_FIELDS.includes(k)))
+      throw new Error("COMPACT_CELL_FIELDS");
+    const signature = JSON.stringify(keys);
+    let id = schemaIds.get(signature);
+    if (id === undefined) { id = schemas.length; schemas.push(keys); schemaIds.set(signature, id); }
+    return [id, ...keys.map(k => (cell as Record<string, unknown>)[k])];
+  });
+  // Replacement preserves the surrounding object's original key insertion order.
+  body.frame.heatmap.cells = null;
+  const beforeHash = performance.now();
+  const bytes = new TextEncoder().encode(legacy);
+  const digest = await globalThis.crypto.subtle.digest("SHA-256", bytes);
+  const afterHash = performance.now();
+  const sha256 = Array.from(new Uint8Array(digest), b => b.toString(16).padStart(2, "0")).join("");
+  const wire = JSON.stringify({ version: 3, serializer: "legacy-json-v1", legacyBytes: bytes.byteLength,
+    cellCount: 512, schemas, rows, body, sha256 });
+  const outputBytes = new TextEncoder().encode(wire).byteLength;
+  if (outputBytes > 65536) throw Object.assign(new Error("DIAGNOSTIC_SEMANTIC_LIMIT"), { bytes: outputBytes, limit: 65536 });
+  return { wire, metrics: { legacyBytes: bytes.byteLength, outputBytes,
+    transformMs: beforeHash - started, sha256Ms: afterHash - beforeHash,
+    outputSerializationMs: performance.now() - afterHash,
+    allocationCounts: { parsedCellObjects: cells.length, tupleArrays: rows.length, schemaArrays: schemas.length },
+    totalAllocatedBytes: "UNKNOWN", gc: "UNKNOWN" } };
+}
 interface Bridge {
   snapshot(): ReturnType<Recorder["snapshot"]> | null;
   meaning(): string | null;
+  compactMeaning(): Promise<string | null>;
   activeDraw(): typeof draw;
   gl(layer: Layer, kind: number, ms: number, a: number, b: number): void;
   progress(): { status: unknown; recording: ReturnType<Recorder["stats"]> | null };
@@ -165,8 +212,8 @@ export function startDiagnostics(sessionId: number) {
   releaseDiagnostics();
   const mode = diagnosticMode();
   if (mode === "off") return undefined;
-  if (mode === "on") active = createRecorder(sessionId,
-    new URLSearchParams(window.location.search).get("mockCase") === "cells128" ? 2 : 1);
+  const caseId = new URLSearchParams(window.location.search).get("mockCase");
+  if (mode === "on") active = createRecorder(sessionId, caseId === "cells512" ? 3 : caseId === "cells128" ? 2 : 1);
   const text = () => reader ? JSON.stringify(reader(), (_k, v) => typeof v === "bigint" ? { bigint: v.toString() }
     : v instanceof Map ? { map: [...v] } : v) : null;
   window.__orderflowMockDiagnostics = {
@@ -177,6 +224,11 @@ export function startDiagnostics(sessionId: number) {
       const value = text()!;
       if (new TextEncoder().encode(value).byteLength > 65536) throw new Error("DIAGNOSTIC_SEMANTIC_LIMIT");
       return value;
+    },
+    // Explicit post-run diagnostic request only; never called by ingest/frame/React.
+    compactMeaning: async () => {
+      if (caseId !== "cells512") throw new Error("COMPACT_CASE_NOT_ENABLED");
+      return reader ? (await encodeCompactMeaning(text()!)).wire : null;
     },
     activeDraw: () => draw ? { ...draw } : undefined,
     gl: (layer, kind, ms, a, b) => active?.add("gl", draw?.revision ?? -1, -1, layer, ms, kind, a, b),

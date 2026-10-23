@@ -8,7 +8,7 @@ import { unifiedChecks } from "../hooks/useMockAnalysisSession";
 import {
   ROW_LIMIT, createRecorder, startDiagnostics, releaseDiagnostics, setDiagnosticReader,
   diagnostics, beginDraw, endDraw, diagnosticMode,
-  selectDiagnosticCase, setDiagnosticProgress, caseChecks,
+  selectDiagnosticCase, setDiagnosticProgress, caseChecks, encodeCompactMeaning,
 } from "./mockDiagnostics";
 
 afterEach(() => { releaseDiagnostics(); vi.restoreAllMocks(); vi.useRealTimers(); vi.unstubAllGlobals(); });
@@ -345,4 +345,148 @@ it("v2 GL refuses the 257th revision without wrapping and exposes the missing de
   expect(s).toMatchObject({ limited: true, unrecordedApiCalls: 1 });
   expect(s.totals.heatmap.draws).toBe(257);
   h.win.__b2gl!.dispose();
+});
+
+const driverUrl = new URL("./baseline13-driver.mjs", import.meta.url).href;
+const legacyJson = (v: unknown) => JSON.stringify(v, (_k, x) => typeof x === "bigint" ? { bigint: x.toString() }
+  : x instanceof Map ? { map: [...x] } : x);
+function compactFixture() {
+  return { frame: { scope: { padding: "" }, heatmap: { revision: 128, status: "AVAILABLE",
+    cells: Array.from({ length: 512 }, (_, i) => ({ side: "BID", binId: 80000, width: 1,
+      startNs: String(1767225600000000000n + BigInt(i)), endNs: String(1767225600000000001n + BigInt(i)),
+      coveredDuration: "1", coverageRatio: 1, partialTWA: 40, integralQuantityNs: "40", status: "VALID", twa: 40 })) } } };
+}
+/** Test-only forged self-consistent proof, to ensure reference checks do more than hash checks. */
+function forgeProof(packet: ReturnType<typeof JSON.parse>) {
+  const body = JSON.parse(JSON.stringify(packet.body));
+  body.frame.heatmap.cells = packet.rows.map((r: unknown[]) =>
+    Object.fromEntries(packet.schemas[r[0] as number].map((k: string, i: number) => [k, r[i + 1]])));
+  const text = JSON.stringify(body);
+  packet.legacyBytes = Buffer.byteLength(text);
+  packet.sha256 = createHash("sha256").update(text).digest("hex");
+  return JSON.stringify(packet);
+}
+it("v3 independently restores all 512 ordered cells, structure, ordered bytes and SHA-256", async () => {
+  const { verifyCompactMeaning } = await import(driverUrl);
+  const reference = legacyJson(compactFixture()), encoded = await encodeCompactMeaning(reference);
+  const decoded = verifyCompactMeaning(encoded.wire, reference);
+  expect(JSON.parse(encoded.wire).version).toBe(3);
+  expect(decoded.value.frame.heatmap.cells).toHaveLength(512);
+  expect(decoded.value.frame.heatmap.cells.map((c: { startNs: string }) => c.startNs))
+    .toEqual(compactFixture().frame.heatmap.cells.map(c => c.startNs));
+  expect(decoded.text).toBe(reference);
+  expect(decoded.verified).toEqual({ structure: true, fieldAndArrayOrder: true, bytes: true, sha256: true });
+});
+it("v3 retains distinct ordered schemas, NO DATA/null and all fields", async () => {
+  const { verifyCompactMeaning } = await import(driverUrl), value = compactFixture();
+  const cell = value.frame.heatmap.cells[1];
+  const reordered = { ...cell, status: "NO DATA", twa: null, partialTWA: null, coverageRatio: .5 };
+  value.frame.heatmap.cells[1] = Object.fromEntries(Object.entries(reordered).reverse()) as typeof cell;
+  const reference = legacyJson(value), p = await encodeCompactMeaning(reference);
+  expect(JSON.parse(p.wire).schemas).toHaveLength(2);
+  expect(verifyCompactMeaning(p.wire, reference).text).toBe(reference);
+});
+it("v3 preserves the old JSON contract, not native undefined/BigInt/Map identity", async () => {
+  const { verifyCompactMeaning } = await import(driverUrl);
+  const value = compactFixture();
+  Object.assign(value.frame.scope, { omitted: undefined, explicitNull: null,
+    array: [undefined, NaN, Infinity, -0], big: 900719925474099312345n,
+    map: new Map([["z", 1n], ["a", undefined]]) });
+  const reference = legacyJson(value), p = await encodeCompactMeaning(reference), d = verifyCompactMeaning(p.wire, reference);
+  expect(d.value.frame.scope).not.toHaveProperty("omitted");
+  expect(d.value.frame.scope).toMatchObject({ explicitNull: null, array: [null, null, null, 0],
+    big: { bigint: "900719925474099312345" }, map: { map: [["z", { bigint: "1" }], ["a", null]] } });
+  expect(d.value.frame.scope.map).not.toBeInstanceOf(Map);
+});
+it("v3 encoder refuses unknown/missing TWA fields and noncanonical legacy JSON", async () => {
+  const unknown = compactFixture(); Object.assign(unknown.frame.heatmap.cells[0], { futureField: 1 });
+  await expect(encodeCompactMeaning(legacyJson(unknown))).rejects.toThrow("COMPACT_CELL_FIELDS");
+  const absent = JSON.parse(legacyJson(compactFixture())); delete absent.frame.heatmap.cells[0].twa;
+  await expect(encodeCompactMeaning(JSON.stringify(absent))).rejects.toThrow("COMPACT_CELL_FIELDS");
+  await expect(encodeCompactMeaning('{"a":1,"a":2}')).rejects.toThrow("COMPACT_NONCANONICAL_LEGACY");
+});
+it.each(["duplicate", "unknown", "missing", "id", "arity", "count", "extra-envelope", "unused"])(
+  "v3 decoder refuses malformed schema/envelope: %s", async mode => {
+    const { decodeCompactMeaning } = await import(driverUrl), p = JSON.parse((await encodeCompactMeaning(legacyJson(compactFixture()))).wire);
+    if (mode === "duplicate") p.schemas[0][1] = p.schemas[0][0];
+    if (mode === "unknown") p.schemas[0][1] = "futureField";
+    if (mode === "missing") p.schemas[0].pop();
+    if (mode === "id") p.rows[0][0] = 999;
+    if (mode === "arity") p.rows[0].pop();
+    if (mode === "count") p.rows.pop();
+    if (mode === "extra-envelope") p.extra = 1;
+    if (mode === "unused") p.schemas.push([...p.schemas[0]].reverse());
+    expect(() => decodeCompactMeaning(JSON.stringify(p))).toThrow();
+  });
+it("v3 rejects duplicate JSON keys even when JSON.parse would silently overwrite", async () => {
+  const { decodeCompactMeaning } = await import(driverUrl), p = await encodeCompactMeaning(legacyJson(compactFixture()));
+  expect(() => decodeCompactMeaning(p.wire.replace('"version":3', '"version":3,"version":3')))
+    .toThrow("COMPACT_NONCANONICAL_OR_DUPLICATE_KEY");
+});
+it("v3 rejects cell order tampering even with an internally consistent forged hash", async () => {
+  const { decodeCompactMeaning, verifyCompactMeaning } = await import(driverUrl);
+  const reference = legacyJson(compactFixture()), p = JSON.parse((await encodeCompactMeaning(reference)).wire);
+  [p.rows[0], p.rows[1]] = [p.rows[1], p.rows[0]];
+  expect(() => decodeCompactMeaning(JSON.stringify(p))).toThrow("COMPACT_SHA256_MISMATCH");
+  expect(() => verifyCompactMeaning(forgeProof(p), reference)).toThrow("COMPACT_STRUCTURE_MISMATCH");
+});
+it("v3 detects field order changes even when values and a forged digest are consistent", async () => {
+  const { decodeCompactMeaning, verifyCompactMeaning } = await import(driverUrl);
+  const reference = legacyJson(compactFixture()), p = JSON.parse((await encodeCompactMeaning(reference)).wire);
+  [p.schemas[0][0], p.schemas[0][1]] = [p.schemas[0][1], p.schemas[0][0]];
+  for (const r of p.rows) [r[1], r[2]] = [r[2], r[1]];
+  const forged = forgeProof(p);
+  expect(decodeCompactMeaning(forged).sha256).toBe(JSON.parse(forged).sha256);
+  expect(() => verifyCompactMeaning(forged, reference)).toThrow("COMPACT_FIELD_ORDER");
+});
+it("v3 detects omitted fields and type conflation outside the cell table", async () => {
+  const { verifyCompactMeaning } = await import(driverUrl), value = compactFixture();
+  Object.assign(value.frame.scope, { big: 42n, explicitNull: null });
+  const reference = legacyJson(value), original = JSON.parse((await encodeCompactMeaning(reference)).wire);
+  for (const change of ["missing", "type", "unknown"]) {
+    const p = JSON.parse(JSON.stringify(original));
+    if (change === "missing") delete p.body.frame.scope.explicitNull;
+    else if (change === "type") p.body.frame.scope.big = "42";
+    else p.body.frame.scope.unexpected = 1;
+    expect(() => verifyCompactMeaning(forgeProof(p), reference)).toThrow("COMPACT_STRUCTURE_MISMATCH");
+  }
+});
+it("v3 enforces the exact UTF-8 boundary and refuses oversize output without truncation", async () => {
+  const { decodeCompactMeaning } = await import(driverUrl), value = compactFixture();
+  const first = await encodeCompactMeaning(legacyJson(value)), room = 65536 - Buffer.byteLength(first.wire);
+  value.frame.scope.padding = "あ".repeat(Math.floor(room / 3)) + "x".repeat(room % 3);
+  const boundary = await encodeCompactMeaning(legacyJson(value));
+  expect(Buffer.byteLength(boundary.wire)).toBe(65536);
+  expect(boundary.wire.length).toBeLessThan(65536);
+  expect(decodeCompactMeaning(boundary.wire).wireBytes).toBe(65536);
+  value.frame.scope.padding += "あ";
+  await expect(encodeCompactMeaning(legacyJson(value))).rejects.toMatchObject({
+    message: "DIAGNOSTIC_SEMANTIC_LIMIT", bytes: 65539, limit: 65536 });
+  expect(() => decodeCompactMeaning(boundary.wire + " ")).toThrow("DIAGNOSTIC_SEMANTIC_LIMIT");
+});
+it("v3 exposes missing SHA/type/schema version evidence rather than accepting it", async () => {
+  const { decodeCompactMeaning } = await import(driverUrl), original = JSON.parse((await encodeCompactMeaning(legacyJson(compactFixture()))).wire);
+  for (const change of ["sha", "version", "type", "missing-sha"]) {
+    const p = JSON.parse(JSON.stringify(original));
+    if (change === "sha") p.sha256 = "0".repeat(64);
+    if (change === "version") p.version = 4;
+    if (change === "missing-sha") delete p.sha256;
+    if (change === "type") p.rows[0][p.schemas[0].indexOf("startNs") + 1] = 1;
+    expect(() => decodeCompactMeaning(JSON.stringify(p))).toThrow();
+  }
+});
+it("cells512 opts into v3 without replacing v1/v2 meaning() or growing the numeric slab", async () => {
+  for (const [id, version] of [["baseline13", 1], ["cells128", 2], ["cells512", 3]] as const) {
+    vi.stubGlobal("window", { location: { search: `?mockDiagnostics=1&mockCase=${id}` } });
+    const d = startDiagnostics(1)!;
+    expect(d.snapshot()).toMatchObject({ version, allocatedBytes: 147456, rows: [], receipts: [] });
+    if (id !== "cells512") await expect(window.__orderflowMockDiagnostics!.compactMeaning()).rejects.toThrow("COMPACT_CASE_NOT_ENABLED");
+    else {
+      const reference = legacyJson(compactFixture()); setDiagnosticReader(() => JSON.parse(reference));
+      expect(() => window.__orderflowMockDiagnostics!.meaning()).toThrow("DIAGNOSTIC_SEMANTIC_LIMIT");
+      expect(JSON.parse((await window.__orderflowMockDiagnostics!.compactMeaning())!).version).toBe(3);
+      d.add("received", 1, -1, "heatmap"); d.add("received", 1, -1, "bubble"); d.add("gl", 1);
+      expect(d.stats()).toMatchObject({ records: 1, mergedReceipts: 1, delegatedGL: 1, dropped: 0 });
+    }
+  }
 });

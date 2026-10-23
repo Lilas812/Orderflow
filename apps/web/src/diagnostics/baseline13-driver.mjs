@@ -1,10 +1,84 @@
 // Existing Chromium + native CDP pipe only. No dependencies, external URLs or application timers.
-// Functional verification only: node .../baseline13-driver.mjs [new output.json] [baseline13|cells128] [preflight]
+// Offline codec capacity: node .../baseline13-driver.mjs [new output.json] capacity
+// Legacy browser preflight entry remains separate; never invoked by capacity/tests.
 import { spawn } from "node:child_process";
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { resolve, dirname } from "node:path";
 import { createHash } from "node:crypto";
 import assert from "node:assert/strict";
+import { isDeepStrictEqual } from "node:util";
+import { fileURLToPath } from "node:url";
+
+/** Independent v3 decoder. The wire contract is canonical, minified JSON.
+ * Parse/stringify identity rejects duplicate keys (including escaped aliases),
+ * alternate number spellings, nonfinite JSON numbers and noncanonical ordering.
+ */
+export function decodeCompactMeaning(wire) {
+  const started = performance.now(), wireBytes = Buffer.byteLength(wire, "utf8");
+  assert(wireBytes <= 65536, "DIAGNOSTIC_SEMANTIC_LIMIT");
+  const p = JSON.parse(wire);
+  assert(JSON.stringify(p) === wire, "COMPACT_NONCANONICAL_OR_DUPLICATE_KEY");
+  assert.deepEqual(Object.keys(p), ["version", "serializer", "legacyBytes", "cellCount", "schemas", "rows", "body", "sha256"],
+    "COMPACT_ENVELOPE_FIELDS");
+  assert(p.version === 3 && p.serializer === "legacy-json-v1", "COMPACT_VERSION");
+  assert(Number.isSafeInteger(p.legacyBytes) && p.legacyBytes > 0, "COMPACT_LEGACY_BYTES");
+  assert(typeof p.sha256 === "string" && /^[a-f0-9]{64}$/.test(p.sha256), "COMPACT_HASH_FORMAT");
+  const fields = ["side", "binId", "width", "startNs", "endNs", "coveredDuration",
+    "coverageRatio", "partialTWA", "integralQuantityNs", "status", "twa"];
+  assert(p.cellCount === 512 && Array.isArray(p.rows) && p.rows.length === 512, "COMPACT_CELL_COUNT");
+  assert(Array.isArray(p.schemas) && p.schemas.length > 0 && p.schemas.length <= 512, "COMPACT_SCHEMAS");
+  const signatures = new Set();
+  for (const keys of p.schemas) {
+    assert(Array.isArray(keys) && keys.length === fields.length && new Set(keys).size === fields.length &&
+      keys.every(k => fields.includes(k)), "COMPACT_CELL_FIELDS");
+    const signature = JSON.stringify(keys);
+    assert(!signatures.has(signature), "COMPACT_DUPLICATE_SCHEMA"); signatures.add(signature);
+  }
+  assert(p.body?.frame?.heatmap?.cells === null, "COMPACT_CELL_PLACEHOLDER");
+  const used = new Set();
+  const cells = p.rows.map(row => {
+    assert(Array.isArray(row) && row.length === fields.length + 1, "COMPACT_ROW_ARITY");
+    const id = row[0];
+    assert(Number.isSafeInteger(id) && id >= 0 && id < p.schemas.length, "COMPACT_SCHEMA_ID");
+    if (!used.has(id)) { assert.equal(id, used.size, "COMPACT_SCHEMA_ORDER"); used.add(id); }
+    const cell = Object.fromEntries(p.schemas[id].map((key, i) => [key, row[i + 1]]));
+    assert((cell.side === "BID" || cell.side === "ASK") && Number.isSafeInteger(cell.binId) &&
+      Number.isSafeInteger(cell.width) && cell.width > 0, "COMPACT_CELL_TYPES");
+    for (const key of ["startNs", "endNs", "coveredDuration", "integralQuantityNs"])
+      assert(typeof cell[key] === "string" && /^-?(0|[1-9][0-9]*)$/.test(cell[key]), "COMPACT_CELL_TYPES");
+    assert(typeof cell.coverageRatio === "number" && cell.coverageRatio >= 0 && cell.coverageRatio <= 1 &&
+      (cell.partialTWA === null || typeof cell.partialTWA === "number") &&
+      (cell.status === "VALID" ? typeof cell.twa === "number" : cell.status === "NO DATA" && cell.twa === null),
+    "COMPACT_CELL_TYPES");
+    return cell;
+  });
+  assert.equal(used.size, p.schemas.length, "COMPACT_UNUSED_SCHEMA");
+  p.body.frame.heatmap.cells = cells;
+  const text = JSON.stringify(p.body), legacyBytes = Buffer.byteLength(text, "utf8");
+  assert.equal(legacyBytes, p.legacyBytes, "COMPACT_RESTORED_BYTES");
+  const restored = performance.now();
+  const sha256 = createHash("sha256").update(text).digest("hex");
+  assert.equal(sha256, p.sha256, "COMPACT_SHA256_MISMATCH");
+  return { value: p.body, text, sha256, legacyBytes, wireBytes,
+    metrics: { restoreMs: restored - started, sha256Ms: performance.now() - restored } };
+}
+function sameOrderedJson(a, b) {
+  if (a === null || b === null || typeof a !== "object" || typeof b !== "object") return Object.is(a, b);
+  if (Array.isArray(a) !== Array.isArray(b)) return false;
+  const ka = Object.keys(a), kb = Object.keys(b);
+  return ka.length === kb.length && ka.every((k, i) => k === kb[i] && sameOrderedJson(a[k], b[k]));
+}
+/** Trusted local legacy reference required: digest agreement alone is NOT proof. */
+export function verifyCompactMeaning(wire, reference) {
+  const decoded = decodeCompactMeaning(wire), started = performance.now();
+  const expected = JSON.parse(reference);
+  assert(isDeepStrictEqual(decoded.value, expected), "COMPACT_STRUCTURE_MISMATCH");
+  assert(sameOrderedJson(decoded.value, expected), "COMPACT_FIELD_ORDER");
+  assert(decoded.text === reference, "COMPACT_LEGACY_BYTE_MISMATCH");
+  assert.equal(decoded.sha256, createHash("sha256").update(reference).digest("hex"), "COMPACT_REFERENCE_HASH");
+  return { ...decoded, verified: { structure: true, fieldAndArrayOrder: true, bytes: true, sha256: true },
+    comparisonMs: performance.now() - started };
+}
 
 function installGLObserver(compact = false) {
   const proto = WebGL2RenderingContext.prototype, saved = new Map(), contexts = new WeakMap(), listeners = [];
@@ -318,7 +392,119 @@ async function browserRun(mode, repetition, lifecycle, workload) {
   }
 }
 
+async function capacityOnly(output) {
+  const { createServer } = await import("vite");
+  const server = await createServer({ configFile: false, root: fileURLToPath(new URL("../../", import.meta.url)),
+    logLevel: "error", server: { middlewareMode: true, hmr: false, watch: null },
+    optimizeDeps: { noDiscovery: true, include: [] } });
+  const originalWindow = globalThis.window, originalSet = globalThis.setInterval, originalClear = globalThis.clearInterval;
+  const report = { phase: "OFFLINE_CODEC_CAPACITY", browserStarted: false, trials: [], failure: null,
+    note: "Single finite artificial session per case; invoke the existing 300ms input callback synchronously, not as a throughput test. Only codec timings are measured. Vite is a middleware-only module loader, no listening port.",
+    limits: { semanticBytes: 65536, records: 2048, fixedNumericBytes: 147456, driverGLRecords: 256, evidenceBytes: 2097152 },
+    browserHeap: "UNKNOWN", browserRSS: "UNKNOWN", browserGC: "UNKNOWN", gpuMs: "UNKNOWN", presentationAt: "UNKNOWN" };
+  let session, diagnostic;
+  try {
+    diagnostic = await server.ssrLoadModule("/src/diagnostics/mockDiagnostics.ts");
+    const { createMockAnalysisSession } = await server.ssrLoadModule("/src/lib/mockAnalysisSession.ts");
+    const { unifiedChecks } = await server.ssrLoadModule("/src/hooks/useMockAnalysisSession.ts");
+    const expected = {
+      baseline13: [14349, "dfe56d920917807ed5265bae6ba1c3039a36a3729207c4d1ae38da2c0dc54d27"],
+      cells128: [40689, "5fd67038dc8ee736d2134ec52d097aab9d5f58c91be8d33508c274f3acd1c34c"],
+      cells512: [126193, "b1a413d76d16417718c3fcd1561ec45c82972f9798e58a6bf73eb53fc5043e3e"],
+    };
+    for (const [id, version] of [["baseline13", 1], ["cells128", 2], ["cells512", 3]]) {
+      const trial = { case: id, version, result: "STARTED" }; report.trials.push(trial);
+      const timers = new Map(); let timerId = 0, d;
+      try {
+        globalThis.window = { location: { search: `?mockDiagnostics=1&mockCase=${id}` } };
+        const c = diagnostic.selectDiagnosticCase();
+        d = diagnostic.startDiagnostics(1);
+        globalThis.setInterval = (fn, ms) => { const key = ++timerId; timers.set(key, { fn, ms }); return key; };
+        globalThis.clearInterval = key => { if (timers.has(key)) timers.delete(key); else originalClear(key); };
+        session = createMockAnalysisSession({ scope: c.scope, inputs: c.inputs, query: c.query,
+          inputEveryMs: 300, diagnostics: d });
+        session.setNotificationsEnabled(false); session.start();
+        assert(timers.size === 1 && [...timers.values()][0].ms === 300, "UNEXPECTED_CAPACITY_TIMER");
+        const callback = [...timers.values()][0].fn;
+        for (let i = 0; i < c.inputs.length; i++) callback();
+        const frame = session.readFrame(), status = session.getStatus();
+        const content = { frame, checks: c.expected ? diagnostic.caseChecks(frame, c) : unifiedChecks(frame),
+          counts: status.counts, revision: status.revision, processedInputs: status.processedInputs, state: status.state };
+        diagnostic.setDiagnosticReader(() => content);
+        // Local trusted reference, same legacy replacer. Never sent over the wire or saved in evidence.
+        const legacy = JSON.stringify(content, (_k, v) => typeof v === "bigint" ? { bigint: v.toString() }
+          : v instanceof Map ? { map: [...v] } : v);
+        const inspection = window.__orderflowMockDiagnostics.inspectMeaning();
+        Object.assign(trial, { processedInputs: status.processedInputs, revision: status.revision,
+          counts: status.counts, oldBytes: inspection.bytes, golden: content.checks,
+          layerRevisions: [frame.book, frame.heatmap, frame.bubbles, frame.delta, frame.volumeProfile, frame.quality].map(v => v.revision),
+          cellCount: frame.heatmap.cells.length, queryCellCount: c.query.cells.length,
+          scope: frame.scope, inputSha256: createHash("sha256").update(JSON.stringify(c.inputs)).digest("hex") });
+        assert.equal(status.state, "COMPLETED"); assert.equal(status.processedInputs, c.inputs.length);
+        assert(content.checks.every(v => v.ok), "GOLDEN_MISMATCH");
+        const hash = createHash("sha256").update(legacy).digest("hex");
+        assert.equal(inspection.bytes, expected[id][0], "LEGACY_BYTE_REGRESSION");
+        assert.equal(hash, expected[id][1], "LEGACY_HASH_REGRESSION");
+        trial.sha256 = hash;
+        if (id !== "cells512") {
+          assert.equal(window.__orderflowMockDiagnostics.meaning(), legacy);
+          trial.outputBytes = inspection.bytes;
+          trial.legacyMeaningUnchanged = true;
+        } else {
+          assert.throws(() => window.__orderflowMockDiagnostics.meaning(), /DIAGNOSTIC_SEMANTIC_LIMIT/);
+          const before = process.memoryUsage();
+          const encoded = await diagnostic.encodeCompactMeaning(legacy);
+          trial.outputBytes = encoded.metrics.outputBytes;
+          trial.encoder = encoded.metrics;
+          const afterEncoding = process.memoryUsage();
+          const decoded = verifyCompactMeaning(encoded.wire, legacy);
+          const afterVerification = process.memoryUsage();
+          Object.assign(trial, { restoredBytes: decoded.legacyBytes, verification: decoded.verified,
+            restoredSha256: decoded.sha256, decoder: decoded.metrics, comparisonIncludingReferenceHashMs: decoded.comparisonMs,
+            memory: { scope: "Node process including Vite/session; snapshots are not peak allocation or GC measurements",
+              before, afterEncoding, afterVerification, gc: "UNKNOWN" },
+            schemas: JSON.parse(encoded.wire).schemas, restoredCellCount: decoded.value.frame.heatmap.cells.length });
+          assert.equal(decoded.value.frame.heatmap.cells.length, 512);
+          // Same old serializer closure is used by the actual bridge. This second,
+          // untimed conversion is an integration check, not an additional input trial.
+          assert.equal(await window.__orderflowMockDiagnostics.compactMeaning(), encoded.wire, "BRIDGE_CODEC_MISMATCH");
+          trial.bridgeWireIdentical = true;
+        }
+        trial.recording = d.stats();
+        assert.equal(trial.recording.version, version); assert.equal(trial.recording.dropped, 0);
+        assert(trial.recording.records < 2048 && trial.recording.allocatedBytes === 147456);
+        trial.result = "PASS";
+      } finally {
+        session?.dispose(); session = undefined; diagnostic.releaseDiagnostics();
+        globalThis.setInterval = originalSet; globalThis.clearInterval = originalClear;
+        trial.cleanup = { timersRemaining: timers.size, bridgeReleased: !window.__orderflowMockDiagnostics,
+          slabBytesAfterDispose: d?.snapshot().allocatedBytes ?? 0 };
+        assert(timers.size === 0 && trial.cleanup.bridgeReleased && trial.cleanup.slabBytesAfterDispose === 0, "CAPACITY_RESOURCE_LEAK");
+      }
+    }
+  } catch (error) {
+    report.failure = String(error);
+    Object.assign(report.trials.at(-1) ?? {}, { result: "FAIL", failure: String(error),
+      attemptedOutputBytes: error.bytes ?? null });
+    process.exitCode = 1;
+  } finally {
+    session?.dispose(); diagnostic?.releaseDiagnostics();
+    globalThis.setInterval = originalSet; globalThis.clearInterval = originalClear;
+    if (originalWindow === undefined) delete globalThis.window; else globalThis.window = originalWindow;
+    await server.close();
+  }
+  const text = JSON.stringify(report, null, 2) + "\n";
+  assert(Buffer.byteLength(text) <= 2097152, "REPORT_SIZE_LIMIT");
+  await mkdir(dirname(output), { recursive: true });
+  await writeFile(output, text, { flag: "wx" });
+  console.log(JSON.stringify({ failure: report.failure, evidenceBytes: Buffer.byteLength(text),
+    trials: report.trials.map(t => ({ case: t.case, result: t.result, oldBytes: t.oldBytes,
+      outputBytes: t.outputBytes, restoredBytes: t.restoredBytes, sha256: t.sha256, recording: t.recording, cleanup: t.cleanup })) }, null, 2));
+}
+async function main() {
 const output = resolve(process.argv[2] ?? ".local/diagnostics/task28-b2-b1/results.json");
+assert(output.startsWith(resolve(".local/diagnostics") + "/"), "OUTPUT_MUST_BE_IGNORED_DIAGNOSTICS");
+if (process.argv[3] === "capacity") { await capacityOnly(output); return; }
 const workload = process.argv[3] ?? "baseline13", phase = process.argv[4] ?? "preflight";
 assert(["baseline13", "cells128"].includes(workload), "CASE_NOT_APPROVED_FOR_THIS_FUNCTIONAL_VERIFICATION");
 assert(phase === "preflight", "FORMAL_COMPARISON_NOT_APPROVED");
@@ -343,3 +529,6 @@ const text = JSON.stringify(report, null, 2);
 assert(Buffer.byteLength(text) <= 2 * 1024 * 1024, "REPORT_SIZE_LIMIT");
 await writeFile(output, text + "\n", { flag: "wx" });
 if (report.failure) console.error(report.failure);
+}
+// Importing the decoder in tests never starts Chromium or any input session.
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) await main();
