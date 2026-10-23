@@ -1,14 +1,17 @@
 import { afterEach, expect, it, vi } from "vitest";
+import { readFileSync } from "node:fs";
+import { runInNewContext } from "node:vm";
+import { createHash } from "node:crypto";
 import { UNIFIED_MOCK_STREAM } from "@workspace/fixtures";
 import { createMockAnalysisSession } from "../lib/mockAnalysisSession";
 import { unifiedChecks } from "../hooks/useMockAnalysisSession";
 import {
   ROW_LIMIT, createRecorder, startDiagnostics, releaseDiagnostics, setDiagnosticReader,
   diagnostics, beginDraw, endDraw, diagnosticMode,
-  selectDiagnosticCase, setDiagnosticProgress,
+  selectDiagnosticCase, setDiagnosticProgress, caseChecks,
 } from "./mockDiagnostics";
 
-afterEach(() => { releaseDiagnostics(); vi.useRealTimers(); vi.unstubAllGlobals(); });
+afterEach(() => { releaseDiagnostics(); vi.restoreAllMocks(); vi.useRealTimers(); vi.unstubAllGlobals(); });
 it("allocates exactly a fixed numeric slab and returns defensive copies", () => {
   const d = createRecorder(7);
   d.add("ingest", 3, 2);
@@ -146,4 +149,200 @@ it("labels identical-object frame reads as HIT without introducing additional re
   expect(s.readFrame()).toBe(s.readFrame());
   expect(d.snapshot().rows.filter(r => r.stage === "frame").map(r => r.a)).toEqual([0, 1]);
   s.dispose();
+});
+it("v2 packs receipt timestamps, keeps duplicates and old revisions without overwrite", () => {
+  let t = 0; vi.spyOn(performance, "now").mockImplementation(() => t++ / 10);
+  const d = createRecorder(1, 2);
+  for (const layer of ["heatmap", "bubble", "delta", "vp"] as const) d.add("received", 7, -1, layer);
+  d.add("dom", 7, -1, "vp");
+  d.add("received", 7, -1, "heatmap");
+  d.add("received", 6, -1, "bubble");
+  const s = d.snapshot();
+  expect(s).toMatchObject({ version: 2, records: 3, observations: 7, mergedReceipts: 4, dropped: 0 });
+  expect(s.receipts[0]).toMatchObject({ revision: 7, mask: 31,
+    heatmapAt: 0, bubbleAt: .1, deltaAt: .2, vpAt: .3, domAt: .4 });
+  expect(s.receipts[1]).toMatchObject({ revision: 7, heatmapAt: .5, bubbleAt: null });
+  expect(s.receipts[2]).toMatchObject({ revision: 6, heatmapAt: null, bubbleAt: .6 });
+  s.receipts[0].heatmapAt = 999;
+  expect(d.snapshot().receipts[0].heatmapAt).toBe(0);
+});
+it("v2 preserves every required time sample and its exact timestamp and revision", () => {
+  let at = 0; vi.spyOn(performance, "now").mockImplementation(() => at);
+  const old = createRecorder(1), compact = createRecorder(1, 2);
+  for (let revision = 0; revision <= 128; revision++) {
+    for (const stage of ["ingest", "frame", "react", "draw", "raf"] as const) {
+      at++;
+      for (const d of [old, compact]) d.add(stage, revision, revision, "heatmap", at / 10, 1, 2, 3);
+    }
+  }
+  expect(compact.snapshot().rows).toEqual(old.snapshot().rows);
+  expect(compact.snapshot().dropped).toBe(0);
+});
+it("v2 explicitly delegates GL samples and accounts for every original observation", () => {
+  const d = createRecorder(1, 2);
+  d.add("gl", 1, -1, "heatmap", .1, 2, 192);
+  d.add("received", 1, -1, "heatmap");
+  d.add("received", 1, -1, "bubble");
+  d.add("draw", 1, -1, "heatmap", .4, 6);
+  expect(d.stats()).toMatchObject({ version: 2, records: 2, observations: 4,
+    delegatedGL: 1, mergedReceipts: 1, dropped: 0 });
+});
+it("v2 hard limit never wraps or hides missing observations and dispose clears its cursor", () => {
+  const d = createRecorder(1, 2);
+  for (let i = 0; i < ROW_LIMIT; i++) d.add("received", i, -1, "heatmap");
+  d.add("received", ROW_LIMIT - 1, -1, "bubble");
+  expect(d.stats()).toMatchObject({ records: ROW_LIMIT, saturated: true, dropped: 1, allocatedBytes: 147456 });
+  expect(d.snapshot().receipts[0].revision).toBe(0);
+  d.dispose(); d.add("received", 9999, -1, "heatmap");
+  expect(d.snapshot()).toMatchObject({ records: 0, receipts: [], rows: [], allocatedBytes: 0 });
+});
+it("v2's conservative finite 128-input envelope fits the unchanged 2048/144KiB budget", () => {
+  const d = createRecorder(1, 2);
+  for (let rev = 0; rev <= 128; rev++) {
+    if (rev) d.add("ingest", rev, rev);
+    d.add("frame", rev);
+    d.add("publish", rev);
+    for (let i = 0; i < 3; i++) d.add("react", rev);
+    for (const layer of ["heatmap", "bubble", "delta", "vp"] as const) d.add("received", rev, -1, layer);
+    d.add("dom", rev, -1, "vp");
+    for (const layer of ["heatmap", "bubble"] as const) {
+      d.add("gl", rev, -1, layer, .1, 2, 24576);
+      d.add("gl", rev, -1, layer, .1, 3, 768);
+      d.add("draw", rev, -1, layer);
+      for (let i = 0; i < 2; i++) d.add("raf", rev, -1, layer);
+    }
+    d.add("draw", rev, -1, "delta");
+  }
+  // 44.4-second finite completion deadline: at most 178 planned polling ticks.
+  for (let i = 129; i < 178; i++) d.add("publish", 128);
+  for (let i = 0; i < 16; i++) d.add("received", 0, -1, "heatmap");
+  for (let i = 0; i < 8; i++) { d.add("react", 0); d.add("raf", 0); }
+  for (let i = 0; i < 4; i++) d.add("draw", 0);
+  const s = d.snapshot();
+  expect(s.records).toBe(1890);
+  expect(s).toMatchObject({ allocatedBytes: 147456, saturated: false, dropped: 0 });
+  expect(s.rows.filter(r => r.stage === "ingest")).toHaveLength(128);
+  expect(s.rows.filter(r => r.stage === "frame")).toHaveLength(129);
+  expect(s.rows.filter(r => r.stage === "react")).toHaveLength(395);
+  expect(s.rows.filter(r => r.stage === "raf")).toHaveLength(524);
+  expect(s.observations).toBe(s.records + s.mergedReceipts + s.delegatedGL);
+});
+it("baseline13's unchanged v1 conservative envelope also fits before browser execution", () => {
+  const d = createRecorder(1);
+  for (let rev = 0; rev <= 13; rev++) {
+    if (rev) d.add("ingest", rev, rev);
+    d.add("frame", rev); d.add("publish", rev);
+    for (let i = 0; i < 3; i++) d.add("react", rev);
+    for (const layer of ["heatmap", "bubble", "delta", "vp"] as const) d.add("received", rev, -1, layer);
+    d.add("dom", rev, -1, "vp");
+    for (const layer of ["heatmap", "bubble"] as const) {
+      d.add("gl", rev, -1, layer); d.add("gl", rev, -1, layer);
+      d.add("draw", rev, -1, layer); d.add("raf", rev, -1, layer); d.add("raf", rev, -1, layer);
+    }
+    d.add("draw", rev, -1, "delta");
+  }
+  for (let i = 14; i < 40; i++) d.add("publish", 13);
+  for (let i = 0; i < 16; i++) d.add("received", 0);
+  for (let i = 0; i < 8; i++) { d.add("react", 0); d.add("raf", 0); d.add("gl", 0); }
+  for (let i = 0; i < 4; i++) d.add("draw", 0);
+  expect(d.snapshot()).toMatchObject({ version: 1, records: 377, allocatedBytes: 147456, dropped: 0, saturated: false });
+});
+it("pre-browser baseline13/cells128 output sizes and existing hashes remain exact", () => {
+  vi.useFakeTimers();
+  for (const id of ["baseline13", "cells128"] as const) {
+    vi.stubGlobal("window", { location: { search: `?mockDiagnostics=1&mockCase=${id}` } });
+    const c = selectDiagnosticCase(), d = startDiagnostics(1)!;
+    expect(d.snapshot().version).toBe(id === "baseline13" ? 1 : 2);
+    const s = createMockAnalysisSession({ scope: c.scope, inputs: c.inputs, query: c.query,
+      inputEveryMs: 300, diagnostics: d });
+    s.setNotificationsEnabled(false); s.start(); vi.advanceTimersByTime(c.inputs.length * 300);
+    const frame = s.readFrame(), status = s.getStatus();
+    const content = { frame, checks: c.expected ? caseChecks(frame, c) : unifiedChecks(frame), counts: status.counts,
+      revision: status.revision, processedInputs: status.processedInputs, state: status.state };
+    setDiagnosticReader(() => content);
+    const bytes = id === "baseline13" ? 14349 : 40689;
+    expect(window.__orderflowMockDiagnostics?.inspectMeaning()).toMatchObject({ bytes, allowed: true });
+    const text = window.__orderflowMockDiagnostics!.meaning()!;
+    expect(content.checks.every(v => v.ok)).toBe(true);
+    expect(createHash("sha256").update(text).digest("hex")).toBe(id === "baseline13"
+      ? "dfe56d920917807ed5265bae6ba1c3039a36a3729207c4d1ae38da2c0dc54d27"
+      : "5fd67038dc8ee736d2134ec52d097aab9d5f58c91be8d33508c274f3acd1c34c");
+    s.dispose();
+  }
+});
+
+/** Evaluate only the observer function in a fake GL sandbox: never import/run the CLI. */
+function glHarness() {
+  const text = readFileSync(new URL("./baseline13-driver.mjs", import.meta.url), "utf8");
+  const source = text.slice(text.indexOf("function installGLObserver("), text.indexOf("function captureViewport("));
+  class GL {
+    error = 0;
+    createBuffer() { return {}; }
+    deleteBuffer(_buffer: object) {}
+    bufferData(_target: number, _data: Float32Array, _usage: number) {}
+    drawArrays(_mode: number, _first: number, _count: number) { return "native-draw-result"; }
+    getError() { const e = this.error; this.error = 0; return e; }
+  }
+  class Canvas {
+    readonly gl = new GL();
+    readonly events = new Map<string, () => void>();
+    readonly classList: { contains: (name: string) => boolean };
+    constructor(layer: string) { this.classList = { contains: name => name === (layer === "heatmap" ? "hm-canvas" : "bb-canvas") }; }
+    getContext(_name: string) { return this.gl; }
+    addEventListener(name: string, cb: () => void) { this.events.set(name, cb); }
+    removeEventListener(name: string) { this.events.delete(name); }
+  }
+  type Counters = Record<string, number>;
+  let token: { layer: string; revision: number; start: number } | undefined;
+  let delegated = 0;
+  const win: { __b2gl?: { snapshot: () => { frames: { revision: number; layers: Record<string, Counters> }[];
+    totals: Record<string, Counters>; limited: boolean; unrecordedApiCalls: number }; dispose: () => void };
+    __orderflowMockDiagnostics: { activeDraw: () => typeof token; gl: () => void } } = {
+    __orderflowMockDiagnostics: { activeDraw: () => token, gl: () => { delegated++; } } };
+  const native = GL.prototype.drawArrays;
+  const install = runInNewContext(`(${source})`, {
+    window: win, WebGL2RenderingContext: GL, HTMLCanvasElement: Canvas, performance: { now: () => 0 },
+  });
+  install(true);
+  return { GL, Canvas, win, native, setToken: (v: typeof token) => { token = v; }, delegated: () => delegated };
+}
+it("v2 GL groups both layers and repeated draws by actual revision with exact counters", () => {
+  const h = glHarness(), canvases = [new h.Canvas("heatmap"), new h.Canvas("bubble")];
+  for (const c of canvases) c.getContext("webgl2").createBuffer();
+  for (let rev = 0; rev <= 128; rev++) for (let layer = 0; layer < 2; layer++) {
+    const name = layer ? "bubble" : "heatmap", gl = canvases[layer].gl;
+    for (let repeat = 0; repeat < (rev === 0 ? 2 : 1); repeat++) {
+      h.setToken({ layer: name, revision: rev, start: rev * 2 + repeat });
+      gl.bufferData(1, new Float32Array(48), 2);
+      expect(gl.drawArrays(4, 0, 6)).toBe("native-draw-result");
+    }
+  }
+  const s = h.win.__b2gl!.snapshot();
+  expect(s.frames).toHaveLength(130); expect(s.limited).toBe(false);
+  for (const name of ["heatmap", "bubble"]) {
+    expect(s.totals[name]).toMatchObject({ draws: 130, vertices: 780, uploads: 130, bytes: 24960, buffers: 1 });
+    for (const key of ["draws", "vertices", "uploads", "bytes", "buffers"])
+      expect(s.frames.reduce((n, f) => n + f.layers[name][key], 0)).toBe(s.totals[name][key]);
+    expect(s.frames.find(f => f.revision === 0)!.layers[name].draws).toBe(2);
+  }
+  h.setToken(undefined);
+  canvases[0].events.get("webglcontextlost")!(); canvases[0].events.get("webglcontextrestored")!();
+  canvases[0].gl.error = 1280; expect(canvases[0].gl.getError()).toBe(1280);
+  expect(s.totals.heatmap).toMatchObject({ loss: 1, restore: 1, errors: 1 });
+  expect(h.delegated()).toBe(523);
+  h.win.__b2gl!.dispose();
+  expect(h.win.__b2gl).toBeUndefined(); expect(h.GL.prototype.drawArrays).toBe(h.native);
+  expect(canvases.every(c => c.events.size === 0)).toBe(true);
+});
+it("v2 GL refuses the 257th revision without wrapping and exposes the missing detail", () => {
+  const h = glHarness(), c = new h.Canvas("heatmap"), gl = c.getContext("webgl2");
+  for (let rev = 1; rev <= 257; rev++) {
+    h.setToken({ layer: "heatmap", revision: rev, start: rev }); gl.drawArrays(4, 0, 6);
+  }
+  const s = h.win.__b2gl!.snapshot();
+  expect(s.frames).toHaveLength(256);
+  expect(s.frames[0].revision).toBe(1);
+  expect(s).toMatchObject({ limited: true, unrecordedApiCalls: 1 });
+  expect(s.totals.heatmap.draws).toBe(257);
+  h.win.__b2gl!.dispose();
 });

@@ -1,18 +1,31 @@
 // Existing Chromium + native CDP pipe only. No dependencies, external URLs or application timers.
-// Usage: node apps/web/src/diagnostics/baseline13-driver.mjs [new output.json] [baseline13|cells128|cells512] [preflight|compare]
+// Functional verification only: node .../baseline13-driver.mjs [new output.json] [baseline13|cells128] [preflight]
 import { spawn } from "node:child_process";
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { resolve, dirname } from "node:path";
 import { createHash } from "node:crypto";
 import assert from "node:assert/strict";
 
-function installGLObserver() {
+function installGLObserver(compact = false) {
   const proto = WebGL2RenderingContext.prototype, saved = new Map(), contexts = new WeakMap(), listeners = [];
-  const totals = Object.fromEntries(["heatmap", "bubble"].map(l => [l, {
+  const counters = () => ({
     draws: 0, vertices: 0, uploads: 0, bytes: 0, buffers: 0, deletes: 0, loss: 0, restore: 0, errors: 0, cpuMs: 0,
-  }]));
-  const draws = [];
-  let limited = false;
+  });
+  const totals = Object.fromEntries(["heatmap", "bubble"].map(l => [l, counters()]));
+  const draws = [], frames = [], frameIndex = new Map();
+  let limited = false, unrecordedApiCalls = 0;
+  // v2: at most 256 revision records, each with two fixed layer counter sets.
+  // Revision -1 explicitly means no matching active draw token, not an inferred DOM revision.
+  function frameCounters(revision, layer) {
+    if (!compact) return null;
+    let entry = frameIndex.get(revision);
+    if (!entry) {
+      if (frames.length === 256) { limited = true; unrecordedApiCalls++; return null; }
+      entry = { revision, layers: { heatmap: counters(), bubble: counters() } };
+      frames.push(entry); frameIndex.set(revision, entry);
+    }
+    return entry.layers[layer];
+  }
   const getContext = HTMLCanvasElement.prototype.getContext;
   HTMLCanvasElement.prototype.getContext = function (...args) {
     const gl = getContext.apply(this, args);
@@ -20,7 +33,8 @@ function installGLObserver() {
     if (args[0] === "webgl2" && gl && layer && !contexts.has(gl)) {
       if (listeners.length === 16) { limited = true; return gl; }
       const info = { layer, last: null }; contexts.set(gl, info);
-      const lost = () => totals[layer].loss++, restored = () => totals[layer].restore++;
+      const lost = () => { totals[layer].loss++; const f = frameCounters(-1, layer); if (f) f.loss++; };
+      const restored = () => { totals[layer].restore++; const f = frameCounters(-1, layer); if (f) f.restore++; };
       this.addEventListener("webglcontextlost", lost); this.addEventListener("webglcontextrestored", restored);
       listeners.push([this, lost, restored]);
     }
@@ -40,30 +54,35 @@ function installGLObserver() {
       const token = window.__orderflowMockDiagnostics?.activeDraw(), t = performance.now();
       const value = original.apply(this, args), ms = performance.now() - t, total = totals[info.layer];
       total.cpuMs += ms;
-      if (token && token.layer === info.layer && info.last?.start !== token.start && draws.length < 256) {
+      const f = frameCounters(token?.layer === info.layer ? token.revision : -1, info.layer);
+      if (f) f.cpuMs += ms;
+      if (!compact && token && token.layer === info.layer && info.last?.start !== token.start && draws.length < 256) {
         info.last = { layer: info.layer, revision: token.revision, start: token.start, firstGLAt: t,
           preludeUpperMs: t - token.start, apiCpuMs: 0, vertices: 0 };
         draws.push(info.last);
-      } else if (draws.length === 256) limited = true;
+      } else if (!compact && draws.length === 256) limited = true;
       if (token && info.last?.start === token.start) info.last.apiCpuMs += ms;
       let kind = -1, a = 0;
-      if (name === "createBuffer" && value) { total.buffers++; kind = 1; }
-      if (name === "deleteBuffer" && args[0]) total.deletes++;
+      if (name === "createBuffer" && value) { total.buffers++; if (f) f.buffers++; kind = 1; }
+      if (name === "deleteBuffer" && args[0]) { total.deletes++; if (f) f.deletes++; }
       if (name === "bufferData") {
         a = typeof args[1] === "number" ? args[1] : args[1]?.byteLength ?? 0;
         total.uploads++; total.bytes += a; kind = 2;
+        if (f) { f.uploads++; f.bytes += a; }
       }
       if (name === "drawArrays") {
         a = args[2]; total.draws++; total.vertices += a; kind = 3;
+        if (f) { f.draws++; f.vertices += a; }
         if (token && info.last?.start === token.start) info.last.vertices += a;
       }
-      if (name === "getError" && value !== 0) { total.errors++; kind = 4; a = value; }
+      if (name === "getError" && value !== 0) { total.errors++; if (f) f.errors++; kind = 4; a = value; }
       if (kind >= 0) window.__orderflowMockDiagnostics?.gl(info.layer, kind, ms, a, 0);
       return value;
     };
   }
   window.__b2gl = {
-    snapshot: () => ({ totals, draws, limited }),
+    snapshot: () => ({ version: compact ? 2 : 1, limit: 256, totals, draws,
+      frames: compact ? frames : undefined, limited, unrecordedApiCalls }),
     dispose() {
       for (const [name, original] of saved) proto[name] = original;
       HTMLCanvasElement.prototype.getContext = getContext;
@@ -71,6 +90,8 @@ function installGLObserver() {
         canvas.removeEventListener("webglcontextlost", lost); canvas.removeEventListener("webglcontextrestored", restored);
       }
       saved.clear(); listeners.length = 0;
+      draws.length = frames.length = 0; frameIndex.clear();
+      delete window.__b2gl;
     },
   };
 }
@@ -149,7 +170,8 @@ async function browserRun(mode, repetition, lifecycle, workload) {
     await page("Page.enable");
     await page("Network.enable");
     await page("Network.setBlockedURLs", { urls: ["*tick-stream.xyz*"] });
-    if (mode === "on") await page("Page.addScriptToEvaluateOnNewDocument", { source: `(${installGLObserver.toString()})()` });
+    if (mode === "on") await page("Page.addScriptToEvaluateOnNewDocument", {
+      source: `(${installGLObserver.toString()})(${workload === "cells128"})` });
     await page("Page.navigate", { url: `http://127.0.0.1:80/?mockDiagnostics=${mode === "on" ? "1" : "control"}&mockCase=${workload}` });
     await wait(`!!document.querySelector('[data-testid="button-unified-start"]')`);
     const initial = await evaluate(`({text:document.body.textContent, bridge:!!window.__orderflowMockDiagnostics})`);
@@ -191,17 +213,58 @@ async function browserRun(mode, repetition, lifecycle, workload) {
     assert(!sample.errors.some(s => /RENDER ERROR|WebGL2 unavailable/i.test(s)), "RENDER_ERROR");
     if (mode === "on") {
       assert.equal(sample.telemetry.dropped, 0); assert(!sample.telemetry.saturated);
+      assert(sample.telemetry.records < 2048);
+      assert.equal(sample.telemetry.allocatedBytes, 147456);
+      assert.equal(sample.telemetry.records, sample.telemetry.rows.length + sample.telemetry.receipts.length);
+      assert.equal(sample.telemetry.observations, sample.telemetry.records +
+        sample.telemetry.mergedReceipts + sample.telemetry.delegatedGL);
       for (const layer of ["heatmap", "bubble", "delta"]) {
         assert(sample.telemetry.rows.some(r => r.stage === "draw" && r.layer === layer && r.revision === revision), `MISSING_DRAW:${layer}`);
       }
       for (const layer of ["heatmap", "bubble", "delta", "vp"]) {
-        assert(sample.telemetry.rows.some(r => r.stage === "received" && r.layer === layer && r.revision === revision), `MISSING_RECEIVE:${layer}`);
+        assert(sample.telemetry.rows.some(r => r.stage === "received" && r.layer === layer && r.revision === revision) ||
+          sample.telemetry.receipts.some(r => r.revision === revision && r[`${layer}At`] !== null), `MISSING_RECEIVE:${layer}`);
       }
-      assert(sample.telemetry.rows.some(r => r.stage === "dom" && r.layer === "vp" && r.revision === revision));
+      assert(sample.telemetry.rows.some(r => r.stage === "dom" && r.layer === "vp" && r.revision === revision) ||
+        sample.telemetry.receipts.some(r => r.revision === revision && r.domAt !== null));
       assert(!sample.gl.limited);
       assert(Object.values(sample.gl.totals).every(t => t.errors === 0));
-      assert(sample.gl.draws.some(d => d.layer === "heatmap" && d.revision === revision && d.vertices > 0));
-      assert(sample.gl.draws.some(d => d.layer === "bubble" && d.revision === revision && d.vertices > 0));
+      if (sample.gl.version === 1) {
+        assert(sample.gl.draws.some(d => d.layer === "heatmap" && d.revision === revision && d.vertices > 0));
+        assert(sample.gl.draws.some(d => d.layer === "bubble" && d.revision === revision && d.vertices > 0));
+      } else {
+        assert.equal(sample.gl.unrecordedApiCalls, 0);
+        assert(sample.gl.frames.length <= 256);
+        for (const layer of ["heatmap", "bubble"]) {
+          for (const key of ["draws", "vertices", "uploads", "bytes", "buffers", "deletes", "loss", "restore", "errors"]) {
+            assert.equal(sample.gl.frames.reduce((n, f) => n + f.layers[layer][key], 0),
+              sample.gl.totals[layer][key], `GL_TOTAL:${layer}:${key}`);
+          }
+          for (const f of sample.gl.frames) {
+            const actual = f.layers[layer];
+            const issued = sample.telemetry.rows.filter(r => r.stage === "draw" && r.layer === layer && r.revision === f.revision);
+            assert.equal(actual.draws, issued.length, `GL_DRAW_REVISION:${layer}:${f.revision}`);
+            assert.equal(actual.vertices, issued.reduce((n, r) => n + r.a, 0), `GL_VERTICES:${layer}:${f.revision}`);
+            assert.equal(actual.uploads, actual.draws, `GL_UPLOADS:${layer}:${f.revision}`);
+            assert.equal(actual.bytes, actual.vertices * (layer === "heatmap" ? 32 : 52), `GL_BYTES:${layer}:${f.revision}`);
+          }
+        }
+        const perRevision = [];
+        for (const r of sample.telemetry.rows.filter(r => r.stage === "frame")) {
+          const receipt = sample.telemetry.receipts.filter(v => v.revision === r.revision);
+          for (const key of ["heatmapAt", "bubbleAt", "deltaAt", "vpAt", "domAt"]) {
+            assert(receipt.some(v => v[key] !== null), `RECEIPT:${key}:${r.revision}`);
+          }
+          for (const layer of ["heatmap", "bubble", "delta"]) {
+            assert(sample.telemetry.rows.some(v => v.stage === "draw" && v.layer === layer && v.revision === r.revision),
+              `DRAW:${layer}:${r.revision}`);
+          }
+          perRevision.push(r.revision);
+        }
+        assert.deepEqual(sample.telemetry.rows.filter(r => r.stage === "ingest").map(r => r.seq),
+          Array.from({ length: expectedInputs }, (_, i) => i + 1), "INGEST_SAMPLE_SEQUENCE");
+        captured.verifiedRevisions = perRevision;
+      }
     }
     const result = captured = { ...captured, mode, repetition, chromium: version.product, gpu, counts: meaning.counts,
       revision, layerRevisions, golden: meaning.checks, quality: meaning.frame.quality,
@@ -256,18 +319,18 @@ async function browserRun(mode, repetition, lifecycle, workload) {
 }
 
 const output = resolve(process.argv[2] ?? ".local/diagnostics/task28-b2-b1/results.json");
-const workload = process.argv[3] ?? "baseline13", phase = process.argv[4] ?? "compare";
-assert(["baseline13", "cells128", "cells512"].includes(workload), "UNKNOWN_CASE");
-assert(["preflight", "compare"].includes(phase), "UNKNOWN_PHASE");
+const workload = process.argv[3] ?? "baseline13", phase = process.argv[4] ?? "preflight";
+assert(["baseline13", "cells128"].includes(workload), "CASE_NOT_APPROVED_FOR_THIS_FUNCTIONAL_VERIFICATION");
+assert(phase === "preflight", "FORMAL_COMPARISON_NOT_APPROVED");
 assert(output.startsWith(resolve(".local/diagnostics") + "/"), "OUTPUT_MUST_BE_IGNORED_DIAGNOSTICS");
 const report = { workload, phase, runs: [], failure: null,
   gpuMs: "UNKNOWN", presentationAt: "UNKNOWN", note: "No heavy trace; OFF has only explicit control-mode semantic readout. Completion includes DOM polling uncertainty." };
 try {
   for (let r = 1; r <= (phase === "preflight" ? 1 : 3); r++) for (const mode of r % 2 ? ["control", "on"] : ["on", "control"]) {
-    const sample = await browserRun(mode, r, workload === "baseline13" && mode === "on" && r === 1, workload);
+    const sample = await browserRun(mode, r, mode === "on" && r === 1, workload);
     report.runs.push(sample);
     assert(report.runs.every(x => x.meaningHash === sample.meaningHash), "ON_OFF_MEANING_HASH_MISMATCH");
-    console.log(JSON.stringify({ mode, repetition: r, hash: sample.meaningHash, rows: sample.telemetry?.rows.length ?? 0,
+    console.log(JSON.stringify({ mode, repetition: r, hash: sample.meaningHash, records: sample.telemetry?.records ?? 0,
       completionObservedMs: sample.completionObservedMs, gl: sample.gl?.totals ?? "NOT_OBSERVED" }));
   }
 } catch (e) {

@@ -63,31 +63,77 @@ export const LAYERS = ["session", "root", "heatmap", "bubble", "delta", "vp"] as
 type Stage = typeof STAGES[number];
 export type Layer = typeof LAYERS[number];
 export type Row = { stage: Stage; at: number; ms: number; revision: number; seq: number; layer: Layer; a: number; b: number; c: number };
+export type RecordingVersion = 1 | 2;
+export interface Receipt {
+  recordIndex: number; revision: number; at: number; mask: number;
+  heatmapAt: number | null; bubbleAt: number | null; deltaAt: number | null; vpAt: number | null; domAt: number | null;
+}
+const RECEIPT_CODE = STAGES.length;
 
-export function createRecorder(sessionId: number) {
+export function createRecorder(sessionId: number, version: RecordingVersion = 1) {
   let data: Float64Array | null = new Float64Array(ROW_LIMIT * WIDTH);
   let size = 0, dropped = 0, saturated = false;
+  let receiptOffset = -1, observations = 0, mergedReceipts = 0, delegatedGL = 0;
   return {
     add(stage: Stage, revision = -1, seq = -1, layer: Layer = "session", ms = 0, a = 0, b = 0, c = 0) {
       if (!data) return;
+      observations++;
+      const stageId = STAGES.indexOf(stage), layerId = LAYERS.indexOf(layer), at = performance.now();
+      if (![stageId, at, ms, revision, seq, layerId, a, b, c].every(Number.isFinite) || stageId < 0 || layerId < 0) {
+        dropped++; return;
+      }
+      // v2 delegates GL API telemetry to the driver's exact bounded counters.
+      // This is an explicit schema change, not sampling or a missing time sample.
+      if (version === 2 && stage === "gl") { delegatedGL++; return; }
       if (saturated) { dropped = Math.min(Number.MAX_SAFE_INTEGER, dropped + 1); return; }
-      const row = [STAGES.indexOf(stage), performance.now(), ms, revision, seq, LAYERS.indexOf(layer), a, b, c];
-      if (!row.every(Number.isFinite) || row[0] < 0 || row[5] < 0) { dropped++; return; }
+      const member = version !== 2 ? -1 : stage === "dom" && layer === "vp" ? 4
+        : stage === "received" ? ["heatmap", "bubble", "delta", "vp"].indexOf(layer) : -1;
+      if (member >= 0) {
+        const bit = 1 << member;
+        // One timestamp per member. Repeated members, older revisions and interleaving
+        // allocate another group rather than overwrite evidence or grow a Map.
+        if (receiptOffset >= 0 && data[receiptOffset + 3] === revision && !(data[receiptOffset + 2] & bit)) {
+          data[receiptOffset + 2] |= bit;
+          data[receiptOffset + 4 + member] = at;
+          mergedReceipts++;
+          return;
+        }
+        receiptOffset = size++ * WIDTH;
+        data.set([RECEIPT_CODE, at, bit, revision, 0, 0, 0, 0, 0], receiptOffset);
+        data[receiptOffset + 4 + member] = at;
+        if (size === ROW_LIMIT) saturated = true;
+        return;
+      }
+      const row = [stageId, at, ms, revision, seq, layerId, a, b, c];
       data.set(row, size++ * WIDTH);
       if (size === ROW_LIMIT) saturated = true;
     },
     snapshot() {
       const rows: Row[] = [];
+      const receipts: Receipt[] = [];
       if (data) for (let i = 0; i < size; i++) {
         const o = i * WIDTH;
+        if (data[o] === RECEIPT_CODE) {
+          const mask = data[o + 2];
+          receipts.push({ recordIndex: i, revision: data[o + 3], at: data[o + 1], mask,
+            heatmapAt: mask & 1 ? data[o + 4] : null, bubbleAt: mask & 2 ? data[o + 5] : null,
+            deltaAt: mask & 4 ? data[o + 6] : null, vpAt: mask & 8 ? data[o + 7] : null,
+            domAt: mask & 16 ? data[o + 8] : null });
+          continue;
+        }
         rows.push({ stage: STAGES[data[o]], at: data[o + 1], ms: data[o + 2], revision: data[o + 3],
           seq: data[o + 4], layer: LAYERS[data[o + 5]], a: data[o + 6], b: data[o + 7], c: data[o + 8] });
       }
-      return { sessionId, limit: ROW_LIMIT, allocatedBytes: data?.byteLength ?? 0, saturated, dropped, rows,
+      return { version, sessionId, limit: ROW_LIMIT, allocatedBytes: data?.byteLength ?? 0, saturated, dropped,
+        records: size, observations, mergedReceipts, delegatedGL, rows, receipts,
         gpuMs: "UNKNOWN", presentationAt: "UNKNOWN" };
     },
-    stats() { return { records: size, dropped, saturated, allocatedBytes: data?.byteLength ?? 0 }; },
-    dispose() { data?.fill(0); data = null; size = dropped = 0; saturated = false; },
+    stats() { return { version, records: size, observations, mergedReceipts, delegatedGL, dropped, saturated,
+      allocatedBytes: data?.byteLength ?? 0 }; },
+    dispose() {
+      data?.fill(0); data = null; size = dropped = observations = mergedReceipts = delegatedGL = 0;
+      receiptOffset = -1; saturated = false;
+    },
   };
 }
 export type Recorder = ReturnType<typeof createRecorder>;
@@ -119,7 +165,8 @@ export function startDiagnostics(sessionId: number) {
   releaseDiagnostics();
   const mode = diagnosticMode();
   if (mode === "off") return undefined;
-  if (mode === "on") active = createRecorder(sessionId);
+  if (mode === "on") active = createRecorder(sessionId,
+    new URLSearchParams(window.location.search).get("mockCase") === "cells128" ? 2 : 1);
   const text = () => reader ? JSON.stringify(reader(), (_k, v) => typeof v === "bigint" ? { bigint: v.toString() }
     : v instanceof Map ? { map: [...v] } : v) : null;
   window.__orderflowMockDiagnostics = {
