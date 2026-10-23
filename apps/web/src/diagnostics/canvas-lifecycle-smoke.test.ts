@@ -166,3 +166,195 @@ it("wall timeout is permanently FAIL even with graceful cleanup", async () => {
   expect(r.status).toBe("FAIL"); expect(r.reason).toBe("BROWSER_WALL_TIMEOUT");
   expect((await f.policy.finish()).status).toBe("FAIL");
 });
+
+function gpuFixture(timer: object | null | undefined = null, fault?: string) {
+  const lose = vi.fn(), context = {
+    RENDERER: 4,
+    getParameter: vi.fn(() => {
+      if (fault === "renderer") throw Error("RENDERER_QUERY_FAILED");
+      return "synthetic renderer";
+    }),
+    getExtension: vi.fn((name: string): object | null | undefined => {
+      if (name === "WEBGL_debug_renderer_info") return { UNMASKED_RENDERER_WEBGL: 7 };
+      if (name === "EXT_disjoint_timer_query_webgl2") {
+        if (fault === "extension") throw Error("EXTENSION_QUERY_FAILED");
+        return timer;
+      }
+      return { loseContext: lose };
+    }),
+  };
+  const getContext = vi.fn(() => {
+    if (fault === "context-throw") throw Error("CONTEXT_QUERY_FAILED");
+    return fault === "no-context" ? null : context;
+  });
+  return { context, getContext, lose, run: () => runInNewContext(`(${smoke.observeGpu.toString()})()`, {
+    document: { createElement: () => ({ getContext }) },
+  }) };
+}
+for (const supported of [false, true]) {
+  it(`observes real query return for timerExtension ${supported}`, () => {
+    const f = gpuFixture(supported ? {} : null);
+    expect(f.run()).toEqual({ webgl2: true, renderer: "synthetic renderer", timerExtension: supported });
+    expect(f.getContext).toHaveBeenCalledWith("webgl2");
+    expect(f.context.getParameter).toHaveBeenCalledWith(7);
+    expect(f.context.getExtension).toHaveBeenCalledWith("EXT_disjoint_timer_query_webgl2");
+    expect(f.lose).toHaveBeenCalledOnce();
+  });
+}
+for (const fault of ["renderer", "extension", "no-context", "context-throw"]) {
+  it(`GPU ${fault} failure is an explicit error, not false`, () => {
+    expect(() => gpuFixture(null, fault).run()).toThrow("GPU_OBSERVATION_FAILED");
+  });
+}
+it("undefined extension result is not unsupported false", () => {
+  const f = gpuFixture();
+  f.context.getExtension.mockImplementation((name: string) => name === "EXT_disjoint_timer_query_webgl2"
+    ? undefined : { loseContext: f.lose });
+  expect(f.run).toThrow("GPU_TIMER_EXTENSION_UNOBSERVED");
+});
+const startupBaseline = policy.loadE2Baseline((p: string) => readFile(new URL(`../../../../${p}`, import.meta.url)));
+it("all three GPU fields must match the verified immutable E2 baseline before input", async () => {
+  const b = await startupBaseline, e = JSON.parse(b.environment), input = vi.fn(() => "started");
+  expect(await smoke.afterStartupVerification(e.chromium, e.gpu, e.dpr, b, input)).toBe("started");
+  expect(input).toHaveBeenCalledOnce();
+});
+for (const field of ["webgl2", "renderer", "timerExtension"]) {
+  it(`rejects missing ${field} without starting input`, async () => {
+    const b = await startupBaseline, e = JSON.parse(b.environment), gpu = { ...e.gpu }, input = vi.fn();
+    delete gpu[field];
+    await expect(smoke.afterStartupVerification(e.chromium, gpu, e.dpr, b, input))
+      .rejects.toThrow("GPU_SCHEMA_INCOMPLETE");
+    expect(input).not.toHaveBeenCalled();
+  });
+}
+it("real timerExtension mismatch rejects input rather than normalizing it to E2", async () => {
+  const b = await startupBaseline, e = JSON.parse(b.environment), input = vi.fn();
+  await expect(smoke.afterStartupVerification(e.chromium,
+    { ...e.gpu, timerExtension: !e.gpu.timerExtension }, e.dpr, b, input)).rejects.toThrow("E2_GPU_MISMATCH");
+  expect(input).not.toHaveBeenCalled();
+});
+function pageCleanupSnapshot(baselineRecorded = true) {
+  return { resources: { intervals: 0, raf: 0 },
+    ownership: { records: [], initial: [], baselineRecorded, limited: false, unrecorded: 0, unknownCreations: 0 },
+    phase: { contexts: [] as { created: number; deleted: number; invalidated: number; liveBuffers: number }[],
+      limited: false, unrecorded: 0 },
+    layers: [] as object[], gl: { totals: { heatmap: { contexts: 0 }, bubble: { contexts: 0 } } } };
+}
+function cleanupRunFixture(status = "FAIL", failure: string | undefined = status === "FAIL" ? "ORIGINAL_GPU_FAILURE" : undefined) {
+  const order: string[] = [];
+  const io = {
+    pageAvailable: () => true,
+    exitPage: vi.fn(async () => { order.push("page"); }),
+    snapshot: vi.fn(async () => pageCleanupSnapshot()),
+    finishBrowser: vi.fn(async () => {
+      order.push("browser");
+      return { status: "PASS", reason: null as string | null, signal: { attempted: false } };
+    }),
+    inspectGroup: vi.fn(async () => {
+      order.push("group"); return { live: [] as number[], zombies: [] as number[] };
+    }),
+    removeProfile: vi.fn(async () => { order.push("profile"); }),
+    persistEvidence: vi.fn(async () => { order.push("evidence"); }),
+    evidenceFailure: vi.fn(),
+  };
+  return { report: { status, failure }, io, order };
+}
+for (const stage of ["before GPU comparison", "after GPU comparison"]) {
+  it(`early failure ${stage} remains FAIL after successful cleanup`, async () => {
+    const f = cleanupRunFixture("FAIL", stage), r = await smoke.cleanupPhase(f.report, f.io);
+    expect(r.status).toBe("FAIL"); expect(r.failure).toBe(stage);
+    expect(r.cleanup.page.status).toBe("PASS"); expect(r.cleanup.browser.status).toBe("PASS");
+    expect(r.phaseBEligible).toBe(false);
+    expect(f.order).toEqual(["page", "browser", "group", "profile", "evidence"]);
+  });
+}
+it("baseline absence remains UNKNOWN even with zero observed intervals", async () => {
+  const f = cleanupRunFixture();
+  f.io.snapshot.mockResolvedValue(pageCleanupSnapshot(false));
+  const r = await smoke.cleanupPhase(f.report, f.io);
+  expect(r.cleanup.page.status).toBe("UNKNOWN");
+  expect(r.failure).toBe("ORIGINAL_GPU_FAILURE"); expect(r.termination.status).toBe("PASS");
+  expect(r.chromiumCleanup.profileRemoved).toBe(true);
+});
+it("an unobserved page cannot become a PASS or an assumed empty resource set", async () => {
+  const f = cleanupRunFixture();
+  f.io.pageAvailable = () => false;
+  const r = await smoke.cleanupPhase(f.report, f.io);
+  expect(r.cleanup.page.status).toBe("NOT_OBSERVED"); expect(r.cleanupPage).toBeUndefined();
+  expect(f.io.snapshot).not.toHaveBeenCalled(); expect(f.io.finishBrowser).toHaveBeenCalledOnce();
+});
+it("independent absence of Canvas and both context observers permits NOT_APPLICABLE buffers", () => {
+  expect(smoke.assessPageCleanup(pageCleanupSnapshot())).toMatchObject({
+    status: "PASS", buffers: { status: "NOT_APPLICABLE" },
+  });
+  const unproven = pageCleanupSnapshot(); unproven.layers.push({});
+  expect(smoke.assessPageCleanup(unproven).status).toBe("UNKNOWN");
+});
+it("normal exit with verified deleted buffers can remain PASS", async () => {
+  const f = cleanupRunFixture("PASS", undefined), snapshot = pageCleanupSnapshot();
+  snapshot.phase.contexts.push({ created: 3, deleted: 2, invalidated: 1, liveBuffers: 0 });
+  f.io.snapshot.mockResolvedValue(snapshot);
+  const r = await smoke.cleanupPhase(f.report, f.io);
+  expect(r.status).toBe("PASS"); expect(r.phaseBEligible).toBe(true);
+  expect(r.cleanup.profile.status).toBe("PASS");
+});
+it("page cleanup error preserves original failure and still closes browser and persists both errors", async () => {
+  const f = cleanupRunFixture(); f.io.exitPage.mockRejectedValue(Error("PAGE_EXIT_FAULT"));
+  const r = await smoke.cleanupPhase(f.report, f.io);
+  expect(r.failure).toBe("ORIGINAL_GPU_FAILURE");
+  expect(r.cleanupFailure).toContain("PAGE_EXIT_FAULT"); expect(r.cleanup.page.status).toBe("FAIL");
+  expect(f.io.finishBrowser).toHaveBeenCalledOnce(); expect(f.io.persistEvidence).toHaveBeenCalledOnce();
+});
+it("Browser.close failure and unknown ownership retain FAIL without signaling a foreign PID", async () => {
+  const signal = vi.fn();
+  const termination = policy.createBrowserTermination({
+    close: async () => { throw Error("CLOSE_FAULT"); }, exited: () => false, holdsLeader: () => false,
+    inspect: async () => ({ processes: [{ ...leader, startTicks: "901" }], live: [991], zombies: [] }),
+    waitExit: async () => {}, signal, recover: async () => {},
+  }, { trialId: "offline-close-fault", started: leader });
+  const f = cleanupRunFixture();
+  f.io.finishBrowser.mockImplementation(() => termination.finish());
+  f.io.inspectGroup.mockResolvedValue({ live: [991], zombies: [] });
+  const r = await smoke.cleanupPhase(f.report, f.io);
+  expect(r.termination.status).toBe("FAIL"); expect(r.failure).toBe("ORIGINAL_GPU_FAILURE");
+  expect(signal).not.toHaveBeenCalled(); expect(r.phaseBEligible).toBe(false);
+});
+it("profile deletion failure is retained separately from the original failure", async () => {
+  const f = cleanupRunFixture(); f.io.removeProfile.mockRejectedValue(Error("PROFILE_DELETE_FAULT"));
+  const r = await smoke.cleanupPhase(f.report, f.io);
+  expect(r.failure).toBe("ORIGINAL_GPU_FAILURE"); expect(r.cleanup.profile.status).toBe("FAIL");
+  expect(r.chromiumCleanup.profileRemoved).toBe(false); expect(r.phaseBEligible).toBe(false);
+});
+it("unobserved process groups are not invented as empty and profiles are preserved", async () => {
+  const f = cleanupRunFixture(); f.io.inspectGroup.mockRejectedValue(Error("GROUP_UNOBSERVED"));
+  const r = await smoke.cleanupPhase(f.report, f.io);
+  expect(r.chromiumCleanup).toBeUndefined(); expect(f.io.removeProfile).not.toHaveBeenCalled();
+  expect(r.status).toBe("FAIL");
+});
+it("residual processes prohibit profile deletion and formal continuation", async () => {
+  const f = cleanupRunFixture("PASS", undefined);
+  f.io.inspectGroup.mockResolvedValue({ live: [991], zombies: [] });
+  const r = await smoke.cleanupPhase(f.report, f.io);
+  expect(r.status).toBe("FAIL"); expect(f.io.removeProfile).not.toHaveBeenCalled();
+  expect(r.phaseBEligible).toBe(false);
+});
+it("SIGKILL cannot become PASS even if group inspection is empty afterwards", async () => {
+  const f = cleanupRunFixture("PASS", undefined);
+  f.io.finishBrowser.mockResolvedValue({ status: "FAIL", reason: "FORCED", signal: { attempted: true } });
+  const r = await smoke.cleanupPhase(f.report, f.io);
+  expect(r.status).toBe("FAIL"); expect(r.phaseBEligible).toBe(false);
+});
+it("evidence write failure occurs after safe shutdown and remains FAIL", async () => {
+  const f = cleanupRunFixture("PASS", undefined);
+  f.io.persistEvidence.mockRejectedValue(Error("EVIDENCE_DISK_FAULT"));
+  const r = await smoke.cleanupPhase(f.report, f.io);
+  expect(f.io.finishBrowser).toHaveBeenCalledOnce(); expect(f.io.removeProfile).toHaveBeenCalledOnce();
+  expect(r.cleanup.evidence.status).toBe("FAIL"); expect(r.phaseBEligible).toBe(false);
+  expect(f.io.evidenceFailure).toHaveBeenCalledOnce(); expect(r.status).toBe("FAIL");
+});
+it("evidence case failure stops subsequent cases before cleanup orchestration", async () => {
+  const next = vi.fn();
+  await expect(smoke.runCases([{ name: "first", run: async () => ({ status: "PASS" }) },
+    { name: "next", run: next }], async () => { throw Error("CASE_WRITE_FAILED"); })).rejects.toThrow("CASE_WRITE_FAILED");
+  expect(next).not.toHaveBeenCalled();
+});

@@ -70,6 +70,110 @@ export async function saveEvidence(path, value) {
   return { path, bytes: Buffer.byteLength(bytes), sha256: digest(bytes) };
 }
 
+// Runs in the page realm. A failed query is an error, never "unsupported=false".
+export function observeGpu() {
+  let gl, result, observationError, cleanupError;
+  try {
+    gl = document.createElement("canvas").getContext("webgl2");
+    if (!gl) throw Error("GPU_CONTEXT_UNAVAILABLE");
+    const debug = gl.getExtension("WEBGL_debug_renderer_info");
+    const renderer = gl.getParameter(debug ? debug.UNMASKED_RENDERER_WEBGL : gl.RENDERER);
+    if (typeof renderer !== "string" || !renderer) throw Error("GPU_RENDERER_UNOBSERVED");
+    const timer = gl.getExtension("EXT_disjoint_timer_query_webgl2");
+    if (timer !== null && typeof timer !== "object") throw Error("GPU_TIMER_EXTENSION_UNOBSERVED");
+    result = { webgl2: true, renderer, timerExtension: timer !== null };
+  } catch (e) { observationError = String(e); }
+  finally {
+    if (gl) {
+      try { gl.getExtension("WEBGL_lose_context")?.loseContext(); }
+      catch (e) { cleanupError = String(e); }
+    }
+  }
+  if (observationError || cleanupError)
+    throw Error(JSON.stringify({ reason: "GPU_OBSERVATION_FAILED", observationError, cleanupError }));
+  return result;
+}
+export async function afterStartupVerification(chromium, gpu, dpr, baseline, run) {
+  assert(gpu && gpu.webgl2 === true && typeof gpu.renderer === "string" &&
+    typeof gpu.timerExtension === "boolean", "GPU_SCHEMA_INCOMPLETE");
+  validateE2BrowserStartup(chromium, gpu, dpr, baseline);
+  return run();
+}
+export function assessPageCleanup(snapshot) {
+  if (!snapshot) return { status: "NOT_OBSERVED", reason: "PAGE_SNAPSHOT_UNAVAILABLE" };
+  const resources = resourceReleaseGate(snapshot.resources, snapshot.ownership);
+  if (resources.status !== "PASS") return {
+    status: resources.status === "FAIL" ? "FAIL" : "UNKNOWN", reason: resources.reason, resources,
+  };
+  const phase = snapshot.phase;
+  if (!phase || !Array.isArray(phase.contexts))
+    return { status: "NOT_OBSERVED", reason: "BUFFER_OBSERVATION_UNAVAILABLE", resources };
+  if (phase.limited || phase.unrecorded) return { status: "FAIL", reason: "RESOURCE_OBSERVATION_LIMIT", resources };
+  if (!phase.contexts.length) {
+    if (!Array.isArray(snapshot.layers) || snapshot.layers.length !== 0 ||
+      !LAYERS.every(l => snapshot.gl?.totals?.[l]?.contexts === 0))
+      return { status: "UNKNOWN", reason: "NO_INDEPENDENT_CONTEXT_ABSENCE_PROOF", resources };
+    return { status: "PASS", resources, buffers: { status: "NOT_APPLICABLE",
+      reason: "NO_LAYER_CANVAS_AND_NO_CONTEXT_IN_TWO_OBSERVERS" } };
+  }
+  if (!phase.contexts.every(c => ["created", "deleted", "invalidated", "liveBuffers"]
+    .every(k => Number.isSafeInteger(c[k]) && c[k] >= 0)))
+    return { status: "UNKNOWN", reason: "BUFFER_COUNTS_UNAVAILABLE", resources };
+  const released = phase.contexts.every(c => c.liveBuffers === 0 && c.created === c.deleted + c.invalidated);
+  return { status: released ? "PASS" : "FAIL", reason: released ? "BUFFER_ACCOUNTING_MATCH" : "BUFFER_LEAK", resources };
+}
+// Used by the real finally and offline fault injection. Cleanup cannot erase the trial failure.
+export async function cleanupPhase(report, io) {
+  const cleanup = report.cleanup = { page: { status: "NOT_OBSERVED" },
+    browser: { status: "NOT_OBSERVED" }, profile: { status: "NOT_OBSERVED" },
+    evidence: { status: "PENDING" }, errors: [] };
+  const fail = (stage, e) => {
+    cleanup.errors.push({ stage, error: String(e) });
+    report.status = "FAIL";
+    report.failure ??= `${stage}:${String(e)}`;
+  };
+  try {
+    if (io.pageAvailable()) {
+      await io.exitPage();
+      report.cleanupPage = await io.snapshot();
+      cleanup.page = assessPageCleanup(report.cleanupPage);
+      if (cleanup.page.status !== "PASS") fail("PAGE_CLEANUP", cleanup.page.reason);
+    } else fail("PAGE_CLEANUP", "PAGE_NOT_OBSERVED");
+  } catch (e) {
+    cleanup.page = { status: "FAIL", reason: String(e) };
+    report.cleanupFailure = String(e); fail("PAGE_CLEANUP", e);
+  }
+  try {
+    report.termination = await io.finishBrowser();
+    cleanup.browser = { status: report.termination.status };
+    if (report.termination.status !== "PASS" || report.termination.signal?.attempted)
+      fail("BROWSER_CLEANUP", report.termination.reason ?? "TERMINATION_NOT_CLEAN");
+  } catch (e) { cleanup.browser = { status: "FAIL", reason: String(e) }; fail("BROWSER_CLEANUP", e); }
+  try {
+    const remaining = await io.inspectGroup();
+    assert(Array.isArray(remaining.live) && Array.isArray(remaining.zombies), "GROUP_NOT_OBSERVED");
+    report.chromiumCleanup = { live: remaining.live, zombies: remaining.zombies, profileRemoved: false };
+    if (remaining.live.length || remaining.zombies.length) {
+      cleanup.profile = { status: "NOT_REMOVED", reason: "BROWSER_GROUP_REMAINS" };
+      fail("PROCESS_CLEANUP", "BROWSER_GROUP_REMAINS");
+    } else {
+      await io.removeProfile();
+      report.chromiumCleanup.profileRemoved = true;
+      cleanup.profile = { status: "PASS" };
+    }
+  } catch (e) { cleanup.profile = { status: "FAIL", reason: String(e) }; fail("PROFILE_CLEANUP", e); }
+  report.phaseBEligible = report.status === "PASS" && cleanup.page.status === "PASS" &&
+    cleanup.browser.status === "PASS" && cleanup.profile.status === "PASS";
+  cleanup.evidence = { status: "WRITE_REQUESTED" };
+  try { await io.persistEvidence(); cleanup.evidence.status = "WRITTEN"; }
+  catch (e) {
+    cleanup.evidence = { status: "FAIL", reason: String(e) };
+    fail("EVIDENCE_WRITE", e); report.phaseBEligible = false;
+    io.evidenceFailure?.({ status: report.status, failure: report.failure, cleanup });
+  }
+  return report;
+}
+
 // External, Phase-A-only observation. Never changes renderer inputs or application state.
 export function installPhaseObserver() {
   const rows = [], contexts = new Map(), pending = new Set(), rafs = new Map();
@@ -312,12 +416,20 @@ export async function smoke(output) {
       source: `${observer};(${installSafetyGLObserver.toString()})();(${installPhaseObserver.toString()})()` });
     await page("Page.navigate", { url: "http://127.0.0.1:80/?mockDiagnostics=1&mockCase=cells128" });
     await wait(`!!document.querySelector('[data-testid="button-unified-start"]')`);
-    const gpu = await evaluate(`(()=>{const c=document.createElement('canvas'),g=c.getContext('webgl2');
-      if(!g)return{webgl2:false};const e=g.getExtension('WEBGL_debug_renderer_info');
-      const r={webgl2:true,renderer:g.getParameter(e?e.UNMASKED_RENDERER_WEBGL:g.RENDERER)};
-      g.getExtension('WEBGL_lose_context')?.loseContext();return r})()`);
-    validateE2BrowserStartup(version.product, gpu, await evaluate("devicePixelRatio"), baseline);
-    report.browser = { chromium: version.product, gpu, dpr: 1 };
+    // Capture only the inspected background identities, before GPU observation or MOCK input.
+    await evaluate("window.__b2resources.beginSession(0)");
+    report.resourceBaseline = await evaluate("window.__b2resources.ownership()");
+    report.browser = { chromium: version.product, observation: "PENDING" };
+    const probe = await evaluate(`(()=>{try{return{status:"COMPLETE",gpu:(${observeGpu.toString()})()}}
+      catch(e){return{status:"ERROR",reason:String(e)}}})()`);
+    report.browser.observation = probe.status;
+    if (probe.status !== "COMPLETE") {
+      report.browser.error = probe.reason;
+      throw Error(probe.reason ?? "GPU_NOT_OBSERVED");
+    }
+    const gpu = probe.gpu;
+    const dpr = await evaluate("devicePixelRatio");
+    report.browser = { chromium: version.product, gpu, dpr, observation: "COMPLETE" };
     const cases = [
       { name: "A1 initial and revision drawing / A2 accounting", gate: "core", run: async () => {
         await evaluate("window.__b2resources.beginSession(1)");
@@ -465,33 +577,31 @@ export async function smoke(output) {
         return { status: "PASS", stopped, released, remount: "UNKNOWN_NO_PRODUCT_CONTROL" };
       } },
     ];
-    report.passedSequence = await runCases(cases, record);
+    report.passedSequence = await afterStartupVerification(version.product, gpu, dpr, baseline,
+      () => runCases(cases, record));
     report.status = report.passedSequence ? "PASS" : "FAIL";
   } catch (e) { report.status = "FAIL"; report.failure = String(e); }
   finally {
-    // Always exit via existing UI first where available, including actual FAIL.
-    if (evaluate && snap) {
-      try {
+    await cleanupPhase(report, {
+      pageAvailable: () => !!(evaluate && snap),
+      exitPage: async () => {
         await evaluate(`document.querySelector('[data-testid="button-unified-exit"]')?.click()`);
         await new Promise(r => setTimeout(r, 400));
-        report.cleanupPage = await snap();
-        assert.equal(resourceReleaseGate(report.cleanupPage.resources, report.cleanupPage.ownership).status, "PASS");
-        assert(report.cleanupPage.phase.contexts.every(c => c.liveBuffers === 0 &&
-          c.created === c.deleted + c.invalidated), "BUFFER_LEAK");
-      } catch (e) { report.cleanupFailure = String(e); report.status = "FAIL"; }
-    }
-    report.termination = await termination.finish(); clearTimeout(wall);
-    const remaining = await group(browser.pid);
-    report.chromiumCleanup = { live: remaining.live, zombies: remaining.zombies, profileRemoved: false };
-    if (!remaining.live.length && !remaining.zombies.length) {
-      await rm(dir, { recursive: true }); report.chromiumCleanup.profileRemoved = true;
-    }
-    if (report.termination.status !== "PASS" || report.termination.signal.attempted ||
-        remaining.live.length || remaining.zombies.length) report.status = "FAIL";
-    report.phaseBEligible = report.status === "PASS";
-    await mkdir(resolve(output, ".."), { recursive: true });
-    await checkpoint();
-    await saveEvidence(output, report);
+      },
+      snapshot: () => snap(),
+      finishBrowser: async () => { try { return await termination.finish(); } finally { clearTimeout(wall); } },
+      inspectGroup: () => {
+        assert(Number.isSafeInteger(browser.pid), "BROWSER_IDENTITY_UNAVAILABLE");
+        return group(browser.pid);
+      },
+      removeProfile: () => rm(dir, { recursive: true }),
+      persistEvidence: async () => {
+        await mkdir(resolve(output, ".."), { recursive: true });
+        await checkpoint();
+        await saveEvidence(output, report);
+      },
+      evidenceFailure: value => console.error("PHASE_A_EVIDENCE_WRITE_FAILED", JSON.stringify(value)),
+    });
   }
   return report;
 }
