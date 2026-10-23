@@ -126,17 +126,131 @@ export function calculateTimeWeightedDepth(history: DepthHistory, query: DepthQu
   return integrate(history, query, checked, prepareHistory(history));
 }
 
-/** Frame-local sharing only. Queries, including their failures, retain caller order. */
+/** Only the first bucket shares a bounded, call-local replay. Failures retain caller order. */
 export function calculateTimeWeightedDepthCells(
   history: DepthHistory, queries: readonly DepthQuery[],
 ): readonly TimeWeightedDepth[] {
   let prepared: ReturnType<typeof prepareHistory> | undefined;
+  let key: { side: BookSide; width: PriceBinWidth; binId: number } | undefined;
+  let prefix: ReturnType<typeof createBucketPrefix> | undefined;
+  let disabled = false;
   return queries.map(query => {
     // Do not inspect history for [] or prepare it before the first query is valid.
     const checked = validateQuery(query);
     prepared ??= prepareHistory(history);
-    return integrate(history, query, checked, prepared);
+    key ??= { side: query.side, width: query.width, binId: checked.binId };
+    if (disabled || key.side !== query.side || key.width !== query.width || key.binId !== checked.binId) {
+      return integrate(history, query, checked, prepared);
+    }
+    const count = boundaryIndex(prepared.times, checked.end);
+    // Reaching the ceiling disables reuse for the rest of this call. No partial
+    // prefix is combined with a scalar result, and no apply error is caught.
+    if (count >= 4096) {
+      prefix = undefined;
+      disabled = true;
+      return integrate(history, query, checked, prepared);
+    }
+    prefix ??= createBucketPrefix(history, query, prepared);
+    return prefix.read(query, checked, count);
   });
+}
+
+/** First boundary >= end: a right-endpoint event must not be applied. */
+function boundaryIndex(times: readonly bigint[], end: bigint): number {
+  let low = 0, high = times.length;
+  while (low < high) {
+    const mid = low + Math.floor((high - low) / 2);
+    if (times[mid] < end) low = mid + 1;
+    else high = mid;
+  }
+  return low;
+}
+
+interface PrefixNode {
+  readonly at: bigint;
+  /** null is UNKNOWN, never a synthetic zero. */
+  readonly qty: bigint | null;
+  readonly covered: bigint;
+  readonly integral: bigint;
+}
+
+function createBucketPrefix(
+  history: DepthHistory, bucket: DepthQuery,
+  { quality, qualityStarts, records, times }: ReturnType<typeof prepareHistory>,
+) {
+  const side = bucket.side, priceTicks = bucket.priceTicks, width = bucket.width;
+  const nodes: PrefixNode[] = [];
+  let book = createMbpBook();
+  let fresh = false;
+  let eventIndex = 0;
+  let qualityIndex = -1;
+
+  function valueAt(at: bigint) {
+    let low = 0, high = nodes.length;
+    while (low < high) {
+      const mid = low + Math.floor((high - low) / 2);
+      if (nodes[mid].at <= at) low = mid + 1;
+      else high = mid;
+    }
+    const node = nodes[low - 1];
+    if (!node) return { covered: 0n, integral: 0n };
+    const duration = node.qty === null ? 0n : at - node.at;
+    return { covered: node.covered + duration,
+      integral: node.integral + (node.qty ?? 0n) * duration };
+  }
+
+  return {
+    read(query: DepthQuery, { start, end, binId }: ReturnType<typeof validateQuery>, count: number): TimeWeightedDepth {
+      // Only canonical boundaries strictly before THIS end are visited. A
+      // decreasing/overlapping query reads retained scalar prefixes, not books.
+      while (nodes.length < count) {
+        const at = times[nodes.length];
+        const previous = nodes[nodes.length - 1];
+        const elapsed = previous && previous.qty !== null ? at - previous.at : 0n;
+        const cumulative = {
+          covered: (previous?.covered ?? 0n) + elapsed,
+          integral: (previous?.integral ?? 0n) + (previous?.qty ?? 0n) * elapsed,
+        };
+        while (qualityIndex + 1 < quality.length && qualityStarts[qualityIndex + 1] <= at) {
+          const interval = quality[++qualityIndex];
+          if (interval.status !== "VALID" || interval.sequenceVerification !== "CONTIGUOUS") fresh = false;
+        }
+        const valid = qualityIndex >= 0 && quality[qualityIndex].status === "VALID" &&
+          quality[qualityIndex].sequenceVerification === "CONTIGUOUS";
+        while (eventIndex < records.length && records[eventIndex].at <= at) {
+          const record = records[eventIndex++];
+          if (!valid) continue;
+          if (record.isBatch) {
+            if (fresh) book = applyMbpBatch(book, record.events);
+          } else {
+            const event = record.events[0];
+            if (event.kind === "L2_SNAPSHOT") {
+              book = applyMbpEvent(book, event, history.snapshotSemantics);
+              fresh = true;
+            } else if (fresh) book = applyMbpEvent(book, event);
+          }
+        }
+        const observed = valid && fresh ? readPriceBin(book, side, priceTicks, width) : null;
+        nodes.push({ at, ...cumulative, qty: observed?.status === "KNOWN" ? observed.qty : null });
+      }
+      const left = valueAt(start), right = valueAt(end);
+      const covered = right.covered - left.covered;
+      const integral = right.integral - left.integral;
+      const duration = end - start;
+      const full = covered === duration;
+      const partialTWA = covered === 0n ? null : ratio(integral, covered);
+      const rawCoverage = ratio(covered, duration);
+      const coverageRatio = !full && rawCoverage >= 1 ? 1 - Number.EPSILON : rawCoverage;
+      const metrics: Metrics = {
+        side: query.side, binId, width: query.width, startNs: query.startNs, endNs: query.endNs,
+        coveredDuration: covered.toString(), coverageRatio, partialTWA,
+        integralQuantityNs: integral.toString(),
+      };
+      return full
+        ? { ...metrics, status: "VALID", twa: partialTWA! }
+        : { ...metrics, status: "NO DATA", twa: null };
+    },
+  };
 }
 
 function validateQuery(query: DepthQuery) {

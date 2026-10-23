@@ -21,6 +21,7 @@ import * as sharedDeltaModule from "./deltaTimeline";
 import { type AnalysisScope as SharedScope } from "./analysisHub";
 import { VolumeProfileAccumulator as ProfileOracle } from "./volumeProfile";
 import * as twaModule from "./timeWeightedDepth";
+import * as mbpModule from "./mbpBook";
 
 const alignment = "MOCK-only explicit event/quality axis alignment; not vendor evidence";
 const limits: AnalysisBudget = {
@@ -214,6 +215,64 @@ describe("single-stream lightweight projection boundary", () => {
       expect(() => hub.readRenderFrame({ ...unified.query, cells: [unified.query.cells[0]] })).toThrow("Artificial TWA failure");
     } finally { spy.mockRestore(); }
     expect(hub.readRenderFrame(unified.query)).toBe(before);
+  });
+  it("C4-B preserves every full-frame field and SHA256 against scalar TWA at all 13 MOCK revisions", async () => {
+    // core deliberately has no Node type dependency; load this test-only builtin
+    // through Vitest without changing package/configuration dependencies.
+    const { createHash } = await vi.importActual<{
+      createHash(algorithm: string): { update(data: string): { digest(encoding: "hex"): string } };
+    }>("node:crypto");
+    const optimized = create(), reference = create();
+    const hash = (value: unknown) => createHash("sha256")
+      .update(JSON.stringify(value, (_, part) => typeof part === "bigint" ? part.toString() : part)).digest("hex");
+    for (const input of unified.inputs) {
+      expect(optimized.ingest(input)).toEqual(reference.ingest(input));
+      const scalar = vi.spyOn(twaModule, "calculateTimeWeightedDepthCells")
+        .mockImplementationOnce((history, queries) => queries.map(query => calculateTimeWeightedDepth(history, query)));
+      let expected: ReturnType<typeof reference.readRenderFrame>;
+      try { expected = reference.readRenderFrame(unified.query); }
+      finally { scalar.mockRestore(); }
+      const actual = optimized.readRenderFrame(unified.query);
+      expect(actual).toEqual(expected);
+      expect(hash(actual)).toBe(hash(expected));
+      expect(optimized.readRenderFrame(unified.query)).toBe(actual);
+    }
+  });
+  it("C4-B propagates a prefix MBP apply exception without replacing the old complete frame", () => {
+    const hub = create(); run(hub);
+    const before = hub.readRenderFrame(unified.query);
+    const apply = vi.spyOn(mbpModule, "applyMbpEvent").mockImplementationOnce(() => {
+      throw new Error("Artificial prefix apply failure");
+    });
+    try {
+      expect(() => hub.readRenderFrame({ ...unified.query, cells: unified.query.cells.slice(0, 2) }))
+        .toThrow("Artificial prefix apply failure");
+      expect(apply).toHaveBeenCalledTimes(1);
+    } finally { apply.mockRestore(); }
+    expect(hub.readRenderFrame(unified.query)).toBe(before);
+  });
+  it("C4-B still invalidates a mutable same-object query and every new revision", () => {
+    const hub = create(); run(hub);
+    const query = { ...unified.query, cells: [...unified.query.cells] };
+    const before = hub.readRenderFrame(query);
+    expect(hub.readRenderFrame(query)).toBe(before);
+    query.cells[0] = { ...query.cells[0],
+      endNs: (BigInt(query.cells[0].startNs) + 3_000_000_000n).toString() };
+    const changed = hub.readRenderFrame(query);
+    expect(changed).not.toBe(before);
+    // Unified MOCK has 40 for [0,2), then 80 for [2,3), unlike F-01.
+    expect(before.heatmap.cells[0].twa).toBe(40);
+    expect(changed.heatmap.cells[0].twa).toBe(160 / 3);
+    expect(hub.readRenderFrame(query)).toBe(changed);
+    hub.ingest(unified.inputs[2]);
+    const revised = hub.readRenderFrame(query);
+    expect(revised.revision).toBe(changed.revision + 1);
+    expect(revised).not.toBe(changed);
+    expect(revised.heatmap.cells).toEqual(changed.heatmap.cells);
+    for (const layer of [revised.book, revised.heatmap, revised.bubbles, revised.delta, revised.volumeProfile, revised.quality]) {
+      expect(layer.revision).toBe(revised.revision);
+    }
+    expect(() => { (before.heatmap.cells as unknown[]).push({}); }).toThrow();
   });
   it("an intermediate cell failure preserves the previous complete frame and other layers", () => {
     const hub = create(); run(hub);

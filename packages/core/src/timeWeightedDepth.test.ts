@@ -547,7 +547,7 @@ describe("28-C3 frame-local preparation compatibility", () => {
     expect(() => runCells({ ...h, events: [F01.events[0], updates[0] as DepthRecord] }, [query(0, 1)]))
       .toThrow("Tagged updates require an explicit complete batch envelope");
   });
-  it("shares history preparation and sorting, not cell book reconstruction or later calls", () => {
+  it("shares preparation, sorting and first-bucket replay only within this call", () => {
     const base = history(), cells = [query(0, 2), query(2, 4), query(4, 6)];
     let reads = 0;
     const h = { ...base, get events() { reads++; return base.events; } };
@@ -558,10 +558,243 @@ describe("28-C3 frame-local preparation compatibility", () => {
       expect(results.map(c => c.twa)).toEqual([60, 40, 30]);
       expect(reads).toBe(1);
       expect(sort).toHaveBeenCalledTimes(1);
-      expect(apply.mock.calls.filter(([, event]) => (event as L2Snapshot).kind === "L2_SNAPSHOT")).toHaveLength(3);
+      expect(apply.mock.calls.filter(([, event]) => (event as L2Snapshot).kind === "L2_SNAPSHOT")).toHaveLength(1);
       runCells(h, cells);
       expect(reads).toBe(2);
       expect(sort).toHaveBeenCalledTimes(2);
+      expect(apply.mock.calls.filter(([, event]) => (event as L2Snapshot).kind === "L2_SNAPSHOT")).toHaveLength(2);
     } finally { apply.mockRestore(); sort.mockRestore(); }
+  });
+});
+
+describe("28-C4-B first-bucket lazy prefix compatibility", () => {
+  function compare(h: DepthHistory, cells: readonly DepthQuery[]) {
+    const expected = cells.map(cell => calculateTimeWeightedDepth(h, cell));
+    expect(runCells(h, cells)).toEqual(expected);
+    return expected;
+  }
+  function outcome(run: () => unknown) {
+    try { return { value: run() }; }
+    catch (error) {
+      if (!(error instanceof Error)) throw error;
+      return { name: error.name, message: error.message };
+    }
+  }
+  function update(offset: bigint, qty: number, patch: Record<string, unknown> = {}): DepthRecord {
+    return depth({ ...F01.events[1], qty,
+      header: { ...F01.events[1].header, eventId: `MOCK-C4-${offset}`,
+        sequence: (offset + 1n).toString(), exchangeTimeNs: (origin + offset).toString(),
+        receiveTimeNs: (origin + offset).toString() }, ...patch });
+  }
+  function wideHistory() {
+    const snapshot = depth({ ...F01.events[0],
+      depthScope: { type: "PRICE_RANGE", minTick: 40000, maxTick: 80007 },
+      bids: Array.from({ length: 8 }, (_, i) => ({ priceTicks: 80000 + i, qty: i + 1 })),
+      asks: Array.from({ length: 8 }, (_, i) => ({ priceTicks: 80000 + i, qty: (i + 1) * 10 })),
+    });
+    return history([snapshot, ...F01.events.slice(1)]);
+  }
+  const cases = (["BID", "ASK"] as const).flatMap(side =>
+    ([1, 2, 4, 8] as const).map(width => ({ side, width })));
+
+  it.each(cases)("matches every scalar field for $side width $width, including representative ticks", ({ side, width }) => {
+    const h = wideHistory();
+    const cells = [query(0, 10, { side, width }),
+      ...Array.from({ length: 64 }, (_, i) => {
+        const start = origin + BigInt((i * 17) % 53 - 8) * 250_000_000n;
+        return query(0, 10, { side, width, priceTicks: 80000 + i % width,
+          startNs: start.toString(), endNs: (start + BigInt(i % 9 + 1) * 750_000_000n + 1n).toString() });
+      })];
+    const before = JSON.stringify(h), bids = [...h.qualityState.lastGoodBook.bids];
+    compare(h, cells);
+    expect(JSON.stringify(h)).toBe(before);
+    expect([...h.qualityState.lastGoodBook.bids]).toEqual(bids);
+  });
+
+  it.each([["F01", () => history()], ["F03", gapHistory]] as const)(
+    "%s retains golden fields for duplicate, adjacent, reversed and overlapping windows", (_, make) => {
+      const h = make();
+      const cells = [query(0, 12), query(8, 10), query(0, 2), query(0, 2),
+        query(2, 4), query(4, 6), query(3, 9), query(-2, 0), query(-1, 1)];
+      compare(h, cells);
+    },
+  );
+
+  it("reuses only the first side/width/binId key and keeps other buckets scalar", () => {
+    const h = wideHistory();
+    const cells = [query(0, 1, { width: 2 }), query(0, 1, { width: 2, side: "ASK" }),
+      query(0, 1, { width: 2, priceTicks: 80001 }),
+      // Same numeric binId=40000, but a different width must not reuse BID width 2.
+      query(0, 1, { priceTicks: 40000 }), query(0, 1, { width: 2, priceTicks: 80002 }),
+      query(0, 1, { width: 2 })];
+    const expected = cells.map(cell => calculateTimeWeightedDepth(h, cell));
+    const apply = vi.spyOn(mbpModule, "applyMbpEvent");
+    try {
+      expect(runCells(h, cells)).toEqual(expected);
+      expect(expected.map(result => result.twa)).toEqual([3, 30, 3, null, 7, 3]);
+      expect(apply.mock.calls.filter(([, event]) => (event as L2Snapshot).kind === "L2_SNAPSHOT")).toHaveLength(4);
+    } finally { apply.mockRestore(); }
+  });
+
+  it("keeps exact nanosecond endpoints on both sides of every event boundary", () => {
+    const cells = F01.events.flatMap(event => {
+      const t = BigInt(event.header.exchangeTimeNs!);
+      return [-1n, 0n, 1n].flatMap(offset => [
+        query(0, 10, { startNs: (t + offset).toString(), endNs: (t + offset + 1n).toString() }),
+        query(0, 10, { startNs: (t - 2n).toString(), endNs: (t + offset + 1n).toString() }),
+      ]);
+    });
+    compare(history(), cells);
+  });
+
+  it("keeps GAP/RESYNCING unknown until a same-time recovery snapshot, SET and DELETE", () => {
+    const base = history([F01.events[0]]);
+    let timeline = transitionQuality(base.qualityState.timeline, "L2_MBP", "GAP", at(1), "MOCK gap");
+    timeline = transitionQuality(timeline, "L2_MBP", "VALID", at(2), "MOCK transport only", "CONTIGUOUS");
+    timeline = transitionQuality(timeline, "L2_MBP", "RESYNCING", at(3), "MOCK resync");
+    timeline = transitionQuality(timeline, "L2_MBP", "GAP", at(4), "MOCK zero-length gap");
+    timeline = transitionQuality(timeline, "L2_MBP", "VALID", at(4), "MOCK snapshot alignment", "CONTIGUOUS");
+    const snapshot = depth({ ...F01.events[0], header: { ...F01.events[0].header,
+      eventId: "MOCK-C4-RECOVERY", exchangeTimeNs: at(4), receiveTimeNs: at(4) } });
+    const deleted = update(4_000_000_000n, 0, { kind: "L2_DELETE_LEVEL" });
+    const events = [F01.events[0], update(2_000_000_000n, 70), snapshot, update(4_000_000_000n, 80), deleted]
+      .map((record, i) => {
+        if ("batch" in record) throw new Error("This test uses unbatched records");
+        const sequence = String(i + 1);
+        return depth({ ...record, header: { ...record.header, sequence, eventId: `MOCK-C4-QUALITY-${i}` },
+          ...(record.kind === "L2_SNAPSHOT" ? { snapshotCoversSequence: sequence } : {}) });
+      });
+    const h = { ...base, qualityState: { ...base.qualityState, timeline }, events };
+    const expected = compare(h, [query(0, 6), query(2, 3), query(4, 5), query(0, 1), query(1, 4)]);
+    expect(expected[0]).toMatchObject({ status: "NO DATA", coverageRatio: .5,
+      coveredDuration: "3000000000", integralQuantityNs: "40000000000" });
+    expect(expected[1]).toMatchObject({ partialTWA: null, coveredDuration: "0" });
+    expect(expected[2]).toMatchObject({ status: "VALID", twa: 0 });
+  });
+
+  it.each(["UNKNOWN", "ZERO"] as const)("retains omitted-level semantics %s without conflating zero and unknown", unlistedLevels => {
+    const h = { ...wideHistory(), snapshotSemantics: { unlistedLevels, evidence: "MOCK explicit omission policy" } };
+    const expected = compare(h, [query(0, 10, { priceTicks: 40000 }),
+      query(3, 5, { priceTicks: 40000 }), query(3, 5)]);
+    expect(expected[0].twa).toBe(unlistedLevels === "ZERO" ? 0 : null);
+    expect(expected[2].twa).toBe(0);
+  });
+
+  it("keeps rounded partial coverage below one and exact huge BigInt prefixes", () => {
+    const snapshot = depth({ ...F01.events[0], bids: [{ priceTicks: 80000, qty: Number.MAX_SAFE_INTEGER }] });
+    const base = history([snapshot]), huge = 10n ** 30n;
+    const timeline = transitionQuality(base.qualityState.timeline, "L2_MBP", "GAP",
+      (origin + huge).toString(), "MOCK one-nanosecond final gap");
+    const h = { ...base, qualityState: { ...base.qualityState, timeline } };
+    const expected = compare(h, [query(0, 1, { endNs: (origin + huge + 1n).toString() }),
+      query(0, 1, { startNs: (origin + huge - 1n).toString(), endNs: (origin + huge).toString() })]);
+    expect(expected[0]).toMatchObject({ status: "NO DATA", coverageRatio: 1 - Number.EPSILON,
+      partialTWA: Number.MAX_SAFE_INTEGER, coveredDuration: huge.toString(),
+      integralQuantityNs: (huge * BigInt(Number.MAX_SAFE_INTEGER)).toString() });
+    expect(expected[1]).toMatchObject({ status: "VALID", twa: Number.MAX_SAFE_INTEGER, coveredDuration: "1" });
+  });
+
+  it("does not apply or swallow a future out-of-depth update at the right endpoint", () => {
+    const h = { ...history([F01.events[0]]), events: [F01.events[0],
+      update(1_000_000_000n, 80, { priceTicks: 80001 })] };
+    compare(h, [query(0, 1), query(0, 1, { endNs: (origin + 999_999_999n).toString() }), query(0, 1)]);
+    const cells = [query(0, 1), query(0, 1, { endNs: (origin + 1_000_000_001n).toString() })];
+    Object.defineProperty(cells, 2, { get() { throw new Error("Later query must not be read"); } });
+    const expected = outcome(() => cells.map(cell => calculateTimeWeightedDepth(h, cell)));
+    expect(outcome(() => runCells(h, cells))).toEqual(expected);
+    expect(expected).toMatchObject({ message: "Update outside snapshot scope requires a new snapshot" });
+  });
+
+  it("does not replace a prefix overflow with a later invalid query or inspect subsequent cells", () => {
+    const snapshot = depth({ ...F01.events[0],
+      depthScope: { type: "PRICE_RANGE", minTick: 80000, maxTick: 80001 },
+      bids: [{ priceTicks: 80000, qty: 1 }, { priceTicks: 80001, qty: 1 }] });
+    const changes = [80000, 80001].map(priceTicks => update(1_000_000_000n, Number.MAX_SAFE_INTEGER,
+      { priceTicks }));
+    const h = { ...history([snapshot]), events: [snapshot, ...changes] };
+    const cells = [query(0, 1, { width: 2 }), query(1, 2, { width: 2 })];
+    Object.defineProperty(cells, 2, { get() { throw new Error("Later query must not be read"); } });
+    const expected = outcome(() => cells.map(cell => calculateTimeWeightedDepth(h, cell)));
+    expect(outcome(() => runCells(h, cells))).toEqual(expected);
+    expect(expected).toMatchObject({ name: "RangeError", message: "Derived quantity exceeds safe Number output" });
+  });
+
+  it("validates a later cell even after a long cached prefix exists", () => {
+    const cells = [query(), { ...query(0, 1), side: "BUY" } as unknown as DepthQuery];
+    Object.defineProperty(cells, 2, { get() { throw new Error("Unreached cell"); } });
+    expect(outcome(() => runCells(history(), cells)))
+      .toEqual(outcome(() => cells.map(cell => calculateTimeWeightedDepth(history(), cell))));
+  });
+
+  it("keeps queries entirely before history unknown and does not inspect empty histories for []", () => {
+    compare(history(), [query(-10, -5), query(-9, -8), query(0, 2)]);
+    expect(runCells({} as DepthHistory, [])).toEqual([]);
+  });
+
+  it("does not share a prior call's quantity, quality or snapshot semantics", () => {
+    const a = wideHistory(), b = history([depth({ ...F01.events[0], bids: [{ priceTicks: 80000, qty: 9 }] })]);
+    const cells = [query(0, 1), query(0, 1)];
+    expect(runCells(a, cells).map(result => result.twa)).toEqual([1, 1]);
+    expect(runCells(b, cells).map(result => result.twa)).toEqual([9, 9]);
+    expect(runCells(a, cells).map(result => result.twa)).toEqual([1, 1]);
+  });
+
+  it("keeps an uninitialized book unknown across several shared cells", () => {
+    const h = { events: [], qualityState: initialState(F01.events[0]), qualityTimeAlignmentEvidence: alignment };
+    const expected = compare(h, [query(0, 10), query(-1, 1), query(4, 5)]);
+    for (const result of expected) {
+      expect(result).toMatchObject({ status: "NO DATA", twa: null, partialTWA: null, coveredDuration: "0" });
+    }
+  });
+
+  it("preserves negative floor-aligned buckets with a known zero component", () => {
+    const snapshot = depth({ ...F01.events[0],
+      depthScope: { type: "PRICE_RANGE", minTick: -2, maxTick: -1 },
+      bids: [{ priceTicks: -2, qty: 40 }, { priceTicks: -1, qty: 0 }] });
+    const h = history([snapshot]);
+    const expected = compare(h, [query(0, 10, { width: 2, priceTicks: -1 }),
+      query(2, 3, { width: 2, priceTicks: -2 }), query(-1, 1, { width: 2, priceTicks: -1 })]);
+    expect(expected[0]).toMatchObject({ binId: -1, twa: 40 });
+    expect(expected[1]).toMatchObject({ binId: -1, twa: 40 });
+    expect(expected[2]).toMatchObject({ coverageRatio: .5, partialTWA: 40 });
+  });
+
+  function manyBoundaries(): DepthHistory {
+    // Artificial records only; do not involve the ingestion guard's unrelated
+    // immutable-history costs in this finite prefix-cap unit test.
+    return { ...history([F01.events[0]]),
+      events: [F01.events[0], ...Array.from({ length: 4096 }, (_, i) => update(BigInt(i + 1), i % 7))] };
+  }
+
+  it("falls back at 4096 boundaries, recomputes the whole cell, and never resumes that call's prefix", () => {
+    const h = manyBoundaries();
+    const cells = [4095n, 4096n, 4095n, 4097n].map(end =>
+      query(0, 1, { endNs: (origin + end).toString() }));
+    const expected = cells.map(cell => calculateTimeWeightedDepth(h, cell));
+    const apply = vi.spyOn(mbpModule, "applyMbpEvent");
+    try {
+      expect(runCells(h, cells)).toEqual(expected);
+      expect(apply.mock.calls.filter(([, event]) => (event as L2Snapshot).kind === "L2_SNAPSHOT")).toHaveLength(4);
+    } finally { apply.mockRestore(); }
+  });
+
+  it("falls back even when the first cell reaches the ceiling and a later cell is tiny", () => {
+    const h = manyBoundaries();
+    const cells = [4096n, 1n].map(end => query(0, 1, { endNs: (origin + end).toString() }));
+    const expected = cells.map(cell => calculateTimeWeightedDepth(h, cell));
+    const apply = vi.spyOn(mbpModule, "applyMbpEvent");
+    try {
+      expect(runCells(h, cells)).toEqual(expected);
+      expect(apply.mock.calls.filter(([, event]) => (event as L2Snapshot).kind === "L2_SNAPSHOT")).toHaveLength(2);
+    } finally { apply.mockRestore(); }
+  });
+
+  it("does not swallow or transform an apply exception in the ceiling fallback", () => {
+    const base = manyBoundaries();
+    const h = { ...base, events: [base.events[0], update(1n, 80, { priceTicks: 80001 }), ...base.events.slice(2)] };
+    const cells = [1n, 4096n].map(end => query(0, 1, { endNs: (origin + end).toString() }));
+    const expected = outcome(() => cells.map(cell => calculateTimeWeightedDepth(h, cell)));
+    expect(outcome(() => runCells(h, cells))).toEqual(expected);
+    expect(expected).toMatchObject({ message: "Update outside snapshot scope requires a new snapshot" });
   });
 });
