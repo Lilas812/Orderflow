@@ -1,5 +1,5 @@
 import { REASON_CODES } from "@workspace/tickstream-adapter/envelope";
-import { parseObservation, type ReceiveContext } from "@workspace/tickstream-adapter/live-observation";
+import { parseObservation, type ObservationRecord, type ReceiveContext } from "@workspace/tickstream-adapter/live-observation";
 import type { Clock } from "./transport";
 import { classifyMessage } from "./liveControl";
 import {
@@ -20,8 +20,17 @@ export interface BTicksSocket {
   terminate(): void;
 }
 interface Pending { bytes: Uint8Array; context: ReceiveContext }
-/** RAM-only ticks processor. No storage port, persistence callback, retained
- * Trade collection, raw log, content dedup or provider-identity generation. */
+/** Offline injection contract only. No disk implementation is imported here.
+ * Production construction rejects this option before factory/Secret access. */
+export interface BOfflineStoragePort {
+  readonly testOnly: true;
+  accept(record: ObservationRecord): void;
+  finish(): void;
+  abort(): void;
+  onFailure(callback: () => void): void;
+}
+/** Production remains RAM-only. The optional B-2A port is artificial/loopback
+ * ONLY; no retained Trade collection, raw log or content dedup is introduced. */
 export class GateBTicks {
   private readonly reportValue: GateBReport;
   private readonly queue: Pending[] = [];
@@ -37,9 +46,16 @@ export class GateBTicks {
   private activeAt: bigint | null = null;
   private stopAt: bigint | null = null;
   private started = false;
+  private offlineStorageFailed = false;
   private terminalCallback: (() => void) | undefined;
   constructor(private readonly clock: Clock, private readonly factory: () => BTicksSocket,
-    execution: Exclude<BExecution, "NOT_RUN">, private readonly options: { manualDrain?: boolean; finishAfter?: number } = {}) {
+    execution: Exclude<BExecution, "NOT_RUN">, private readonly options: {
+      manualDrain?: boolean; finishAfter?: number; offlineStorage?: BOfflineStoragePort;
+    } = {}) {
+    if (options.offlineStorage !== undefined &&
+      (execution !== "LOOPBACK_TEST" || options.offlineStorage.testOnly !== true)) {
+      throw new Error("GATE_B_PRODUCTION_STORAGE_DISABLED");
+    }
     if (!["LOOPBACK_TEST", "PRODUCTION"].includes(execution) || (options.finishAfter !== undefined &&
       (!Number.isInteger(options.finishAfter) || options.finishAfter < 1 || options.finishAfter > LIMITS.messages))) {
       throw new Error("GATE_B_OPTIONS");
@@ -49,12 +65,30 @@ export class GateBTicks {
       phaseVisits: Object.fromEntries(B_PHASES.map(k => [k, 0])) as NonNullable<GateBReport["phaseVisits"]>,
       parserReasons: Object.fromEntries(REASON_CODES.map(k => [k, 0])) as NonNullable<GateBReport["parserReasons"]> };
     this.phase("NOT_RUNNING");
+    options.offlineStorage?.onFailure(() => {
+      this.offlineStorageFailed = true;
+      // The unchanged B-1 report has no storage enums. The separate offline
+      // queue report owns the exact LIVE_* reason and all persistence counts.
+      this.stop("CHILD_FAILURE");
+    });
   }
   get terminal(): boolean { return this.reportValue.phase === "STOPPED" || this.reportValue.phase === "FAILED"; }
   get capacity() { return { count: this.queue.length, bytes: this.queuedBytes }; }
   onTerminal(callback: () => void): void { this.terminalCallback = callback; }
   private phase(phase: BPhase): void { this.reportValue.phase = phase; this.reportValue.phaseVisits![phase]++; }
   report(): GateBReport {
+    if (this.options.offlineStorage) throw new Error("GATE_B_OFFLINE_REPORT_REQUIRED");
+    return this.baseReport();
+  }
+  /** Do not label an offline disk test with B-1's persistence:DISABLED.
+   * Exact durable counts/reasons come from the separate queue report. */
+  offlineReport() {
+    if (!this.options.offlineStorage) throw new Error("GATE_B_OFFLINE_STORAGE_NOT_CONFIGURED");
+    const { schema: _, persistence: _p, ...transport } = this.baseReport();
+    return { schema: "TICKSTREAM_GATE_B2A_OFFLINE_V1" as const,
+      persistence: "OFFLINE_ONLY" as const, transport };
+  }
+  private baseReport(): GateBReport {
     const r = this.reportValue, c = r.counters!;
     c.pending = this.queue.length;
     r.elapsedWallMs = this.started ? Number((this.clock.monoNs() - this.startedAt) / 1_000_000n) : null;
@@ -201,7 +235,11 @@ export class GateBTicks {
       r.subscription = "DATA_OBSERVED_NO_ACK";
       if (this.observedEpoch !== this.epoch) { this.observedEpoch = this.epoch; this.phase("FIRST_VALID_TICK_RECEIVED"); }
       this.phase("OBSERVING");
-      // No callbacks or retained market records: release after fixed counters.
+      if (this.options.offlineStorage) {
+        try { this.options.offlineStorage.accept(record); }
+        catch { this.offlineStorageFailed = true; this.stop("CHILD_FAILURE"); return; }
+      }
+      // Without the explicit offline port, release after fixed counters as B-1.
     }
     if (!this.terminal && (c.received === LIMITS.messages ||
       (this.options.finishAfter !== undefined && c.validTicks >= this.options.finishAfter))) {
@@ -215,6 +253,16 @@ export class GateBTicks {
     this.phase("STOPPING"); this.reportValue.stopReason = reason;
     this.timers.forEach(cancel => cancel()); this.timers.clear();
     try { this.socket?.close(); } catch { this.socket?.terminate(); }
+    if (this.options.offlineStorage) {
+      try {
+        if (failed || this.offlineStorageFailed) this.options.offlineStorage.abort();
+        else this.options.offlineStorage.finish();
+      } catch {
+        this.offlineStorageFailed = true;
+        try { this.options.offlineStorage.abort(); } catch { /* fixed failure below, no free-text errors */ }
+      }
+      if (this.offlineStorageFailed) { failed = true; this.reportValue.stopReason = "CHILD_FAILURE"; }
+    }
     this.phase(failed ? "FAILED" : "STOPPED"); this.terminalCallback?.();
   }
 }

@@ -6,7 +6,12 @@
   "exports": {
     ".": "./src/appendStore.ts",
     "./recovery": "./src/recovery.ts",
-    "./manifest": "./src/manifest.ts"
+    "./manifest": "./src/manifest.ts",
+    "./live-record": "./src/liveRecord.ts",
+    "./live-manifest": "./src/liveManifest.ts",
+    "./live-recovery": "./src/liveRecovery.ts",
+    "./live-append": "./src/liveAppendStore.ts",
+    "./live-queue": "./src/liveStorageQueue.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",

@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { FakeClock } from "./transport";
 import { GateBTicks, type BTicksSocket, type BEvent } from "./gateBTransport";
 import { LIMITS } from "./gateBConfig";
@@ -24,6 +24,42 @@ function harness(options: { manualDrain?: boolean; finishAfter?: number } = {}) 
     send: (wire: unknown) => sockets.at(-1)!.emit({ type: "text", bytes: encode(wire) }) };
 }
 describe("RAM-only ticks states and counters", () => {
+  it("rejects offline storage in production before any factory/port invocation", () => {
+    const factory = vi.fn(), accept = vi.fn(), onFailure = vi.fn(), finish = vi.fn(), abort = vi.fn();
+    const port = { testOnly: true as const, accept, onFailure, finish, abort };
+    expect(() => new GateBTicks(new FakeClock(), factory, "PRODUCTION", { offlineStorage: port }))
+      .toThrow("GATE_B_PRODUCTION_STORAGE_DISABLED");
+    for (const callback of [factory, accept, onFailure, finish, abort]) expect(callback).not.toHaveBeenCalled();
+  });
+  it("requires explicit test-only marker, and ordinary RAM mode has no offline report", () => {
+    expect(() => new GateBTicks(new FakeClock(), () => new Socket(), "LOOPBACK_TEST",
+      { offlineStorage: { testOnly: false } as any })).toThrow("GATE_B_PRODUCTION_STORAGE_DISABLED");
+    const h = harness(); expect(() => h.p.offlineReport()).toThrow("GATE_B_OFFLINE_STORAGE_NOT_CONFIGURED"); h.p.finish();
+  });
+  it("delivers only parser-accepted, context-valid synthetic ticks to the offline port", () => {
+    const clock = new FakeClock(), socket = new Socket(), received: any[] = [];
+    let finished = 0, aborted = 0;
+    const p = new GateBTicks(clock, () => socket, "LOOPBACK_TEST", { finishAfter: 1, offlineStorage: {
+      testOnly: true, accept: r => received.push(r), onFailure: () => {}, finish: () => { finished++; }, abort: () => { aborted++; },
+    } });
+    p.start(); socket.emit({ type: "open" }); socket.emit({ type: "text", bytes: encode(tick) }); clock.advance(0);
+    expect(received).toHaveLength(1); expect(received[0].provenance.sampleOrigin).toBe("SYNTHETIC_TEST");
+    expect(finished).toBe(1); expect(aborted).toBe(0);
+    expect(p.offlineReport()).toMatchObject({ persistence: "OFFLINE_ONLY", transport: {
+      execution: "LOOPBACK_TEST", phase: "STOPPED", counters: { validTicks: 1 }, accountingMatches: true,
+    } });
+    expect(() => p.report()).toThrow("GATE_B_OFFLINE_REPORT_REQUIRED");
+  });
+  it("stops with fixed transport failure when an offline sink throws secret-bearing errors", () => {
+    const clock = new FakeClock(), socket = new Socket(); let aborted = 0;
+    const p = new GateBTicks(clock, () => socket, "LOOPBACK_TEST", { offlineStorage: {
+      testOnly: true, accept: () => { throw Error("KEY_URL_SECRET_SENTINEL"); }, onFailure: () => {},
+      finish: () => {}, abort: () => { aborted++; },
+    } });
+    p.start(); socket.emit({ type: "open" }); socket.emit({ type: "text", bytes: encode(tick) }); clock.advance(0);
+    expect(p.offlineReport().transport).toMatchObject({ phase: "FAILED", stopReason: "CHILD_FAILURE", counters: { validTicks: 1 } });
+    expect(aborted).toBe(1); expect(JSON.stringify(p.offlineReport())).not.toContain("SENTINEL");
+  });
   it("separates open/send/unconfirmed/data, preserves identical ticks and has no persistence result", () => {
     const h = harness({ finishAfter: 2 }); h.open();
     expect(h.p.report()).toMatchObject({ phase: "SUBSCRIPTION_UNCONFIRMED", subscription: "SENT_UNCONFIRMED" });
