@@ -574,3 +574,17 @@ mtime_ms = 1792775996523
 storage_uri = "gcs://replit-rams-assets-pike/rams/assets/repl:396298eb-318f-4ad8-9c4e-13a5b19e25a9/8608cff2-e61f-47e9-9f6b-21129f36dfba/cc9a21b4-9808-4142-8c09-f61c16d55989"
 storage_version_token = "1792776018188265"
 content_type = "text/markdown"
+
+[[outputs]]
+id = "avzBNN_8nqMOS6IBMmZ1P"
+uri = "file://.local/diagnostics/task28-c4-e1/report.md"
+type = "text"
+title = "C4-E1 React更新経路・20.100ms外れ値調査"
+description = "ソース行番号、既存12試行の再照合、revision48の時系列、確認済み事実・UNKNOWN、改善候補3件をまとめた読み取り専用調査報告です。"
+logical_id = "5348b4f7-1cb9-49cd-8485-4a0b4de1e718"
+content_hash = "sha256:e46329f62e3abe1dfd9a315efa19e5b970457fca73618e10687339a5e22ac4d2"
+size = 13354
+mtime_ms = 1792776495727
+storage_uri = "gcs://replit-rams-assets-pike/rams/assets/repl:396298eb-318f-4ad8-9c4e-13a5b19e25a9/5348b4f7-1cb9-49cd-8485-4a0b4de1e718/b59869a1-f444-4d88-8e8f-93c0aa6d3b86"
+storage_version_token = "1792776520278861"
+content_type = "text/markdown"
