@@ -227,7 +227,7 @@ describe("explicit output isolation (no browser)", () => {
     expect(fs.readdirSync(base).sort()).toEqual(["reference.json", "source.json"]);
   }));
   it("leaves the frozen stage inputs and execution budgets unchanged", () => {
-    expect([0, 1, 2].map(s => definition(s).inputs.length)).toEqual([128, 256, 500]);
+    expect(([0, 1, 2] as const).map(s => definition(s).inputs.length)).toEqual([128, 256, 500]);
     expect(BUDGET.wallMs).toEqual([70000, 120000, 210000]);
     expect(BUDGET.totalWallMs).toBe(420000);
     expect(BUDGET.processes).toBe(24);
@@ -238,5 +238,13 @@ describe("explicit output isolation (no browser)", () => {
     expect(source).toContain('createBrowserTermination({');
     expect(source).toContain('const cleanup = await termination.finish()');
     expect(source).not.toContain('save(ROOT,');
+  });
+  it("accepts each literal stage and rejects mismatched stage input counts", () => {
+    for (const stage of [0, 1, 2] as const) {
+      const input = definition(stage);
+      expect(() => verifyInput(input, stage, input.inputSha256)).not.toThrow();
+      expect(() => verifyInput(input, stage === 0 ? 1 : 0, input.inputSha256))
+        .toThrow("STAGE_INPUT_COUNT");
+    }
   });
 });
