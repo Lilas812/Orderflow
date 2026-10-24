@@ -6,6 +6,7 @@
   "exports": {
     ".": "./src/parsePublicSample.ts",
     "./live-observation": "./src/liveObservation.ts",
+    "./read-only-feed": "./src/readOnlyFeed.ts",
     "./envelope": "./src/envelope.ts"
   },
   "scripts": {
