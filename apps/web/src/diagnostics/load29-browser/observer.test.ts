@@ -78,6 +78,27 @@ it("exposes pending callbacks during disposal rather than hiding them", () => {
   const x = fixture(); x.window.requestAnimationFrame(() => {});
   expect(x.window.__load29Observer.dispose().pending).toBe(1);
 });
+it("classifies the exact NO DATA placeholder without changing it into a zero bin", () => {
+  const x = fixture(), ctx = x.delta();
+  x.setBins([{ dataset: { testid: "delta-row-empty" },
+    textContent: "NO DATA: no Delta bin in the supplied ranges (not a statement of zero activity)." }]);
+  ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.save(); ctx.restore();
+  const draw = x.window.__load29Observer.snapshot().rows[0];
+  expect(draw.binRows).toEqual([]);
+  expect(draw.placeholders).toEqual([{ text: "NO DATA: no Delta bin in the supplied ranges (not a statement of zero activity).",
+    hasBinFields: false }]);
+});
+it("keeps an extra real row and detects a forged placeholder rather than silently filtering it", () => {
+  const x = fixture(), ctx = x.delta();
+  x.setBins([{ dataset: { testid: "delta-row-empty", delta: "0" }, textContent: "NO DATA: no Delta bin" },
+    { dataset: { testid: "delta-row-extra", delta: "0", revision: "bad", x0: "nan", x1: "1" } }]);
+  ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.save(); ctx.restore();
+  const draw = x.window.__load29Observer.snapshot().rows[0];
+  expect(draw.binRows).toHaveLength(1);
+  expect(draw.binRows[0].id).toBe("extra");
+  expect(Number.isNaN(draw.binRows[0].revision)).toBe(true);
+  expect(draw.placeholders[0].hasBinFields).toBe(true);
+});
 it("does not count clear-only known-empty heatmap as a GPU geometry draw", () => {
   const x = fixture(); x.gl.clear(1);
   const s = x.window.__load29Observer.snapshot();

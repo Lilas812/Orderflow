@@ -24,17 +24,29 @@ export function layoutGate(layout: any) {
 /** Independent geometry/data check over actual Canvas2D API observations.
  * A background fill, the zero axis, or an incomplete hatch is not a valid zero bar.
  */
-export function deltaDrawingGate(draw: any, frame: DeltaFrame, revision: number) {
+export function deltaDrawingGate(draw: any, frame: DeltaFrame, revision: number, cssWidth: number = LAYOUT.width) {
+  if (!Number.isFinite(cssWidth) || cssWidth <= 0) throw Error("DELTA_WIDTH_INVALID");
   if (!draw || draw.kind !== "delta-draw" || draw.revision !== revision ||
       !draw.canvasId || !draw.contextId || draw.ended < draw.started ||
-      draw.width !== LAYOUT.width || draw.height !== frame.height)
+      draw.width !== Math.round(cssWidth * (draw.viewport?.dpr ?? 1)) || draw.height !== Math.round(frame.height * (draw.viewport?.dpr ?? 1)))
     throw Error("DELTA_IDENTITY_OR_REVISION");
   const close = (a: number, b: number) => Math.abs(a - b) < 1e-6;
   const coords = (a: number[], b: number[]) => a.length === b.length && a.every((v, i) => close(v, b[i]));
   const ops = draw.operations as any[];
   if (!ops.some(o => o.api === "fillRect" && o.style === "#08090d" &&
-      coords(o.args, [0, 0, LAYOUT.width, frame.height]))) throw Error("DELTA_BACKGROUND_MISSING");
+      coords(o.args, [0, 0, cssWidth, frame.height]))) throw Error("DELTA_BACKGROUND_MISSING");
+  if (draw.placeholders !== undefined) {
+    if (!Array.isArray(draw.placeholders) ||
+        draw.placeholders.length !== (frame.bars.length === 0 ? 1 : 0) ||
+        draw.placeholders.some((p: any) => p.hasBinFields !== false ||
+          typeof p.text !== "string" || !p.text.startsWith("NO DATA: no Delta bin")))
+      throw Error("DELTA_PLACEHOLDER_INVALID");
+  }
   if (draw.binRows.length !== frame.bars.length) throw Error("DELTA_BIN_COUNT");
+  if (new Set(draw.binRows.map((r: any) => r.id)).size !== draw.binRows.length ||
+      draw.binRows.some((r: any) => !Number.isSafeInteger(r.revision) || r.revision < 0 ||
+        !Number.isFinite(r.x0) || !Number.isFinite(r.x1) || r.x1 <= r.x0))
+    throw Error("DELTA_ROW_INVALID");
   let valid = 0;
   for (const bar of frame.bars) {
     const bin = bar.bin, row = draw.binRows.find((r: any) => r.id === bin.id);

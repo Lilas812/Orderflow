@@ -11,7 +11,7 @@ import "../../styles.css";
 
 declare global {
   interface Window {
-    __load29Input: { stage: number; definition: Definition };
+    __load29Input: { stage: number; definition: Definition; host?: "electron" };
     __load29Send: (data: string) => void;
     __load29: { start(): void; dispose(): unknown; snapshot(): unknown };
     __load29Observer: { snapshot(): unknown; geometry(): unknown; dispose(): unknown };
@@ -110,7 +110,7 @@ function App() {
     reactRows.push({ revision: state.frame?.revision ?? 0, ms, at: performance.now() });
     if (reactRows.length > BUDGET.observerRows) failure("REACT_ROW_LIMIT");
   }}>
-    <div className="app" style={{ height: "100vh", width: LAYOUT.parentWidth, maxWidth: "100%",
+    <div className="app" style={{ height: "100vh", width: window.__load29Input.host === "electron" ? "100%" : LAYOUT.parentWidth, maxWidth: "100%",
       padding: `16px ${LAYOUT.padding}px`, display: "flex", flexDirection: "column" }} data-testid="load29-page">
       <div>MOCK / SIMULATED — Task29 Stage {stage} — {d.inputs.length} inputs — NOT LIVE</div>
       <ChartShell trades={[]} mockOn={false} onToggleMock={() => {}} onAddThird={() => {}}

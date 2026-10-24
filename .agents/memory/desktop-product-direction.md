@@ -3,7 +3,7 @@ name: デスクトップ製品方針
 description: Windows 11向けElectron製品と既存Web検証基盤の位置付け
 ---
 
-最終ターゲットはWindows 11のElectronデスクトップ版Orderflow Lab。既存React・WebGL2・AnalysisHubを再利用し、計算・描画エンジンを二重実装しない。Web版は引き続き動作する実装・検証基盤として維持する。
+最終ターゲットはWindows 11のElectronデスクトップ版Orderflow Lab。Electronを主要な実行・検証環境とする。既存React・WebGL2・AnalysisHubを再利用し、計算・描画エンジンを二重実装しない。Web版は引き続き動作する実装・検証基盤として維持する。
 
 **Why:** ユーザーがWindowsデスクトップ版を最優先成果物とし、既存資産を再利用するElectron外殻の実装を明示承認した。
 

@@ -90,6 +90,36 @@ function deltaFixture(delta = 0n) {
   return { draw, frame };
 }
 describe("Delta data geometry is not a background or axis", () => {
+  for (const revision of [1, 2]) it(`accepts legitimate empty revision ${revision} but rejects an additional actual bin`, () => {
+    const x = deltaFixture(); Object.assign(x.frame as object, { bars: [] });
+    Object.assign(x.draw, { revision, binRows: [], placeholders: [{ text: "NO DATA: no Delta bin", hasBinFields: false }] });
+    expect(deltaDrawingGate(x.draw, x.frame, revision).empty).toBe(true);
+    x.draw.binRows.push({ id: "extra" } as never);
+    expect(() => deltaDrawingGate(x.draw, x.frame, revision)).toThrow("BIN_COUNT");
+  });
+  it("rejects unknown placeholder, forged data fields, duplicate placeholder, or placeholder/bin mixing", () => {
+    const x = deltaFixture();
+    Object.assign(x.draw, { placeholders: [{ text: "NO DATA: no Delta bin", hasBinFields: false }] });
+    expect(() => deltaDrawingGate(x.draw, x.frame, 7)).toThrow("PLACEHOLDER");
+    Object.assign(x.frame as object, { bars: [] }); x.draw.binRows = [];
+    for (const placeholders of [[{ text: "UNKNOWN", hasBinFields: false }],
+      [{ text: "NO DATA: no Delta bin", hasBinFields: true }], [], [1, 2]]) {
+      Object.assign(x.draw, { placeholders });
+      expect(() => deltaDrawingGate(x.draw, x.frame, 7)).toThrow();
+    }
+  });
+  for (const field of ["revision", "x0", "x1"]) it(`rejects invalid actual row ${field}`, () => {
+    const x = deltaFixture();
+    (x.draw.binRows[0] as any)[field] = NaN;
+    expect(() => deltaDrawingGate(x.draw, x.frame, 7)).toThrow("ROW_INVALID");
+  });
+  it("rejects missing, extra, duplicate or zero-width actual bins", () => {
+    const x = deltaFixture(), row = x.draw.binRows[0];
+    x.draw.binRows = []; expect(() => deltaDrawingGate(x.draw, x.frame, 7)).toThrow("BIN_COUNT");
+    x.draw.binRows = [row, row]; expect(() => deltaDrawingGate(x.draw, x.frame, 7)).toThrow("BIN_COUNT");
+    x.draw.binRows = [{ ...row, x1: row.x0 }];
+    expect(() => deltaDrawingGate(x.draw, x.frame, 7)).toThrow("ROW_INVALID");
+  });
   it("rejects background-only even when the revision and bins look valid", () => {
     const x = deltaFixture();
     expect(() => deltaDrawingGate(x.draw, x.frame, 7)).toThrow("ZERO_DRAW");

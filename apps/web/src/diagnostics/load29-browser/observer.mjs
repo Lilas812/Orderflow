@@ -60,7 +60,13 @@ export function installObserver() {
       if (api === "restore" && --cycle.depth === 0) {
         const viewport = document.querySelector('[data-testid="unified-controls"]')?.getAttribute("data-diagnostic-viewport");
         cycle.viewport = viewport ? JSON.parse(viewport) : null;
-        cycle.binRows = [...document.querySelectorAll('[data-testid^="delta-row-"]')].map(el => ({
+        const candidates = [...document.querySelectorAll('[data-testid^="delta-row-"]')];
+        cycle.placeholders = candidates.filter(el => el.dataset.testid === "delta-row-empty").map(el => ({
+          text: el.textContent,
+          hasBinFields: ["delta", "b", "s", "u", "revision", "x0", "x1", "direction", "quality"]
+            .some(key => el.dataset[key] !== undefined),
+        }));
+        cycle.binRows = candidates.filter(el => el.dataset.testid !== "delta-row-empty").map(el => ({
           id: el.dataset.testid.slice("delta-row-".length), delta: el.dataset.delta,
           B: el.dataset.b, S: el.dataset.s, U: el.dataset.u, quality: el.dataset.quality,
           revision: Number(el.dataset.revision), direction: el.dataset.direction,
