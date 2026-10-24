@@ -4,9 +4,13 @@
   "license": "MIT",
   "scripts": {
     "dev": "pnpm --filter @workspace/web run dev",
-    "test": "pnpm -r --filter @workspace/core --filter @workspace/render --filter @workspace/web --filter @workspace/storage --filter @workspace/local-gateway run test",
-    "preinstall": "sh -c 'rm -f package-lock.json yarn.lock; case \"$npm_config_user_agent\" in pnpm/*) ;; *) echo \"Use pnpm instead\" >&2; exit 1 ;; esac'",
-    "build": "pnpm run typecheck && pnpm -r --filter @workspace/core --filter @workspace/render --filter @workspace/web --filter @workspace/storage --filter @workspace/local-gateway run build",
+    "desktop:dev": "pnpm --filter @workspace/desktop run dev",
+    "desktop:build": "pnpm --filter @workspace/desktop run build",
+    "desktop:start": "pnpm --filter @workspace/desktop run start",
+    "desktop:package:win": "pnpm --filter @workspace/desktop run package:win",
+    "test": "pnpm -r --filter @workspace/core --filter @workspace/render --filter @workspace/web --filter @workspace/storage --filter @workspace/local-gateway --filter @workspace/desktop run test",
+    "preinstall": "node -e \"const fs=require('node:fs'); for(const p of ['package-lock.json','yarn.lock']) fs.rmSync(p,{force:true}); if(!(process.env.npm_config_user_agent||'').startsWith('pnpm/')){console.error('Use pnpm instead');process.exit(1)}\"",
+    "build": "pnpm run typecheck && pnpm -r --filter @workspace/core --filter @workspace/render --filter @workspace/web --filter @workspace/storage --filter @workspace/local-gateway --filter @workspace/desktop run build",
     "typecheck:libs": "tsc --build",
     "typecheck": "pnpm run typecheck:libs && pnpm -r --filter \"./artifacts/**\" --filter \"./scripts\" --filter \"./apps/**\" --filter \"./packages/**\" --if-present run typecheck"
   },

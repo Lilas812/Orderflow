@@ -602,3 +602,24 @@ mtime_ms = 1792777258847
 storage_uri = "gcs://replit-rams-assets-pike/rams/assets/repl:396298eb-318f-4ad8-9c4e-13a5b19e25a9/70223f91-e3a8-4801-9c92-1199cca52811/a76f4856-6e2a-4aff-a0d6-33d1e6cefe34"
 storage_version_token = "1792777291558982"
 content_type = "text/markdown"
+
+[[outputs]]
+id = "VEkpDHrF5zxFK2_uZuLI5"
+uri = "file://.local/diagnostics/task30-a1/native-production/native-window.png"
+type = "image"
+title = "Orderflow Lab — ネイティブElectron起動画面"
+description = "Replit/Linux上の実BrowserWindowから取得。既存13入力MOCKの表示確認であり、Windows実機・R5正式負荷試験の合格証跡ではありません。"
+logical_id = "e6beab69-1353-4b02-9c7a-0d5b0a91ee0f"
+content_hash = "sha256:0b8c68122054df765d3984d97f13886de44e8543aae17c1eee428ebdd03dd80e"
+size = 97126
+mtime_ms = 1792823263759
+storage_uri = "gcs://replit-rams-assets-pike/rams/assets/repl:396298eb-318f-4ad8-9c4e-13a5b19e25a9/e6beab69-1353-4b02-9c7a-0d5b0a91ee0f/290233e4-5ef8-417d-8879-5a7140798c78"
+storage_version_token = "1792823689019912"
+content_type = "image/png"
+
+[[outputs]]
+id = "3YF5831Tu1Ll9ICKS6pSy"
+uri = "file://.local/diagnostics/task30-a1/report.md"
+type = "text"
+title = "Task 30-A1 — 実装・検証の詳細報告"
+description = "Delta保存証跡の原因分類、Electron構成、1,871件の関連回帰、Linux実起動、Windows未検証事項、変更ファイル一覧と次工程。"

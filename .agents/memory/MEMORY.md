@@ -14,3 +14,4 @@
 - [R16実行構成の承認境界](r16-runtime-boundary.md) — 有限CLIと試験IPCのみ承認。常駐化・ブラウザ実接続・新規APIには別途承認が必要。
 - [測定結果の根拠保持](measurement-evidence.md) — 一時領域の出力だけに依存せず、除外済みworkspace内へMOCK計測ログを保存する。
 - [LIVE試験の保存許諾](live-trial-permission.md) — NQ Ticksの個人検証用。試験終了から24時間以内に削除し、Node／Workflow再起動後までを検証する。
+- [デスクトップ製品方針](desktop-product-direction.md) — 最終ターゲットはWindows 11／Electron。Webは既存資産・検証基盤として再利用し、Linux起動をWindows保証としない。

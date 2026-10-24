@@ -1,0 +1,35 @@
+{
+  "name": "@workspace/desktop",
+  "version": "0.1.0",
+  "private": true,
+  "productName": "Orderflow Lab",
+  "description": "Local MOCK-only Orderflow Lab desktop shell",
+  "type": "commonjs",
+  "main": "dist/main/main.js",
+  "scripts": {
+    "build:main": "tsc -p tsconfig.main.json",
+    "build": "pnpm build:main && vite build --config vite.config.mts",
+    "dev": "pnpm build:main && node tools/launch.mjs --dev",
+    "start": "node tools/launch.mjs",
+    "smoke": "pnpm build && node tools/launch.mjs --smoke",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "vitest run --config vitest.config.mts",
+    "package:win": "pnpm build && node tools/package.mjs"
+  },
+  "devDependencies": {
+    "@electron/packager": "20.3.0",
+    "@types/node": "catalog:",
+    "@types/react": "catalog:",
+    "@types/react-dom": "catalog:",
+    "@vitejs/plugin-react": "catalog:",
+    "@workspace/core": "workspace:*",
+    "@workspace/fixtures": "workspace:*",
+    "@workspace/render": "workspace:*",
+    "electron": "45.0.0",
+    "react": "catalog:",
+    "react-dom": "catalog:",
+    "typescript": "~5.9.3",
+    "vite": "catalog:",
+    "vitest": "5.0.5"
+  }
+}

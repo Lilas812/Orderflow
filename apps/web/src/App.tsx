@@ -1,15 +1,16 @@
 import { Profiler, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { diagnosticMode, profiler } from "./diagnostics/mockDiagnostics";
 import { NQ } from "@workspace/core";
-import type { DisplaySettings } from "@workspace/core/settings-schema";
+import type { DisplaySettings, SettingsTransport } from "@workspace/core/settings-schema";
 import { ChartShell, MOCK_INSTRUMENT, MOCK_TRADES } from "./components/ChartShell";
 import { HeatmapDemo, type HeatmapId } from "./components/HeatmapCanvas";
 import { SettingsDrawer, SettingsErrorBanner } from "./components/SettingsDrawer";
 import { TimeFormatProvider, type HeatmapActions } from "./components/SettingsContext";
 import { useSettings } from "./hooks/useSettings";
-import { useMockAnalysisSession, UNIFIED_SPEEDS } from "./hooks/useMockAnalysisSession";
+import { useMockAnalysisSession, UNIFIED_SPEEDS, UNIFIED_DEFAULT_SPEED } from "./hooks/useMockAnalysisSession";
 
-function App() {
+interface AppProps { initialMock?: boolean; settingsTransport?: SettingsTransport }
+function App({ initialMock = false, settingsTransport }: AppProps = {}) {
   const [count, setCount] = useState(0); // 0 = MOCK disabled, 2 or 3 loaded MOCK events
   const [hmId, setHmId] = useState<HeatmapId | null>(null);
   const trades = useMemo(() => MOCK_TRADES.slice(0, count), [count]);
@@ -23,7 +24,10 @@ function App() {
   const uni = useMockAnalysisSession();
   const uniActive = uni.snap.phase !== "OFF";
   const uniExit = uni.exit;
-  const settings = useSettings();
+  const settings = useSettings(settingsTransport);
+  useEffect(() => {
+    if (initialMock) uni.start(UNIFIED_DEFAULT_SPEED);
+  }, [initialMock, uni.start]);
   const heatmapActions = useRef<HeatmapActions | null>(null);
   const gearRef = useRef<HTMLButtonElement>(null);
   const wasOpen = useRef(false);
