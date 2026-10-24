@@ -4,6 +4,7 @@ import { createHash } from "node:crypto";
 import { definition } from "../load29/generator";
 const driverModule = "./runner.mjs", processModule = "./process.mjs";
 const { verifyInput, publicMatch, decodeBlock, glGate } = await import(driverModule);
+const { parseArguments, validateOutputPath, createOutput, recordFailure, pins, writeAggregate } = await import(driverModule);
 const { parseProcess, resourceGate } = await import(processModule);
 import { BUDGET } from "./contracts";
 import fs from "node:fs";
@@ -71,5 +72,171 @@ describe("driver gates (artificial data only)", () => {
       expect(() => publicMatch(JSON.parse(rows[0].canonical), digest(text))).not.toThrow();
       expect(() => j.append({ huge: "x".repeat(BUDGET.wireBytes + 1) })).toThrow("ROW_CAP");
     } finally { fs.rmSync(directory, { recursive: true }); }
+  });
+});
+
+describe("explicit output isolation (no browser)", () => {
+  function sandbox(run: (s: { workspace: string; base: string; target: string }) => void) {
+    const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "load29-output-test-"));
+    const base = path.join(workspace, ".local/diagnostics");
+    fs.mkdirSync(base, { recursive: true, mode: 0o700 });
+    try { run({ workspace, base, target: path.join(base, "task29-b-r2") }); }
+    finally { fs.rmSync(workspace, { recursive: true, force: true }); }
+  }
+  it("requires exactly one explicit output option", () => {
+    expect(parseArguments(["--run", "--output-dir", ".local/diagnostics/task29-b-r2"])).toEqual({
+      outputDir: ".local/diagnostics/task29-b-r2", dryRun: false,
+    });
+    expect(() => parseArguments(["--run"])).toThrow("OUTPUT_DIR_REQUIRED");
+    expect(() => parseArguments(["--run", "--output-dir"])).toThrow("OUTPUT_ARGUMENT");
+    expect(() => parseArguments(["--run", "--output-dir", "a", "--output-dir", "b"])).toThrow("OUTPUT_ARGUMENT");
+    expect(() => parseArguments(["--run", "--unknown"])).toThrow("UNKNOWN_ARGUMENT");
+  });
+  it("supports a non-writing dry-run without changing the target", () => sandbox(({ workspace, target }) => {
+    expect(parseArguments(["--run", "--output-dir", target, "--dry-run"]).dryRun).toBe(true);
+    expect(validateOutputPath(target, workspace)).toBe(target);
+    expect(fs.existsSync(target)).toBe(false);
+  }));
+  it("accepts normalized absolute and relative paths within the permitted area", () => sandbox(({ workspace, target }) => {
+    expect(validateOutputPath(".local/diagnostics/task29-b-r2/", workspace)).toBe(target);
+    expect(validateOutputPath(target, workspace)).toBe(target);
+  }));
+  it("creates an exclusively owned 0700 output directory", () => sandbox(({ workspace, target }) => {
+    const output = createOutput(target, workspace);
+    expect(output.directory).toBe(target);
+    expect(fs.statSync(target).mode & 0o777).toBe(0o700);
+    expect(fs.readdirSync(target)).toEqual([]);
+    output.write("preflight.json", { status: "PASS" });
+    expect(output.read("preflight.json")).toEqual({ status: "PASS" });
+  }));
+  for (const name of ["task29-a", "task29-b", "task29-b-r1", "task28-c5-r1", "task28-e2", "task28-r3"]) {
+    it(`refuses the protected reference name ${name}`, () => sandbox(({ workspace, base }) => {
+      expect(() => createOutput(path.join(base, name), workspace)).toThrow("PROTECTED_REFERENCE");
+      expect(fs.readdirSync(base)).toEqual([]);
+    }));
+  }
+  it("rejects traversal even when it would normalize back inside the base", () => sandbox(({ workspace }) => {
+    expect(() => createOutput(".local/diagnostics/../diagnostics/task29-b-r2", workspace)).toThrow("TRAVERSAL");
+  }));
+  it("rejects normalized paths outside diagnostics and nested paths", () => sandbox(({ workspace, base }) => {
+    expect(() => createOutput(path.join(workspace, "task29-b-r2"), workspace)).toThrow("OUTSIDE");
+    expect(() => createOutput(path.join(base, "nested/task29-b-r2"), workspace)).toThrow("OUTSIDE");
+  }));
+  it("rejects an output symlink without touching its protected target", () => sandbox(({ workspace, base, target }) => {
+    const prior = path.join(base, "task29-b"); fs.mkdirSync(prior);
+    fs.writeFileSync(path.join(prior, "sentinel"), "unchanged");
+    fs.symlinkSync(prior, target);
+    expect(() => createOutput(target, workspace)).toThrow();
+    expect(fs.readFileSync(path.join(prior, "sentinel"), "utf8")).toBe("unchanged");
+  }));
+  it("rejects a symlink in a parent directory", () => sandbox(({ workspace, base, target }) => {
+    const moved = path.join(workspace, "moved");
+    fs.renameSync(base, moved); fs.symlinkSync(moved, base);
+    expect(() => createOutput(target, workspace)).toThrow("SYMLINK");
+    expect(fs.readdirSync(moved)).toEqual([]);
+  }));
+  it("rejects a file in place of the output directory", () => sandbox(({ workspace, target }) => {
+    fs.writeFileSync(target, "original");
+    expect(() => createOutput(target, workspace)).toThrow("ALREADY_EXISTS");
+    expect(fs.readFileSync(target, "utf8")).toBe("original");
+  }));
+  it("rejects an existing nonempty directory", () => sandbox(({ workspace, target }) => {
+    fs.mkdirSync(target); fs.writeFileSync(path.join(target, "old.json"), "{}");
+    expect(() => createOutput(target, workspace)).toThrow("ALREADY_EXISTS");
+  }));
+  it("refuses a second start, including an existing empty claim", () => sandbox(({ workspace, target }) => {
+    createOutput(target, workspace);
+    expect(() => createOutput(target, workspace)).toThrow("ALREADY_EXISTS");
+  }));
+  for (const name of ["preflight.json", "stage0-checkpoint.json", "stage1-result.json",
+    "stage2-cleanup.json", "stage0-input.json"]) {
+    it(`publishes ${name} only to the claimed new directory`, () => sandbox(({ workspace, target, base }) => {
+      const reference = path.join(base, "task29-b"); fs.mkdirSync(reference);
+      fs.writeFileSync(path.join(reference, "preflight.json"), '{"readonly":true}');
+      const output = createOutput(target, workspace);
+      const receipt = output.write(name, { status: "PASS", marker: name });
+      expect(digest(fs.readFileSync(path.join(target, receipt.file), "utf8"))).toBe(receipt.sha256);
+      expect(output.read(name).marker).toBe(name);
+      expect(fs.readdirSync(reference)).toEqual(["preflight.json"]);
+      expect(fs.readFileSync(path.join(reference, "preflight.json"), "utf8")).toBe('{"readonly":true}');
+    }));
+  }
+  it("routes block publication and lossless reads through the output writer", async () => {
+    const { journal } = await import(driverModule);
+    sandbox(({ workspace, target }) => {
+      const output = createOutput(target, workspace), j = journal(0, output);
+      j.append({ kind: "probe", prefix: 2 }); const checkpoint = j.checkpoint();
+      expect(decodeBlock(output.read(checkpoint.blocks[0].file))).toEqual([{ kind: "probe", prefix: 2 }]);
+      expect(() => journal(0)).toThrow("OUTPUT_DIR_REQUIRED");
+    });
+  });
+  it("routes aggregate, report and digest manifest to the new directory", () => sandbox(({ workspace, target }) => {
+    const output = createOutput(target, workspace);
+    writeAggregate(output, { status: "FAIL", stages: [{ stage: 0, status: "FAIL" }] });
+    expect(output.read("aggregate.json").status).toBe("FAIL");
+    expect(output.read("report.json").status).toBe("FAIL");
+    const manifest = output.read("evidence-sha256.json");
+    expect(manifest.files.map((f: { file: string }) => f.file)).toEqual(["aggregate.json", "report.json"]);
+    for (const f of manifest.files) expect(digest(fs.readFileSync(path.join(target, f.file), "utf8"))).toBe(f.sha256);
+  }));
+  it("retains partial failure evidence and never relabels it PASS", () => sandbox(({ workspace, target }) => {
+    const output = createOutput(target, workspace);
+    const failure = recordFailure(output, Error("ACTUAL_DRAW_FAILURE"));
+    expect(failure.status).toBe("FAIL");
+    expect(output.read("run-error.json").error).toContain("ACTUAL_DRAW_FAILURE");
+  }));
+  it("preserves the original error if saving the failure itself fails", () => {
+    const result = recordFailure({ write() { throw Error("DISK_FAILURE"); } }, Error("ORIGINAL_FAILURE"));
+    expect(result.status).toBe("FAIL");
+    expect(result.error).toContain("ORIGINAL_FAILURE");
+    expect(result.evidenceError).toContain("DISK_FAILURE");
+  });
+  it("preserves a failed checkpoint and the evidence publication error independently", () => sandbox(({ workspace, target }) => {
+    const output = createOutput(target, workspace);
+    output.write("stage0-checkpoint.json", { status: "FAIL", error: "ORIGINAL_DRAW_FAILURE" });
+    let caught;
+    try { output.write("stage0-checkpoint.json", { status: "FAIL", error: "ORIGINAL_DRAW_FAILURE" }); }
+    catch (error) { caught = error; }
+    const failure = recordFailure(output, caught);
+    expect(failure.status).toBe("FAIL");
+    expect(failure.error).toBe("ORIGINAL_DRAW_FAILURE");
+    expect(failure.saveError).toContain("OUTPUT_EEXIST");
+    expect(output.read("stage0-checkpoint.json").error).toBe("ORIGINAL_DRAW_FAILURE");
+  }));
+  it("does not overwrite a previous checkpoint or delete unexpected output files", () => sandbox(({ workspace, target }) => {
+    const output = createOutput(target, workspace);
+    output.write("stage0-checkpoint.json", { value: 1 });
+    expect(() => output.write("stage0-checkpoint.json", { value: 2 })).toThrow("EEXIST");
+    expect(output.read("stage0-checkpoint.json").value).toBe(1);
+    expect(fs.readdirSync(target)).toEqual(["stage0-checkpoint.json"]);
+  }));
+  it("rejects read/write traversal names and a swapped output directory", () => sandbox(({ workspace, target }) => {
+    const output = createOutput(target, workspace);
+    expect(() => output.write("../old.json", {})).toThrow("FILENAME");
+    expect(() => output.read("../old.json")).toThrow("FILENAME");
+    fs.renameSync(target, target + "-original"); fs.mkdirSync(target, { mode: 0o700 });
+    expect(() => output.write("checkpoint.json", {})).toThrow("IDENTITY");
+  }));
+  it("reads a reference preflight without creating or changing any reference file", () => sandbox(({ base }) => {
+    const source = path.join(base, "source.json"), preflight = path.join(base, "reference.json");
+    fs.writeFileSync(source, '{"original":1}');
+    fs.writeFileSync(preflight, JSON.stringify({ sources: [{ path: source, sha256: digest('{"original":1}') }], evidence: [] }));
+    const before = fs.readFileSync(preflight, "utf8");
+    expect(pins(preflight).sources.length).toBe(1);
+    expect(fs.readFileSync(preflight, "utf8")).toBe(before);
+    expect(fs.readdirSync(base).sort()).toEqual(["reference.json", "source.json"]);
+  }));
+  it("leaves the frozen stage inputs and execution budgets unchanged", () => {
+    expect([0, 1, 2].map(s => definition(s).inputs.length)).toEqual([128, 256, 500]);
+    expect(BUDGET.wallMs).toEqual([70000, 120000, 210000]);
+    expect(BUDGET.totalWallMs).toBe(420000);
+    expect(BUDGET.processes).toBe(24);
+    expect(BUDGET.browserRss).toBe(2 * 1024 ** 3);
+    expect(BUDGET.wireBytes).toBe(8 * 1024 ** 2);
+    const source = fs.readFileSync(new URL("./runner.mjs", import.meta.url), "utf8");
+    expect(source).toContain('detached: true');
+    expect(source).toContain('createBrowserTermination({');
+    expect(source).toContain('const cleanup = await termination.finish()');
+    expect(source).not.toContain('save(ROOT,');
   });
 });

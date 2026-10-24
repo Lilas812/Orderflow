@@ -2,7 +2,7 @@ import fs from "node:fs";
 import assert from "node:assert/strict";
 import { spawn, execFileSync } from "node:child_process";
 import { gzipSync, gunzipSync } from "node:zlib";
-import { resolve } from "node:path";
+import { resolve, dirname, basename, join, relative, isAbsolute, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createHash } from "node:crypto";
 import { StringDecoder } from "node:string_decoder";
@@ -12,9 +12,89 @@ import { installObserver } from "./observer.mjs";
 import { BUDGET, canonical, validate, orderedStages, marketCount, deadlineBudget } from "./contracts.ts";
 import { save, checkDirectory } from "../load29/evidence.ts";
 import { group, identity, resourceGate, competingBrowsers } from "./process.mjs";
-const ROOT = ".local/diagnostics/task29-b", INPUT = ".local/diagnostics/task29-a";
+const REFERENCES = ".local/diagnostics/task29-b", INPUT = ".local/diagnostics/task29-a";
 const sha = x => createHash("sha256").update(x).digest("hex");
 const delay = ms => new Promise(r => setTimeout(r, ms));
+export function parseArguments(args) {
+  assert(args[0] === "--run", "RUN_ARGUMENT_REQUIRED");
+  let outputDir, dryRun = false;
+  for (let i = 1; i < args.length; i++) {
+    if (args[i] === "--output-dir") {
+      assert(!outputDir && args[i + 1] && !args[i + 1].startsWith("--"), "OUTPUT_ARGUMENT");
+      outputDir = args[++i];
+    } else if (args[i] === "--dry-run") {
+      assert(!dryRun, "DUPLICATE_DRY_RUN"); dryRun = true;
+    } else throw Error("UNKNOWN_ARGUMENT");
+  }
+  assert(outputDir, "OUTPUT_DIR_REQUIRED");
+  return { outputDir, dryRun };
+}
+function noSymlinks(path) {
+  let current = resolve(path);
+  for (;;) {
+    assert(!fs.lstatSync(current).isSymbolicLink(), "OUTPUT_SYMLINK");
+    const parent = dirname(current);
+    if (parent === current) break;
+    current = parent;
+  }
+}
+export function validateOutputPath(requested, workspace = process.cwd()) {
+  assert(typeof requested === "string" && requested.length > 0 && !requested.includes("\0"), "OUTPUT_PATH");
+  assert(!requested.split(/[\\/]/).includes(".."), "OUTPUT_TRAVERSAL");
+  const base = resolve(workspace, ".local/diagnostics"), directory = resolve(workspace, requested);
+  noSymlinks(base);
+  const inside = relative(base, directory);
+  assert(inside && !isAbsolute(inside) && !inside.startsWith(`..${sep}`) &&
+    dirname(directory) === base, "OUTPUT_OUTSIDE_DIAGNOSTICS");
+  // Only a new revision of this diagnostic may be writable, never an old reference.
+  assert(/^task29-b-r(?:[2-9]|[1-9][0-9]+)$/.test(basename(directory)), "PROTECTED_REFERENCE");
+  assert(!fs.existsSync(directory) && !fs.lstatSync(base).isSymbolicLink(), "OUTPUT_ALREADY_EXISTS");
+  assert(fs.realpathSync(base) === base && fs.statSync(base).isDirectory() &&
+    fs.statSync(base).uid === process.getuid(), "OUTPUT_PARENT");
+  return directory;
+}
+export function createOutput(requested, workspace = process.cwd()) {
+  const directory = validateOutputPath(requested, workspace);
+  fs.mkdirSync(directory, { mode: 0o700 }); // Exclusive claim; never adopt another run's directory.
+  const owned = fs.lstatSync(directory);
+  const verify = () => {
+    noSymlinks(directory);
+    const current = fs.lstatSync(directory);
+    assert(current.ino === owned.ino && current.dev === owned.dev &&
+      current.uid === owned.uid, "OUTPUT_IDENTITY_CHANGED");
+    checkDirectory(directory);
+  };
+  verify();
+  return Object.freeze({
+    directory,
+    write(name, data) {
+      try { verify(); return save(directory, name, data); }
+      catch (error) {
+        // Preserve a failed trial even if its checkpoint cannot be published.
+        if (data?.status === "FAIL") {
+          const failure = Error(`EVIDENCE_SAVE_FAILED:${String(error)}`, { cause: error });
+          failure.originalResult = data;
+          throw failure;
+        }
+        throw error;
+      }
+    },
+    read(name) {
+      verify();
+      assert(/^[a-z0-9][a-z0-9.-]*\.json$/.test(name), "OUTPUT_FILENAME");
+      return JSON.parse(fs.readFileSync(join(directory, name), "utf8"));
+    },
+  });
+}
+export function recordFailure(output, error) {
+  const result = { status: "FAIL", error: error.originalResult?.error ?? String(error),
+    originalResult: error.originalResult, saveError: error.originalResult ? String(error) : undefined };
+  if (output) {
+    try { output.write("run-error.json", result); }
+    catch (saveError) { result.evidenceError = String(saveError); }
+  }
+  return result;
+}
 export function verifyInput(d, stage, expected) {
   validate(d, stage);
   assert.equal(sha(JSON.stringify(d.inputs)), expected, "INPUT_SHA_MISMATCH");
@@ -33,11 +113,13 @@ export function publicMatch(frame, reference) {
 export function glGate(observer) {
   assert(!observer.fault && observer.totals.errors === 0 && observer.totals.loss === 0, "GL_OR_CONTEXT_FAILURE");
 }
-function pins() {
-  const p = JSON.parse(fs.readFileSync(`${ROOT}/preflight.json`));
+export function pins(preflight = `${REFERENCES}/preflight.json`) {
+  const p = JSON.parse(fs.readFileSync(preflight));
   for (const f of [...p.sources, ...p.evidence]) assert.equal(sha(fs.readFileSync(f.path)), f.sha256, f.path);
+  return p;
 }
-export function journal(stage, directory = ROOT) {
+export function journal(stage, output) {
+  assert(output, "OUTPUT_DIR_REQUIRED");
   let rows = [], bytes = 0, count = 0;
   const blocks = [];
   return {
@@ -51,21 +133,22 @@ export function journal(stage, directory = ROOT) {
     flush() {
       if (!rows.length) return;
       const raw = Buffer.from(JSON.stringify(rows));
-      const receipt = save(directory, `stage${stage}-block-${String(blocks.length).padStart(3, "0")}.json`,
+      const write = typeof output === "string" ? (name, data) => save(output, name, data) : output.write;
+      const receipt = write(`stage${stage}-block-${String(blocks.length).padStart(3, "0")}.json`,
         { codec: "gzip/base64", bytes: raw.length, sha256: sha(raw), data: gzipSync(raw).toString("base64") });
       blocks.push(receipt); rows = []; bytes = 0;
     },
     checkpoint() { this.flush(); return { count, blocks: [...blocks] }; },
   };
 }
-async function runStage(stage, d, reference, globalDeadline) {
+async function runStage(stage, d, reference, globalDeadline, output) {
   assert.equal(competingBrowsers().length, 0, "COMPETING_PROCESS_GATE");
   const profile = fs.mkdtempSync("/tmp/orderflow-load29-");
   const profileStat = fs.lstatSync(profile);
   assert.equal(fs.realpathSync(profile), profile, "PROFILE_SYMLINK");
   assert.equal(profileStat.uid, process.getuid(), "PROFILE_OWNER");
   assert.equal(profileStat.mode & 0o777, 0o700, "PROFILE_MODE");
-  const journalOut = journal(stage), samples = [], cpuStart = process.cpuUsage(), began = performance.now();
+  const journalOut = journal(stage, output), samples = [], cpuStart = process.cpuUsage(), began = performance.now();
   let started = null, monitor = null, wall = null, fault = null, n = 0, sessionId, pending = new Map(), wire = "";
   const decoder = new StringDecoder("utf8");
   let beforeDispose, afterDispose, observer, observerAfter, result;
@@ -216,14 +299,16 @@ async function runStage(stage, d, reference, globalDeadline) {
       cpuClockSource: "getconf CLK_TCK checked before run", inputSha256: d.inputSha256,
       frameCanonicalSchema: "frozen Node canonical BigInt/Map encoding", resources: "100ms samples, not instantaneous peak" });
     if (cleanup.status !== "PASS" || fault || !profileRemoved || !samples.length) result.status = "FAIL";
-    save(ROOT, `stage${stage}-checkpoint.json`, result);
+    output.write(`stage${stage}-checkpoint.json`, result);
+    output.write(`stage${stage}-cleanup.json`, { status: result.cleanup.status, cleanup: result.cleanup,
+      profileRemoved: result.profileRemoved, remainingProfile: result.remainingProfile });
   }
   if (result.status === "PASS") {
     // Derived references only: original #29-A inputs/reference are never edited.
     const hub = createAnalysisHub(d.scope, () => 0), checks = []; let consumed = 0, lastFrame;
     try {
       for (const receipt of result.checkpoint.blocks) {
-        const wire = JSON.parse(fs.readFileSync(`${ROOT}/${receipt.file}`));
+        const wire = output.read(receipt.file);
         for (const row of decodeBlock(wire)) {
           assert(performance.now() < globalDeadline, "OVERALL_WALL");
           if (row.kind !== "frame" && row.kind !== "probe") continue;
@@ -254,34 +339,65 @@ async function runStage(stage, d, reference, globalDeadline) {
   }
   return result;
 }
-async function main() {
-  checkDirectory(ROOT); pins();
-  assert(!fs.existsSync(`${ROOT}/run-start.json`), "RUN_ALREADY_ATTEMPTED");
-  assert.equal(fs.readFileSync("/sys/fs/cgroup/cpu.max", "utf8").trim(), "800000 100000", "CPU_ENV");
-  assert.equal(fs.readFileSync("/sys/fs/cgroup/memory.max", "utf8").trim(), "17179869184", "MEMORY_ENV");
-  const sources = fs.readdirSync("apps/web/src/diagnostics/load29-browser").map(name => {
-    const path = `apps/web/src/diagnostics/load29-browser/${name}`; return { path, sha256: sha(fs.readFileSync(path)) };
-  });
+export function loadReferences() {
+  const protectedPins = pins();
   const references = JSON.parse(fs.readFileSync(`${INPUT}/independent-audit.json`)).summaries;
   const definitions = [0, 1, 2].map(stage => {
     const d = JSON.parse(fs.readFileSync(`${INPUT}/stage${stage}-input.json`));
     verifyInput(d, stage, references[stage].inputSha256); return d;
   });
-  save(ROOT, "run-start.json", { budget: BUDGET, sources, launchAttemptsAllowed: 3, stageRetries: 0 });
+  return { protectedPins, references, definitions };
+}
+export function writeAggregate(output, result) {
+  output.write("aggregate.json", result);
+  output.write("report.json", { status: result.status, stages: result.stages, GateB2B: "HOLD" });
+  const files = fs.readdirSync(output.directory).sort().map(file => {
+    const bytes = fs.readFileSync(join(output.directory, file));
+    return { file, bytes: bytes.length, sha256: sha(bytes) };
+  });
+  output.write("evidence-sha256.json", { files, manifestExcluded: true });
+}
+async function main(args) {
+  const options = parseArguments(args);
+  const directory = validateOutputPath(options.outputDir);
+  const { protectedPins, references, definitions } = loadReferences();
+  if (options.dryRun) {
+    console.log(JSON.stringify({ status: "PASS", mode: "DRY_RUN", directory,
+      references: { preflight: `${REFERENCES}/preflight.json`, input: INPUT },
+      inputSha256: definitions.map(d => d.inputSha256), budget: BUDGET,
+      browserLaunches: 0, writes: 0 }));
+    return;
+  }
+  let output;
+  try {
+  output = createOutput(options.outputDir);
+  output.write("preflight.json", { referencePreflight: `${REFERENCES}/preflight.json`, protectedPins,
+    directory, sources: fs.readdirSync("apps/web/src/diagnostics/load29-browser").map(name => {
+      const path = `apps/web/src/diagnostics/load29-browser/${name}`; return { path, sha256: sha(fs.readFileSync(path)) };
+    }), inputs: definitions.map(d => d.inputSha256), budget: BUDGET });
+  assert.equal(fs.readFileSync("/sys/fs/cgroup/cpu.max", "utf8").trim(), "800000 100000", "CPU_ENV");
+  assert.equal(fs.readFileSync("/sys/fs/cgroup/memory.max", "utf8").trim(), "17179869184", "MEMORY_ENV");
+  const sources = fs.readdirSync("apps/web/src/diagnostics/load29-browser").map(name => {
+    const path = `apps/web/src/diagnostics/load29-browser/${name}`; return { path, sha256: sha(fs.readFileSync(path)) };
+  });
+  output.write("run-start.json", { budget: BUDGET, sources, launchAttemptsAllowed: 3, stageRetries: 0 });
   const started = performance.now(), results = await orderedStages(async stage => {
     pins(); assert(performance.now() - started < BUDGET.totalWallMs, "OVERALL_WALL");
-    save(ROOT, `stage${stage}-input.json`, definitions[stage]);
-    return runStage(stage, definitions[stage], references[stage], started + BUDGET.totalWallMs);
-  }, async (stage, result) => { save(ROOT, `stage${stage}-result.json`, result); });
+    output.write(`stage${stage}-input.json`, definitions[stage]);
+    return runStage(stage, definitions[stage], references[stage], started + BUDGET.totalWallMs, output);
+  }, async (stage, result) => { output.write(`stage${stage}-result.json`, result); });
   pins();
-  save(ROOT, "aggregate.json", { status: results.length === 3 && results.every(r => r.status === "PASS") ? "PASS" : "FAIL",
+  writeAggregate(output, { status: results.length === 3 && results.every(r => r.status === "PASS") ? "PASS" : "FAIL",
     stages: results.map(r => ({ stage: r.stage, status: r.status, fault: r.fault, error: r.error })),
     browserLaunches: results.length, retries: 0, wallMs: performance.now() - started,
     correctness: "all observed prefixes compared post-browser to real Node hub; counts alone never suffice",
     performance: "Browser/Node differences are not product failure thresholds", GateB2B: "HOLD" });
+  } catch (error) {
+    const failure = recordFailure(output, error);
+    console.error(JSON.stringify(failure)); process.exitCode = 1;
+  }
 }
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url) && process.argv[2] === "--run")
-  await main().catch(error => {
-    try { save(ROOT, "run-error.json", { status: "HOLD", error: String(error) }); } catch {}
-    console.error(String(error)); process.exitCode = 1;
+  await main(process.argv.slice(2)).catch(error => {
+    console.error(JSON.stringify(recordFailure(null, error))); process.exitCode = 1;
   });
