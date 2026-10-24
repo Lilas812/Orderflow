@@ -623,3 +623,46 @@ uri = "file://.local/diagnostics/task30-a1/report.md"
 type = "text"
 title = "Task 30-A1 — 実装・検証の詳細報告"
 description = "Delta保存証跡の原因分類、Electron構成、1,871件の関連回帰、Linux実起動、Windows未検証事項、変更ファイル一覧と次工程。"
+logical_id = "96208445-9530-4d14-aded-d004c2ae3c16"
+
+[[outputs]]
+id = "nJp84J2Y59E5SL-eZYEeu"
+uri = "file://research/orderflow-electron-diagnostics/notes.md"
+type = "text"
+title = "Electron診断・根本原因調査ノート"
+description = "ソース、既存証跡、公式資料を照合する調査計画と確認事項。コード変更や試験起動は行いません。"
+logical_id = "0d058a81-aa28-4cb4-b8b3-ee130e03ffe5"
+content_hash = "sha256:cade131acd5a5f6e4e4b0a403de8a152f94ae39fbe131faf1f02deb49341110c"
+size = 2459
+mtime_ms = 1792870293308
+storage_uri = "gcs://replit-rams-assets-pike/rams/assets/repl:396298eb-318f-4ad8-9c4e-13a5b19e25a9/0d058a81-aa28-4cb4-b8b3-ee130e03ffe5/02067817-f071-40c9-a0b8-0e25fbdbe16f"
+storage_version_token = "1792870301886966"
+content_type = "text/markdown"
+
+[[outputs]]
+id = "aTbA1vfXa41OaDgR00VqF"
+uri = "file://research/orderflow-electron-diagnostics/report.md"
+type = "text"
+title = "Orderflow Lab — Electron診断の構造調査報告"
+description = "RSS監視・終了処理・Delta品質ゲートの根拠、Linux/Windows設計、最小修正計画。公式資料31件。実装・試験起動なし。"
+logical_id = "02a970ef-53d6-423f-ba2b-3368d3458a2a"
+content_hash = "sha256:c97c4eb18b265b4b5fa278b98a5570206b1c1c189c27d8b01975cfadcffef41f"
+size = 51839
+mtime_ms = 1792871056714
+storage_uri = "gcs://replit-rams-assets-pike/rams/assets/repl:396298eb-318f-4ad8-9c4e-13a5b19e25a9/02a970ef-53d6-423f-ba2b-3368d3458a2a/7156b71e-811b-4e3f-97ae-5bd09e40b3d1"
+storage_version_token = "1792871091275570"
+content_type = "text/markdown"
+
+[[outputs]]
+id = "FTMgdorpBV95xJ-W4FHoa"
+uri = "file://research/orderflow-electron-diagnostics/implementation-prompt.md"
+type = "text"
+title = "次工程用：診断7ファイルの限定修正・承認案"
+description = "変更可能ファイル、必須契約、テスト、停止条件、証跡要件を明記。今回は未実装で、次の承認用です。"
+logical_id = "36f619b5-5830-413d-b4ba-3763b6064789"
+content_hash = "sha256:ff403128319648b5cd648c56d4f4ab2a8f0567d61e9ff369e8d0fa18101ed506"
+size = 9041
+mtime_ms = 1792870853090
+storage_uri = "gcs://replit-rams-assets-pike/rams/assets/repl:396298eb-318f-4ad8-9c4e-13a5b19e25a9/36f619b5-5830-413d-b4ba-3763b6064789/d0222b3d-5938-4060-b822-b0d40170015c"
+storage_version_token = "1792871092553452"
+content_type = "text/markdown"

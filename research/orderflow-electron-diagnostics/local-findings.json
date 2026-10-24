@@ -1,0 +1,484 @@
+{
+  "kind": "saved-evidence-analysis-only",
+  "noReplayOrBrowserExecuted": true,
+  "stages": [
+    {
+      "stage": 0,
+      "inputCount": 128,
+      "inputSha256": "8deeaace2d85b32c3b332fbb9370588f1192442e2be884c44971c6572152da58",
+      "computedInputSha256": "8deeaace2d85b32c3b332fbb9370588f1192442e2be884c44971c6572152da58",
+      "query": {
+        "startNs": "1767225600000000000",
+        "endNs": "1767225606000000000",
+        "cells": 128
+      },
+      "scopeStart": "1767225600000000000",
+      "scopeKeys": [
+        "config",
+        "startNs",
+        "depthTimeAlignmentEvidence",
+        "tradeTimeAlignmentEvidence",
+        "budget",
+        "volumeProfile",
+        "derivedViews"
+      ],
+      "scopeTradeEvidence": "Artificial finite benchmark: exchange, receive and quality UTC axes aligned explicitly",
+      "conditionInputs": [],
+      "tradeQualityInputs": [
+        {
+          "prefix": 2,
+          "type": "QUALITY_INTERVAL",
+          "observedAtNs": "1767225600000000000",
+          "interval": {
+            "channel": "TRADES",
+            "startNs": "1767225600000000000",
+            "endNs": "1767225606000000000",
+            "status": "VALID",
+            "reason": "Explicit finite artificial coverage, not an inferred real-market guarantee"
+          }
+        }
+      ],
+      "nativeStatus": "PASS",
+      "finalRevision": 128,
+      "finalSha256": "43381470710c96324277770fbbd7bb8e13c896dbbc7faa4a649b0af36211dbf2",
+      "finalDelta": [
+        {
+          "id": "[\"[\\\"MOCK\\\",\\\"MOCK_DETERMINISTIC\\\",\\\"MOCK-BENCH-cells128\\\",\\\"CME:NQ:2026-03\\\",\\\"MOCK-BENCH-cells128-SESSION\\\"]\",\"883612800\"]",
+          "startNs": "1767225600000000000",
+          "endNs": "1767225602000000000",
+          "revision": 0,
+          "B": {
+            "bigint": "31"
+          },
+          "S": {
+            "bigint": "31"
+          },
+          "U": {
+            "bigint": "0"
+          },
+          "V_raw": {
+            "bigint": "62"
+          },
+          "delta": {
+            "bigint": "0"
+          },
+          "V": {
+            "bigint": "62"
+          },
+          "quality": "VALID",
+          "status": "PROVISIONAL",
+          "issues": []
+        },
+        {
+          "id": "[\"[\\\"MOCK\\\",\\\"MOCK_DETERMINISTIC\\\",\\\"MOCK-BENCH-cells128\\\",\\\"CME:NQ:2026-03\\\",\\\"MOCK-BENCH-cells128-SESSION\\\"]\",\"883612801\"]",
+          "startNs": "1767225602000000000",
+          "endNs": "1767225604000000000",
+          "revision": 0,
+          "B": {
+            "bigint": "0"
+          },
+          "S": {
+            "bigint": "0"
+          },
+          "U": {
+            "bigint": "0"
+          },
+          "V_raw": {
+            "bigint": "0"
+          },
+          "delta": {
+            "bigint": "0"
+          },
+          "V": {
+            "bigint": "0"
+          },
+          "quality": "VALID",
+          "status": "PROVISIONAL",
+          "issues": []
+        },
+        {
+          "id": "[\"[\\\"MOCK\\\",\\\"MOCK_DETERMINISTIC\\\",\\\"MOCK-BENCH-cells128\\\",\\\"CME:NQ:2026-03\\\",\\\"MOCK-BENCH-cells128-SESSION\\\"]\",\"883612802\"]",
+          "startNs": "1767225604000000000",
+          "endNs": "1767225606000000000",
+          "revision": 0,
+          "B": {
+            "bigint": "0"
+          },
+          "S": {
+            "bigint": "0"
+          },
+          "U": {
+            "bigint": "0"
+          },
+          "V_raw": {
+            "bigint": "0"
+          },
+          "delta": {
+            "bigint": "0"
+          },
+          "V": {
+            "bigint": "0"
+          },
+          "quality": "VALID",
+          "status": "PROVISIONAL",
+          "issues": []
+        }
+      ],
+      "finalChannelQuality": {
+        "L1": {
+          "channel": "L1",
+          "endNs": null,
+          "reason": "No valid initial event",
+          "sequenceVerification": "NOT_CHECKED",
+          "startNs": "1767225600000000000",
+          "status": "NOT_INITIALIZED"
+        },
+        "L2_MBP": {
+          "channel": "L2_MBP",
+          "endNs": null,
+          "reason": "Contiguous L2 updates accepted",
+          "sequenceVerification": "CONTIGUOUS",
+          "startNs": "1767225600030000000",
+          "status": "VALID"
+        },
+        "TRADES": {
+          "channel": "TRADES",
+          "endNs": null,
+          "reason": "Contiguous sequence accepted",
+          "sequenceVerification": "CONTIGUOUS",
+          "startNs": "1767225600020000000",
+          "status": "VALID"
+        }
+      },
+      "observedDirections": {
+        "UP": 57,
+        "ZERO": 52
+      },
+      "withheldDraws": 0,
+      "lastDrawRows": [
+        {
+          "id": "[\"[\\\"MOCK\\\",\\\"MOCK_DETERMINISTIC\\\",\\\"MOCK-BENCH-cells128\\\",\\\"CME:NQ:2026-03\\\",\\\"MOCK-BENCH-cells128-SESSION\\\"]\",\"883612800\"]",
+          "delta": "0",
+          "B": "31",
+          "S": "31",
+          "U": "0",
+          "quality": "VALID",
+          "revision": 0,
+          "direction": "ZERO",
+          "x0": 24.884615384615085,
+          "x1": 223.96153846153834
+        },
+        {
+          "id": "[\"[\\\"MOCK\\\",\\\"MOCK_DETERMINISTIC\\\",\\\"MOCK-BENCH-cells128\\\",\\\"CME:NQ:2026-03\\\",\\\"MOCK-BENCH-cells128-SESSION\\\"]\",\"883612801\"]",
+          "delta": "0",
+          "B": "0",
+          "S": "0",
+          "U": "0",
+          "quality": "VALID",
+          "revision": 0,
+          "direction": "ZERO",
+          "x0": 223.96153846153834,
+          "x1": 423.038461538461
+        },
+        {
+          "id": "[\"[\\\"MOCK\\\",\\\"MOCK_DETERMINISTIC\\\",\\\"MOCK-BENCH-cells128\\\",\\\"CME:NQ:2026-03\\\",\\\"MOCK-BENCH-cells128-SESSION\\\"]\",\"883612802\"]",
+          "delta": "0",
+          "B": "0",
+          "S": "0",
+          "U": "0",
+          "quality": "VALID",
+          "revision": 0,
+          "direction": "ZERO",
+          "x0": 423.038461538461,
+          "x1": 622.1153846153843
+        }
+      ],
+      "frames": 109,
+      "losslessRecords": 111,
+      "recordKinds": {
+        "frame": 110,
+        "complete": 1
+      },
+      "latestNativeCleanup": {
+        "dispose": {
+          "before": {
+            "state": "COMPLETED",
+            "reason": "INPUT_EXHAUSTED",
+            "processedInputs": 128,
+            "sourceInputs": 128,
+            "processedMarketEvents": 127,
+            "acceptedMarketEvents": 127,
+            "revision": 128,
+            "counts": {
+              "inputs": 128,
+              "accepted": 128,
+              "duplicate": 0,
+              "rejected": 0
+            },
+            "timers": 0,
+            "subscribers": 0,
+            "stop": null
+          },
+          "after": {
+            "state": "DISPOSED",
+            "reason": "DISPOSED",
+            "processedInputs": 128,
+            "sourceInputs": 128,
+            "processedMarketEvents": 127,
+            "acceptedMarketEvents": 127,
+            "revision": 0,
+            "counts": null,
+            "timers": 0,
+            "subscribers": 0,
+            "stop": null
+          },
+          "timers": 0,
+          "mountedCanvases": 0
+        },
+        "afterTotals": {
+          "reserved": 228,
+          "callbacks": 228,
+          "cancelled": 0,
+          "draws": 222,
+          "vertices": 86934,
+          "uploadBytes": 2830968,
+          "buffers": 2,
+          "deletes": 2,
+          "errors": 0,
+          "loss": 0,
+          "restore": 0
+        },
+        "pending": 0
+      },
+      "nativeFlags": {
+        "forcedTermination": false
+      }
+    },
+    {
+      "stage": 1,
+      "inputCount": 256,
+      "inputSha256": "0090146050446d7a97287b1c40450abbd26f0eaed19e30d9fc9d190706c6f284",
+      "computedInputSha256": "0090146050446d7a97287b1c40450abbd26f0eaed19e30d9fc9d190706c6f284",
+      "query": {
+        "startNs": "1767225600000000000",
+        "endNs": "1767225601330000000",
+        "cells": 128
+      },
+      "scopeStart": "1767225600000000000",
+      "scopeKeys": [
+        "config",
+        "startNs",
+        "depthTimeAlignmentEvidence",
+        "tradeTimeAlignmentEvidence",
+        "budget",
+        "volumeProfile",
+        "derivedViews"
+      ],
+      "scopeTradeEvidence": "Artificial finite benchmark: exchange, receive and quality UTC axes aligned explicitly",
+      "conditionInputs": [],
+      "tradeQualityInputs": [
+        {
+          "prefix": 2,
+          "type": "QUALITY_INTERVAL",
+          "observedAtNs": "1767225600000000000",
+          "interval": {
+            "channel": "TRADES",
+            "startNs": "1767225600000000000",
+            "endNs": "1767225601330000000",
+            "status": "VALID",
+            "reason": "Explicit artificial aligned Trade coverage, not vendor evidence"
+          }
+        }
+      ],
+      "nativeStatus": "PASS",
+      "finalRevision": 256,
+      "finalSha256": "9cbb07c3c30844482ca76e6871bc584578006192cdbbe07e1603d62031a38763",
+      "finalDelta": [
+        {
+          "id": "[\"[\\\"MOCK\\\",\\\"MOCK_DETERMINISTIC\\\",\\\"MOCK-load29-v1-29\\\",\\\"CME:NQ:2026-03\\\",\\\"MOCK-load29-v1-29-SESSION\\\"]\",\"883612800\"]",
+          "startNs": "1767225600000000000",
+          "endNs": "1767225602000000000",
+          "revision": 0,
+          "B": {
+            "bigint": "83"
+          },
+          "S": {
+            "bigint": "64"
+          },
+          "U": {
+            "bigint": "57"
+          },
+          "V_raw": {
+            "bigint": "204"
+          },
+          "delta": null,
+          "V": null,
+          "quality": "NO DATA",
+          "status": "INCOMPLETE",
+          "issues": [
+            "NO_TRADE_COVERAGE",
+            "INCOMPLETE_CLASSIFICATION"
+          ]
+        }
+      ],
+      "finalChannelQuality": {
+        "L1": {
+          "channel": "L1",
+          "endNs": null,
+          "reason": "No valid initial event",
+          "sequenceVerification": "NOT_CHECKED",
+          "startNs": "1767225600000000000",
+          "status": "NOT_INITIALIZED"
+        },
+        "L2_MBP": {
+          "channel": "L2_MBP",
+          "endNs": null,
+          "reason": "Contiguous L2 updates accepted",
+          "sequenceVerification": "CONTIGUOUS",
+          "startNs": "1767225600540000000",
+          "status": "VALID"
+        },
+        "TRADES": {
+          "channel": "TRADES",
+          "endNs": null,
+          "reason": "Contiguous sequence accepted",
+          "sequenceVerification": "CONTIGUOUS",
+          "startNs": "1767225600010000000",
+          "status": "VALID"
+        }
+      },
+      "observedDirections": {
+        "NO DATA": 212
+      },
+      "withheldDraws": 212,
+      "lastDrawRows": [
+        {
+          "id": "[\"[\\\"MOCK\\\",\\\"MOCK_DETERMINISTIC\\\",\\\"MOCK-load29-v1-29\\\",\\\"CME:NQ:2026-03\\\",\\\"MOCK-load29-v1-29-SESSION\\\"]\",\"883612800\"]",
+          "delta": "",
+          "B": "83",
+          "S": "64",
+          "U": "57",
+          "quality": "NO DATA",
+          "revision": 0,
+          "direction": "NO DATA",
+          "x0": 88.3879781420762,
+          "x1": 795.4918032786883
+        }
+      ],
+      "frames": 214,
+      "losslessRecords": 216,
+      "recordKinds": {
+        "frame": 215,
+        "complete": 1
+      },
+      "latestNativeCleanup": {
+        "dispose": {
+          "before": {
+            "state": "COMPLETED",
+            "reason": "INPUT_EXHAUSTED",
+            "processedInputs": 256,
+            "sourceInputs": 256,
+            "processedMarketEvents": 255,
+            "acceptedMarketEvents": 255,
+            "revision": 256,
+            "counts": {
+              "inputs": 256,
+              "accepted": 256,
+              "duplicate": 0,
+              "rejected": 0
+            },
+            "timers": 0,
+            "subscribers": 0,
+            "stop": null
+          },
+          "after": {
+            "state": "DISPOSED",
+            "reason": "DISPOSED",
+            "processedInputs": 256,
+            "sourceInputs": 256,
+            "processedMarketEvents": 255,
+            "acceptedMarketEvents": 255,
+            "revision": 0,
+            "counts": null,
+            "timers": 0,
+            "subscribers": 0,
+            "stop": null
+          },
+          "timers": 0,
+          "mountedCanvases": 0
+        },
+        "afterTotals": {
+          "reserved": 438,
+          "callbacks": 438,
+          "cancelled": 0,
+          "draws": 432,
+          "vertices": 165120,
+          "uploadBytes": 5283840,
+          "buffers": 2,
+          "deletes": 2,
+          "errors": 0,
+          "loss": 0,
+          "restore": 0
+        },
+        "pending": 0
+      },
+      "nativeFlags": {
+        "forcedTermination": false
+      }
+    },
+    {
+      "stage": 2,
+      "inputCount": 500,
+      "inputSha256": "c78e080ed1d266b959b80ddf5077bcb4e26a87600b08a76d205fd03d6710a5f1",
+      "computedInputSha256": "c78e080ed1d266b959b80ddf5077bcb4e26a87600b08a76d205fd03d6710a5f1",
+      "query": {
+        "startNs": "1767225600000000000",
+        "endNs": "1767225602550000000",
+        "cells": 128
+      },
+      "scopeStart": "1767225600000000000",
+      "scopeKeys": [
+        "config",
+        "startNs",
+        "depthTimeAlignmentEvidence",
+        "tradeTimeAlignmentEvidence",
+        "budget",
+        "volumeProfile",
+        "derivedViews"
+      ],
+      "scopeTradeEvidence": "Artificial finite benchmark: exchange, receive and quality UTC axes aligned explicitly",
+      "conditionInputs": [
+        {
+          "prefix": 251,
+          "type": "CONDITION",
+          "channel": "L2_MBP",
+          "atNs": "1767225601300000000",
+          "status": "GAP",
+          "reason": "Artificial explicit condition, NOT a measured transport sequence loss"
+        },
+        {
+          "prefix": 252,
+          "type": "CONDITION",
+          "channel": "L2_MBP",
+          "atNs": "1767225601310000000",
+          "status": "RESYNCING",
+          "reason": "Artificial explicit condition, NOT a measured transport sequence loss"
+        }
+      ],
+      "tradeQualityInputs": [
+        {
+          "prefix": 2,
+          "type": "QUALITY_INTERVAL",
+          "observedAtNs": "1767225600000000000",
+          "interval": {
+            "channel": "TRADES",
+            "startNs": "1767225600000000000",
+            "endNs": "1767225602550000000",
+            "status": "VALID",
+            "reason": "Explicit artificial aligned Trade coverage, not vendor evidence"
+          }
+        }
+      ]
+    }
+  ]
+}

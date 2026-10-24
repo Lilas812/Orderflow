@@ -1,0 +1,281 @@
+{
+  "files": [
+    {
+      "path": "research/orderflow-electron-diagnostics/baseline.json",
+      "bytes": 110786,
+      "sha256": "a1a5b28777ed94a91937c7c82b9d23ffca6357e29b3f80c026531ed7922d7769"
+    },
+    {
+      "path": "research/orderflow-electron-diagnostics/implementation-prompt.md",
+      "bytes": 9041,
+      "sha256": "ff403128319648b5cd648c56d4f4ab2a8f0567d61e9ff369e8d0fa18101ed506"
+    },
+    {
+      "path": "research/orderflow-electron-diagnostics/integrity-final.json",
+      "bytes": 1074,
+      "sha256": "13b9e377446dcd53b65830146981a048f87ace7fb4a4ccd211d2e7cfd6bee6f3"
+    },
+    {
+      "path": "research/orderflow-electron-diagnostics/local-findings.json",
+      "bytes": 14364,
+      "sha256": "b0773eecedbf7b175113f4064634957d53c0a44fb812edf75b0d5e6fb916ea58"
+    },
+    {
+      "path": "research/orderflow-electron-diagnostics/notes.md",
+      "bytes": 3899,
+      "sha256": "129fc28ec79fbce6f9c77b207a54c75139d8dacab8dcd63c35c94c50c43e0d44"
+    },
+    {
+      "path": "research/orderflow-electron-diagnostics/report.draft.md",
+      "bytes": 39952,
+      "sha256": "1b5f492b16235eb06a0c8568c155375f36f7bce6581d4c4e950195325fb44330"
+    },
+    {
+      "path": "research/orderflow-electron-diagnostics/report.md",
+      "bytes": 51839,
+      "sha256": "c97c4eb18b265b4b5fa278b98a5570206b1c1c189c27d8b01975cfadcffef41f"
+    },
+    {
+      "path": "research/orderflow-electron-diagnostics/review.md",
+      "bytes": 2926,
+      "sha256": "bbf6600fd4a46e49b5fd8476d78221f2641bf6d547caf6e03953a60ed4c07848"
+    },
+    {
+      "path": "research/orderflow-electron-diagnostics/source-registry.json",
+      "bytes": 16053,
+      "sha256": "a686d2907e4a11ed6d1747e3124182a8f1ecffaa1a1441f27b7592bac4d4cc3d"
+    },
+    {
+      "path": "research/orderflow-electron-diagnostics/sources/electron-lifecycle/01-electron-45-app.md",
+      "bytes": 112391,
+      "sha256": "bee4985af91130f2a6cae5364203696ad98567a4f9c132f5a7febfe6c5af9da4"
+    },
+    {
+      "path": "research/orderflow-electron-diagnostics/sources/electron-lifecycle/03-electron-45-utility-process.md",
+      "bytes": 15758,
+      "sha256": "8bfa1853fd8738489c1f6bfce683492d03c31509cd661c64c77d5fd5a27e8420"
+    },
+    {
+      "path": "research/orderflow-electron-diagnostics/sources/electron-lifecycle/04-electron-automated-testing.md",
+      "bytes": 18352,
+      "sha256": "a1d570f3d8abeaacbe9cee8d295e793eaf0e3691a0b2afbc2c180518587c415c"
+    },
+    {
+      "path": "research/orderflow-electron-diagnostics/sources/electron-lifecycle/05-electron-security.md",
+      "bytes": 45685,
+      "sha256": "16e61d2b0adb0422ec0efabe0e9d09c5cf9d7c2511fdfe9e51d260058379cb3a"
+    },
+    {
+      "path": "research/orderflow-electron-diagnostics/sources/electron-lifecycle/06-electron-45-browser-window-raw.md",
+      "bytes": 64905,
+      "sha256": "dc707d678ca6125d96ebb3047d71109ce14f9780f459b9b96e2109a3b4e93c1f"
+    },
+    {
+      "path": "research/orderflow-electron-diagnostics/sources/electron-lifecycle/07-playwright-electron-api.md",
+      "bytes": 19858,
+      "sha256": "6aff62a818d11ea9124494d78b1634f9c0ea9d87dddac9dc732a743eef7d37dd"
+    },
+    {
+      "path": "research/orderflow-electron-diagnostics/sources/electron-lifecycle/08-electron-45-web-contents.md",
+      "bytes": 94592,
+      "sha256": "a9d10c3e1f8eb21f9d73ba6cdf966adad41a7d9be08716778815810136e07798"
+    },
+    {
+      "path": "research/orderflow-electron-diagnostics/sources/electron-lifecycle/findings.md",
+      "bytes": 9937,
+      "sha256": "0124554cfe78814fd90581213249cd2242ad39779cba26c1da62eb1723f69457"
+    },
+    {
+      "path": "research/orderflow-electron-diagnostics/sources/exact-electron45-release.md",
+      "bytes": 79979,
+      "sha256": "d0a00d6f6042122def7b01243a3661c18e752d590fc667840a5bbfe74601ddae"
+    },
+    {
+      "path": "research/orderflow-electron-diagnostics/sources/exact-node24-child.md",
+      "bytes": 135946,
+      "sha256": "59fde1f0dc520981741c01523b038aaa670ad356000f14b396d99dedb0968ad9"
+    },
+    {
+      "path": "research/orderflow-electron-diagnostics/sources/gap-kernel/findings.md",
+      "bytes": 2084,
+      "sha256": "db49e3421dde2ec5b946747ac27c76d4fdbd8292af84f83921c6a2577b7fef5c"
+    },
+    {
+      "path": "research/orderflow-electron-diagnostics/sources/gap-kernel/linux-v6.18-fs-proc-array.c",
+      "bytes": 23311,
+      "sha256": "78f5c5615ce1ba90b95be7a1ddd5568f5f721ec6a5b76a1ace3f8c9728cb13bf"
+    },
+    {
+      "path": "research/orderflow-electron-diagnostics/sources/gap-kernel/linux-v6.18-fs-proc-task_mmu.c",
+      "bytes": 83211,
+      "sha256": "fa72025267635c2df9fe23a258db11f910271d63ca8094b220f4b2aae711b937"
+    },
+    {
+      "path": "research/orderflow-electron-diagnostics/sources/gap-kernel/linux-v6.18-kernel-exit.c",
+      "bytes": 50678,
+      "sha256": "07ed4c829a44154c6a8a9a0293404f55b81b9991240b88f0b6c9d7407a4670d4"
+    },
+    {
+      "path": "research/orderflow-electron-diagnostics/sources/gap-windows/01-job-objects.md",
+      "bytes": 12214,
+      "sha256": "603fad48bf91a5ff74ef6c557dca21c8037a123e29da812712d614264df037fe"
+    },
+    {
+      "path": "research/orderflow-electron-diagnostics/sources/gap-windows/02-process-memory-counters.md",
+      "bytes": 4415,
+      "sha256": "f3ba4eab3237b095a4e47d335c1f224b8489a9866b64550c2bc6c39f25f74ba1"
+    },
+    {
+      "path": "research/orderflow-electron-diagnostics/sources/gap-windows/03-wpr-etw.md",
+      "bytes": 6239,
+      "sha256": "353f8b24ba5ebd94221182e2f016044281140a4fa1aec7dd898c3f54185ea877"
+    },
+    {
+      "path": "research/orderflow-electron-diagnostics/sources/gap-windows/04-process-creation-flags.md",
+      "bytes": 11651,
+      "sha256": "59f5fa538e62b33dc6e140b73b19fffd2c6c0586d25c53131357e2dbded3153a"
+    },
+    {
+      "path": "research/orderflow-electron-diagnostics/sources/gap-windows/findings.md",
+      "bytes": 3047,
+      "sha256": "55998e208ab2b071c2f0b0ddc327be54f8068cb7773175ed4ecbf8a242d6b675"
+    },
+    {
+      "path": "research/orderflow-electron-diagnostics/sources/linux-proc/01-kernel-proc-filesystem.md",
+      "bytes": 109231,
+      "sha256": "eb64303316c5a8702f949f179b2d323139b9aee09e53c7d60ce6bec701b8c44c"
+    },
+    {
+      "path": "research/orderflow-electron-diagnostics/sources/linux-proc/01-kernel-proc-v6.1.md",
+      "bytes": 95443,
+      "sha256": "f7f7f2766fd180eb8c721174eb966a79790b8d9f71033fd8c9792ae37442a6da"
+    },
+    {
+      "path": "research/orderflow-electron-diagnostics/sources/linux-proc/02-task-mmu-source.md",
+      "bytes": 87634,
+      "sha256": "09cb25c520d500a4d986d01b3fd0b39d35f92ca0f2726d088be3f2411034f12b"
+    },
+    {
+      "path": "research/orderflow-electron-diagnostics/sources/linux-proc/03-man-pidfd-open.md",
+      "bytes": 12666,
+      "sha256": "e5724a31474a8217dabf67988069c59cbc2b31d94477b64ee3f482f9bf1048ee"
+    },
+    {
+      "path": "research/orderflow-electron-diagnostics/sources/linux-proc/04-search-snippets-limited.md",
+      "bytes": 3221,
+      "sha256": "589293eafcb6af0e338110541dc2e4f6b9f24d2a22dda2923bee6c2763381a83"
+    },
+    {
+      "path": "research/orderflow-electron-diagnostics/sources/linux-proc/findings.md",
+      "bytes": 5444,
+      "sha256": "833521cdc79e3c6d922817b53713e39848ddf8eced0ffd841d6ee6037c93c2ea"
+    },
+    {
+      "path": "research/orderflow-electron-diagnostics/sources/node-lifecycle/01-node-v24-child-process.md",
+      "bytes": 132380,
+      "sha256": "e499f296d854bce4d8214eb08f6cdc406236c657dcdb5bdb1af81f9bf4c21d6b"
+    },
+    {
+      "path": "research/orderflow-electron-diagnostics/sources/node-lifecycle/02-node-v24-process.md",
+      "bytes": 191999,
+      "sha256": "f82cfb35a89576e24bbf2b5ce2d79c00e8e9696ec3fcbaa86027f01b86b26d38"
+    },
+    {
+      "path": "research/orderflow-electron-diagnostics/sources/node-lifecycle/03-electron-app-lifecycle.md",
+      "bytes": 121210,
+      "sha256": "13e4684694b79ffc0bacce24f42ddb33ffa9c7aa8e296548b9092bd92db36a42"
+    },
+    {
+      "path": "research/orderflow-electron-diagnostics/sources/node-lifecycle/04-linux-kill-manpage.md",
+      "bytes": 12252,
+      "sha256": "de770a99dea677e585b8d5899e57478fdacc6f2cab6bc094b7a2f89cc21611f3"
+    },
+    {
+      "path": "research/orderflow-electron-diagnostics/sources/node-lifecycle/05-node-v24-streams.md",
+      "bytes": 250217,
+      "sha256": "41d778ffe55f2e06ccb0ad124453e43775f38453d69c7ed4faa203dfcf81da58"
+    },
+    {
+      "path": "research/orderflow-electron-diagnostics/sources/node-lifecycle/findings.md",
+      "bytes": 6224,
+      "sha256": "d081969749fe69e214a90b1ee7387447a32165d04bd4db0cdb9d8b2a9c6368b9"
+    },
+    {
+      "path": "research/orderflow-electron-diagnostics/sources/react-webgl/01-react-profiler.md",
+      "bytes": 7166,
+      "sha256": "dae33c0c10a1be5babdb42e73618f47c7eacd77b6969854a7386468e9cf5d99f"
+    },
+    {
+      "path": "research/orderflow-electron-diagnostics/sources/react-webgl/02-react-use-layout-effect.md",
+      "bytes": 15730,
+      "sha256": "574af8f44f31c5ffc575cefd50aed856ad40e4aa0e43c2e0ad152587b1f63120"
+    },
+    {
+      "path": "research/orderflow-electron-diagnostics/sources/react-webgl/03-request-animation-frame.md",
+      "bytes": 14276,
+      "sha256": "eae034deb6ae77bd28afa86aaed0aa557e979dc99aed0a98664778d2e090ac7d"
+    },
+    {
+      "path": "research/orderflow-electron-diagnostics/sources/react-webgl/07-webgl-best-practices.md",
+      "bytes": 39967,
+      "sha256": "e3e20ebc283cc43ddbbc87e535748660e7d6fb38dfc48469a84df48211ccaef6"
+    },
+    {
+      "path": "research/orderflow-electron-diagnostics/sources/react-webgl/08-device-pixel-content-box.md",
+      "bytes": 30566,
+      "sha256": "e5d794c5ee8fec01adc44f1559258f08e9b1917085c77fbaf86a2dacff799451"
+    },
+    {
+      "path": "research/orderflow-electron-diagnostics/sources/react-webgl/09-webgl-drawing-buffer.md",
+      "bytes": 6729,
+      "sha256": "66736648df2de31c3001152497858eab5e1169ba20bd80e6d0a78f9233fa193b"
+    },
+    {
+      "path": "research/orderflow-electron-diagnostics/sources/react-webgl/10-search-snippets.md",
+      "bytes": 2482,
+      "sha256": "7f9d47d0c95300e9bc48029636bcfd609a7cb64aa31725fe160f27adefd55490"
+    },
+    {
+      "path": "research/orderflow-electron-diagnostics/sources/react-webgl/findings.md",
+      "bytes": 3704,
+      "sha256": "3f6d7b4b516f055f86da861c87007635dbf4bd9fb4a05424f31118deb3271fa8"
+    },
+    {
+      "path": "research/orderflow-electron-diagnostics/sources/version-search.json",
+      "bytes": 4149,
+      "sha256": "e948f54c5ec833a16e173414b87e4fee30c7b1b674f5eadaffadd582ce68019c"
+    },
+    {
+      "path": "research/orderflow-electron-diagnostics/sources/windows-monitor/01-assign-process-to-job-object.md",
+      "bytes": 10287,
+      "sha256": "a0c09435a9858f79d554678c3d06f870f8f8f865ff58eb4b55269dc58c937955"
+    },
+    {
+      "path": "research/orderflow-electron-diagnostics/sources/windows-monitor/07-process-working-set.md",
+      "bytes": 3483,
+      "sha256": "dc7737a447dcc1a50bfe61b81cecaeefc728a788aa044c020dfe34451368e3ba"
+    },
+    {
+      "path": "research/orderflow-electron-diagnostics/sources/windows-monitor/08-get-process-times.md",
+      "bytes": 7249,
+      "sha256": "63b81a7b2045ba748dbfd7107378e25c34b7eed66d85cf854f0f0c133db33b13"
+    },
+    {
+      "path": "research/orderflow-electron-diagnostics/sources/windows-monitor/09-wait-for-single-object.md",
+      "bytes": 7703,
+      "sha256": "05750b6595683cbec0abe99edd9a951c783e6d0f7d2f54b8ad52ed12b8714698"
+    },
+    {
+      "path": "research/orderflow-electron-diagnostics/sources/windows-monitor/10-search-snippets.md",
+      "bytes": 4610,
+      "sha256": "435779c92e8a7e3a05433b0c8cff54678199d90ef6d946a4b02579c90260c943"
+    },
+    {
+      "path": "research/orderflow-electron-diagnostics/sources/windows-monitor/findings.md",
+      "bytes": 8169,
+      "sha256": "2d74c34566002600134527614c46c4343480f559aa0f0016bded9121a169c5ce"
+    }
+  ],
+  "totalBytes": 2238378,
+  "note": "Research artifacts only; existing evidence and product sources untouched"
+}

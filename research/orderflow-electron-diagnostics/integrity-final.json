@@ -1,0 +1,36 @@
+{
+  "head": "2c6508edfd7db374949e8de268381d6c571c723e",
+  "branch": "main",
+  "trackedCount": 439,
+  "unchangedTracked": 438,
+  "changedTracked": [
+    {
+      "path": ".agents/agent_assets_metadata.toml",
+      "classification": "automatic Library registration for research assets"
+    }
+  ],
+  "metadataChangeClassification": "Only automatic Library registration for research assets; no manual edit",
+  "priorEvidenceCount": 223,
+  "unchangedPriorEvidence": 223,
+  "priorEvidenceMismatches": [],
+  "profile": {
+    "path": "/tmp/orderflow-a2-1-uxLSPu",
+    "exists": true,
+    "symlink": false,
+    "uid": 1000,
+    "mode": "700",
+    "inode": 2037,
+    "device": 69,
+    "metadataMatchesBaseline": true,
+    "action": "NONE"
+  },
+  "sourceCount": 31,
+  "testsExecuted": 0,
+  "browserElectronScreenshotStarts": 0,
+  "stageRuns": 0,
+  "signalsSent": 0,
+  "profilesDeleted": 0,
+  "gateB2B": "HOLD",
+  "gitStatus": "M .agents/agent_assets_metadata.toml\n?? research/",
+  "managementMetadataRelativeToHead": "automatic Library registrations; no manual product/config change"
+}

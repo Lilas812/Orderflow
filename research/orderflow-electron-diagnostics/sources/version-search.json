@@ -1,0 +1,62 @@
+[
+  {
+    "resultPages": [
+      {
+        "snippet": "## Electron v45.0.0\n\nLatest Stable\n\nReleased Oct 20, 2026 2 days ago\n\nCompare to... v45.0.0 v45.0.0-beta.7 v45.0.0-beta.6 v45.0.0-beta.5 v45.0.0-beta.4 v45.0.0-beta.3 v45.0.0-beta.2 v45.0.0-beta.1 ",
+        "title": "v45.0.0 | Electron Releases",
+        "url": "https://releases.electronjs.org/release/v45.0.0"
+      },
+      {
+        "snippet": "## Electron Releases\n\n### Stable\n\n|Version |Released |Chromium |Node.js |\n| --- | --- | --- | --- |\n\n|[45\\.0.0](https://releases.electronjs.org/release/v45.0.0) |[Today Oct 20, 2026](https://releases.electronjs.org/release/v45.0.0) |[156\\.0.8078.48](https://releases.electronjs.org/release/v45.0.0) ",
+        "title": "Electron Releases",
+        "url": "https://releases.electronjs.org/?channel=stable"
+      },
+      {
+        "snippet": "## Releases - 2026-10-15\n\n|Version |Stability |Chromium |Node.js |\n| --- | --- | --- | --- |\n|[45\\.0.0-beta.5](https://releases.electronjs.org/release/v45.0.0-beta.5) |[Pre \n|[43\\.8.0](https://releases.electronjs.org/release/v43.8.0) |[Stable](https://r",
+        "title": "2026-10-15 | Electron Releases",
+        "url": "https://releases.electronjs.org/history/2026-10-15"
+      },
+      {
+        "snippet": "## Releases - 2026-10-12\n\n|Version |Stability |Chromium |Node.js |\n| --- | --- | --- | --- |\n|[45\\.0.0-beta.2](https://releases.electronjs.org/release/v45.0.0-beta.2) |[Pre \n[Bluesky](https://bsky.app/profile/electronjs.org)",
+        "title": "2026-10-12 | Electron Releases",
+        "url": "https://releases.electronjs.org/history/2026-10-12"
+      },
+      {
+        "snippet": "v3 v2 v1 v0\n\nStable Pre Release Nightly\n\n|Version |Released |Chromium |Node.js |\n| --- | --- | --- | --- |\n\n0) |[24\\.22.0](https://releases.electronjs.org/release/v45.0.0) |\n|[44\\.9.3](https://releases.electronjs.org/release/v44.9.3) |[3 days ago Oct 20, ",
+        "title": "All | Electron Releases",
+        "url": "https://releases.electronjs.org/release?channel=stable"
+      }
+    ],
+    "searchAnswer": null
+  },
+  {
+    "resultPages": [
+      {
+        "snippet": "child process to continue running after the parent exits. The child process\nwill have its own console window. Once enabled for a child process,\nit cannot be disabled.\n\n",
+        "title": "Child process | Node.js v24.22.1 Documentation",
+        "url": "https://nodejs.org/docs/latest-v24.x/api/child_process.html"
+      },
+      {
+        "snippet": "parent process to exit independently of the child process, unless there is an established\nIPC channel between the child and the parent processes.\n\n\nIf the child process intercepts and handles the `SIGTERM` signal and doesn't exit, the parent process will wait until the child process\nhas exited.\n\n",
+        "title": "Child process | Node.js 26.10.0 Documentation",
+        "url": "https://beta.docs.nodejs.org/child_process"
+      },
+      {
+        "snippet": "parent process to exit independently of the child process, unless there is an established\nIPC channel between the child and the parent processes.\n\n\nwhich the child process was terminated, or `null` if the child process did not terminated due to a signal.\n\nThe `'close'",
+        "title": "Child process | Node.js v26.8.2 Documentation",
+        "url": "https://nodejs.org/dist/v26.8.2/docs/api/child_process.html"
+      },
+      {
+        "snippet": "on ( 'close' ,  ( code )  =>  {   console . log ( `child process exited with code  ${ code } ` ) ; } ) ; import  {  spawn  }  from  'node:child_process' ; import  {  once  }  from  'node:events' ; ",
+        "title": "Child process | Node.js v26.12.1 Documentation",
+        "url": "https://nodejs.org/api/child_process.html"
+      },
+      {
+        "snippet": "the `process.disconnect()` method will close the\nIPC channel to the parent process, allowing the child process to exit gracefully\nonce there are no other connections keeping it alive.\n\n",
+        "title": "Process | Node.js v26.12.1 Documentation",
+        "url": "https://nodejs.org/api/process.html"
+      }
+    ],
+    "searchAnswer": null
+  }
+]

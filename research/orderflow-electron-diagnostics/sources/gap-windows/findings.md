@@ -1,0 +1,15 @@
+Saved official Microsoft source captures under `research/orderflow-electron-diagnostics/sources/gap-windows/`:
+- `01-job-objects.md` — MicrosoftDocs/win32 raw Job Objects article (dated 2025-07-14)
+- `02-process-memory-counters.md` — Microsoft Learn `PROCESS_MEMORY_COUNTERS_EX` (updated 2024-02-22)
+- `03-wpr-etw.md` — Microsoft Learn WPR introduction (updated 2022-04-21)
+- `04-process-creation-flags.md` — Microsoft Learn creation-flag details (updated 2025-07-14)
+
+Evidence and caveats:
+- The Job Objects page says assignment cannot be broken once made. With normal `CreateProcess` child creation, descendants join by default, but `BREAKAWAY_OK` / `SILENT_BREAKAWAY_OK` can exclude children; WMI-created children are an exception. This does not establish containment of every Chromium/Electron process. On Windows 7/Server 2008 R2 and earlier jobs cannot nest; nesting starts with Windows 8/Server 2012, so an existing parent-job environment can affect whether assignment succeeds.
+- Safe launch sequence: create the root with `CREATE_SUSPENDED`; Microsoft documents its primary thread will not run until `ResumeThread`. Assign it to the job before resuming; if assignment fails, do not resume it. This closes the root-process execution gap, but is not evidence that an unmodified Electron tree can never break away or fail to join.
+- `KILL_ON_JOB_CLOSE` acts when the **last** job handle closes: associated processes are terminated, then the job is destroyed. Extra/inherited/duplicated handles can delay that; prematurely closing the last handle can terminate the whole associated group. Manage handle lifetime explicitly.
+- Completion-port delivery is explicitly not guaranteed except for `JobObjectNotificationLimitInformation`; therefore an active-process-zero message is not a reliable sole completion proof. After a notification, independently query job accounting/current active count and wait for the chosen completion condition. A notification alone must not produce automatic PASS; a missing notification does not prove the event did not happen.
+- `WorkingSetSize` is current working-set bytes; `PrivateUsage` is private committed-memory/commit-charge bytes (same meaning as `PagefileUsage` in this structure). On Windows 7 / Server 2008 R2 and earlier, `PagefileUsage` is documented as always zero, so use `PrivateUsage`. These are different measures and per-process counters; the sources do not establish equivalence to one another or to aggregate Electron-tree memory.
+- WPR/ETW records system and application behavior/resource use and supports WPA analysis; Microsoft says WPR requires Windows 8+. It is an investigation tool, not an automatic latency guarantee.
+
+No implementation or app changes made. Node `detached` is not Job Object ownership; this evidence does not recommend disabling Electron sandboxing. A native Job Object adapter requires additional dependency/implementation approval and is not an already-available JS handle. Note: added the fourth source to verify the suspended-creation sequence precisely.

@@ -1,0 +1,32 @@
+## Key Facts
+
+- **Node v24.17.0 ChildProcess lifecycle:** `exit` means the child process ended, but its stdio may still be open. `close` is emitted after process end **and** stdio closure, after `exit` or `error`. Thus, `exit` is not an output-drain barrier; `close` is the stronger completion signal when capturing output. A spawn/kill/message/abort error may occur, and `exit` may or may not follow an `error`. [Node Child Process](https://nodejs.org/download/release/v24.17.0/docs/api/child_process.html), evidence: `research/orderflow-electron-diagnostics/sources/node-lifecycle/01-node-v24-child-process.md`.
+- **A kill request is not proof of death:** Node documents `child.kill()` as sending a signal; `child.killed` means the signal was successfully sent, not that the child terminated. Node also notes killing a parent does not necessarily terminate its descendants. On POSIX, `detached:true` makes the child leader of a new session/process group; Node’s documentation does not say this automatically manages descendants. [Node Child Process](https://nodejs.org/download/release/v24.17.0/docs/api/child_process.html), same evidence file.
+- **Process groups:** Linux `kill(2)` documents that a negative PID targets a process group; signal 0 performs existence/permission checks without sending a signal. Successful signaling is distinct from observing termination. These are Linux-specific semantics, not portable Node/Electron guarantees. [Linux `kill(2)`](https://man7.org/linux/man-pages/man2/kill.2.html), evidence: `research/orderflow-electron-diagnostics/sources/node-lifecycle/04-linux-kill-manpage.md`.
+- **Failure and cleanup:** Node says `uncaughtException` is last-resort, the process is in an undefined state, and its appropriate use is synchronous cleanup before shutdown. `exit` listeners must be synchronous; queued async work is abandoned. `process.exit()` can truncate stdout/stderr; setting `process.exitCode` and allowing natural exit is preferred when possible. [Node Process](https://nodejs.org/download/release/v24.17.0/docs/api/process.html), evidence: `research/orderflow-electron-diagnostics/sources/node-lifecycle/02-node-v24-process.md`.
+- **Electron quit:** `before-quit`/`will-quit` can be canceled with `preventDefault`; `app.exit()` is immediate and skips those events. Electron’s page does not promise that arbitrary async cleanup is awaited. [Electron `app`](https://www.electronjs.org/docs/latest/api/app), evidence: `research/orderflow-electron-diagnostics/sources/node-lifecycle/03-electron-app-lifecycle.md`.
+- **Streams:** Node stream `close` indicates stream/resource closure; this is distinct from process termination. [Node Streams](https://nodejs.org/download/release/v24.17.0/docs/api/stream.html), evidence: `research/orderflow-electron-diagnostics/sources/node-lifecycle/05-node-v24-streams.md` (webFetch marked capture truncated, but returned relevant excerpts).
+
+## Notable Claims Requiring Cross-Reference
+
+Official documentation supports awaiting the child’s `close` to establish process-end-plus-stdio-close, but not that all descendants stopped, all application-level work completed, or the diagnostic output is semantically complete. Treat those as separate evidence/conditions. `finally` is not a process-survival guarantee: an awaited async `finally` can coordinate ordinary control flow, but cannot protect against forced process termination. This is a language/runtime design implication, not a specific guarantee in the cited pages.
+
+## Recommendation (design inference, not an official requirement)
+
+Before cleanup mutates evidence or terminates resources, snapshot a structured lifecycle record: PID/PGID where applicable, spawn success/error, timestamps, exit code/signal, kill request/result, `killed`, stream end/close status, resource observations, cleanup attempt/result, and timeouts. Use typed errors for distinct states (spawn failure, signal-send failure, termination-not-observed/timeout, output-drain failure, resource-limit breach, cleanup failure); retain the original failure and attach cleanup failures rather than replacing it. In controlled shutdown, explicitly await bounded cleanup and `close`; on uncaught exceptions or forced teardown, rely only on synchronous fallback cleanup and preserve the original diagnostic evidence.
+
+## Source Quality / Applicability
+
+Primary official Node and Electron docs plus Linux man-pages are high-quality normative sources for their documented runtime/platform. Node pages are **v24.17.0**, not proof of the exact bundled Node in any Electron release. Electron URL is `latest`, with version/update date **not stated** in the fetched result; do not assume it matches Electron 45. Linux man page reports man-pages **6.19**, dated **2026-06-05**; Linux-only. Node stream capture is truncated, so claims are limited to returned excerpts.
+
+## Gaps / Unanswered Questions
+
+No evidence here establishes Electron 45’s exact embedded Node version, platform-specific process-group teardown, whether a particular diagnostic child exposes its own resource usage, or an application-specific RSS/resource threshold. Those require version/platform confirmation and separate evidence.
+
+## Sources
+
+1. Node.js v24.17.0 Child process — version v24.17.0; publication date not stated; Node child lifecycle semantics. Saved: `research/orderflow-electron-diagnostics/sources/node-lifecycle/01-node-v24-child-process.md`.
+2. Node.js v24.17.0 Process — version v24.17.0; publication date not stated; process exit/error handling. Saved: `research/orderflow-electron-diagnostics/sources/node-lifecycle/02-node-v24-process.md`.
+3. Electron `app` API — `latest`; version/date not stated; Electron lifecycle hooks. Saved: `research/orderflow-electron-diagnostics/sources/node-lifecycle/03-electron-app-lifecycle.md`.
+4. Linux man-pages `kill(2)` — man-pages 6.19, dated 2026-06-05 per fetched result; Linux only. Saved: `research/orderflow-electron-diagnostics/sources/node-lifecycle/04-linux-kill-manpage.md`.
+5. Node.js v24.17.0 Streams — version v24.17.0; publication date not stated; stream closure/flush caveats. Saved: `research/orderflow-electron-diagnostics/sources/node-lifecycle/05-node-v24-streams.md`.
