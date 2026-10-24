@@ -1,5 +1,71 @@
 import type { AnalysisInput, AnalysisRenderFrame } from "@workspace/core/analysis-hub";
 import type { Workload } from "../../bench/finiteMockWorkload";
+import type { DeltaFrame } from "@workspace/core/delta-timeline";
+
+/** Reproduce the baseline's 717px ChartShell content width, not a Canvas override.
+ * 765 - 2*24 padding - 2 border - 72 price axis - 240 VP = 403 CSSpx.
+ */
+export const LAYOUT = Object.freeze({
+  viewportWidth: 852, viewportHeight: 760, parentWidth: 765, padding: 24,
+  width: 403, height: 324, dpr: 1,
+});
+export function layoutGate(layout: any) {
+  if (!layout || layout.dpr !== LAYOUT.dpr || layout.innerWidth !== LAYOUT.viewportWidth ||
+      layout.innerHeight !== LAYOUT.viewportHeight || layout.parentWidth !== LAYOUT.parentWidth)
+    throw Error("LAYOUT_ENV_MISMATCH");
+  for (const layer of ["heatmap", "bubble"]) {
+    const c = layout.canvases.find((v: any) => v.layer === layer && v.connected);
+    if (!c || c.cssWidth !== LAYOUT.width || c.cssHeight !== LAYOUT.height ||
+        c.width !== LAYOUT.width || c.height !== LAYOUT.height ||
+        c.bufferWidth !== LAYOUT.width || c.bufferHeight !== LAYOUT.height)
+      throw Error(`CANVAS_DIMENSION_MISMATCH:${layer}`);
+  }
+}
+/** Independent geometry/data check over actual Canvas2D API observations.
+ * A background fill, the zero axis, or an incomplete hatch is not a valid zero bar.
+ */
+export function deltaDrawingGate(draw: any, frame: DeltaFrame, revision: number) {
+  if (!draw || draw.kind !== "delta-draw" || draw.revision !== revision ||
+      !draw.canvasId || !draw.contextId || draw.ended < draw.started ||
+      draw.width !== LAYOUT.width || draw.height !== frame.height)
+    throw Error("DELTA_IDENTITY_OR_REVISION");
+  const close = (a: number, b: number) => Math.abs(a - b) < 1e-6;
+  const coords = (a: number[], b: number[]) => a.length === b.length && a.every((v, i) => close(v, b[i]));
+  const ops = draw.operations as any[];
+  if (!ops.some(o => o.api === "fillRect" && o.style === "#08090d" &&
+      coords(o.args, [0, 0, LAYOUT.width, frame.height]))) throw Error("DELTA_BACKGROUND_MISSING");
+  if (draw.binRows.length !== frame.bars.length) throw Error("DELTA_BIN_COUNT");
+  let valid = 0;
+  for (const bar of frame.bars) {
+    const bin = bar.bin, row = draw.binRows.find((r: any) => r.id === bin.id);
+    if (!row || row.delta !== (bin.delta === null ? "" : bin.delta.toString()) ||
+        row.B !== bin.B.toString() || row.S !== bin.S.toString() || row.U !== bin.U.toString() ||
+        row.revision !== bin.revision || row.quality !== bin.quality ||
+        !close(row.x0, bar.x0) || !close(row.x1, bar.x1) || row.direction !== bar.direction)
+      throw Error("DELTA_INPUT_MISMATCH");
+    const width = Math.max(0, bar.x1 - bar.x0);
+    if (bar.direction === "UP" || bar.direction === "DOWN") {
+      const expected = [bar.x0, Math.min(bar.top!, bar.bottom!), width,
+        Math.max(1, Math.abs(bar.bottom! - bar.top!))];
+      if (!ops.some(o => o.api === "fillRect" &&
+          o.style === (bar.direction === "UP" ? "#17c96b" : "#b548db") &&
+          close(o.alpha, bar.opacity) && coords(o.args, expected))) throw Error("DELTA_DATA_DRAW_MISSING");
+      valid++;
+    } else if (bar.direction === "ZERO") {
+      if (!ops.some(o => o.api === "stroke" && o.style === "#aab0c0" && o.lineWidth === 2 &&
+          o.path.length === 2 && coords(o.path[0], [bar.x0, frame.zeroY]) &&
+          coords(o.path[1], [bar.x0 + width, frame.zeroY])) ||
+          !ops.some(o => o.api === "fillText" && o.text === "0" &&
+            coords(o.args, [bar.x0 + 2, frame.zeroY - 4]))) throw Error("DELTA_ZERO_DRAW_MISSING");
+      valid++;
+    } else if (!ops.some(o => o.api === "fillRect" &&
+        o.style === "rgba(213, 167, 75, 0.08)" && coords(o.args, [bar.x0, 0, width, frame.height]))) {
+      throw Error("DELTA_WITHHELD_DRAW_MISSING");
+    }
+  }
+  return { status: "PASS", revision, validBins: valid, withheldBins: frame.bars.length - valid,
+    empty: frame.bars.length === 0 };
+}
 
 export const BUDGET = Object.freeze({
   inputMs: 300, publishMs: 250, wallMs: [70_000, 120_000, 210_000],

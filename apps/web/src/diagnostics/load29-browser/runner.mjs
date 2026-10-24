@@ -7,11 +7,13 @@ import { fileURLToPath } from "node:url";
 import { createHash } from "node:crypto";
 import { StringDecoder } from "node:string_decoder";
 import { createAnalysisHub } from "@workspace/core/analysis-hub";
+import { projectDeltaTimeline } from "@workspace/core/delta-timeline";
 import { createBrowserTermination, timeStats } from "../baseline13-driver.mjs";
 import { installObserver } from "./observer.mjs";
-import { BUDGET, canonical, validate, orderedStages, marketCount, deadlineBudget } from "./contracts.ts";
+import { BUDGET, LAYOUT, layoutGate, deltaDrawingGate, canonical, validate, orderedStages, marketCount, deadlineBudget } from "./contracts.ts";
 import { save, checkDirectory } from "../load29/evidence.ts";
-import { group, identity, resourceGate, competingBrowsers } from "./process.mjs";
+import { group, identity, resourceGate, competingBrowsers, ownershipEvidence,
+  createMonitorLifecycle, cleanupOwnership } from "./process.mjs";
 const REFERENCES = ".local/diagnostics/task29-b", INPUT = ".local/diagnostics/task29-a";
 const sha = x => createHash("sha256").update(x).digest("hex");
 const delay = ms => new Promise(r => setTimeout(r, ms));
@@ -113,6 +115,11 @@ export function publicMatch(frame, reference) {
 export function glGate(observer) {
   assert(!observer.fault && observer.totals.errors === 0 && observer.totals.loss === 0, "GL_OR_CONTEXT_FAILURE");
 }
+export function aggregateExitCode(result) {
+  return result?.status === "PASS" && result.stages?.length === 3 &&
+    result.stages.every((r, index) => r.stage === index && r.status === "PASS" &&
+      !r.fault && !r.error && r.cleanup?.status !== "FAIL") ? 0 : 1;
+}
 export function pins(preflight = `${REFERENCES}/preflight.json`) {
   const p = JSON.parse(fs.readFileSync(preflight));
   for (const f of [...p.sources, ...p.evidence]) assert.equal(sha(fs.readFileSync(f.path)), f.sha256, f.path);
@@ -151,7 +158,9 @@ async function runStage(stage, d, reference, globalDeadline, output) {
   const journalOut = journal(stage, output), samples = [], cpuStart = process.cpuUsage(), began = performance.now();
   let started = null, monitor = null, wall = null, fault = null, n = 0, sessionId, pending = new Map(), wire = "";
   const decoder = new StringDecoder("utf8");
-  let beforeDispose, afterDispose, observer, observerAfter, result;
+  let beforeDispose, afterDispose, observer, observerAfter, result, version, browserMetrics, layout;
+  const lifecycle = createMonitorLifecycle(), ownership = [], faults = [];
+  let known = [], knownAt, cleanupPromise;
   const browser = spawn("/repl/tools/bin/chromium", ["--headless=new", "--no-sandbox", "--disable-dev-shm-usage",
     "--disable-background-networking", "--disable-breakpad", "--disable-crash-reporter", "--no-first-run",
     "--no-default-browser-check", "--use-angle=swiftshader", "--enable-unsafe-swiftshader",
@@ -159,8 +168,43 @@ async function runStage(stage, d, reference, globalDeadline, output) {
   { detached: true, stdio: ["ignore", "ignore", "ignore", "pipe", "pipe"] });
   const exited = () => browser.exitCode !== null || browser.signalCode !== null;
   let termination;
+  const childState = () => ({ pid: browser.pid, exitCode: browser.exitCode,
+    signalCode: browser.signalCode, heldLeader: !exited() && browser.pid === started?.pid });
+  function noteFault(e) {
+    const info = e.evidence ?? { code: "MONITOR_INSPECTION_FAILED", reason: String(e),
+      at: performance.now(), targetPid: e.targetPid ?? started?.pid, expected: started,
+      observed: e.snapshot ?? null, phase: lifecycle.phase, child: childState(),
+      conditions: ["complete identity and RSS observations required"] };
+    faults.push(info);
+    if (!fault) fault = String(e);
+  }
+  function sampleRunning() {
+    if (lifecycle.phase !== "RUNNING") return;
+    const snapshot = group(browser.pid);
+    const evidence = ownershipEvidence(started, snapshot, lifecycle.phase, performance.now(), childState());
+    if (evidence.status !== "PASS") { const e = Error(`OWNERSHIP_UNKNOWN:${evidence.reason}`); e.evidence = evidence; throw e; }
+    const sample = resourceGate(started, snapshot, identity(process.pid), BUDGET);
+    known = snapshot.processes; knownAt = sample.at;
+    assert(samples.length < BUDGET.observerRows, "RESOURCE_RECORD_CAP"); samples.push(sample);
+  }
+  function shutdown() {
+    if (cleanupPromise) return cleanupPromise;
+    // One final RUNNING check, then stop that monitor BEFORE Browser.close.
+    // Cleanup has its own strict inspections; unknown members are never waived.
+    if (lifecycle.phase === "RUNNING") {
+      try { sampleRunning(); } catch (e) { noteFault(e); }
+      lifecycle.beginCleanup();
+      if (monitor) clearInterval(monitor);
+    }
+    cleanupPromise = (async () => {
+      const cleanup = await termination.finish();
+      return cleanup;
+    })();
+    return cleanupPromise;
+  }
   function fail(e) {
-    if (!fault) { fault = String(e); if (termination) void termination.finish().catch(() => {}); }
+    noteFault(e);
+    if (termination) void shutdown().catch(() => {});
   }
   function call(method, params = {}, sid) {
     return new Promise((resolveCall, reject) => {
@@ -171,6 +215,8 @@ async function runStage(stage, d, reference, globalDeadline, output) {
     });
   }
   browser.on("error", fail);
+  browser.on("exit", (code, signal) => lifecycle.events.push({
+    kind: "child-exit", at: performance.now(), code, signal }));
   browser.stdio[4].on("data", data => {
     try {
       wire += decoder.write(data);
@@ -197,8 +243,28 @@ async function runStage(stage, d, reference, globalDeadline, output) {
   });
   try { started = identity(browser.pid); } catch (e) { fail(e); }
   termination = createBrowserTermination({
-    close: () => call("Browser.close"), exited, holdsLeader: () => !exited() && browser.pid === started?.pid,
-    inspect: () => group(browser.pid), waitExit: async ms => {
+    close: async () => {
+      lifecycle.events.push({ kind: "browser-close-start", at: performance.now() });
+      try { const r = await call("Browser.close"); lifecycle.events.push({ kind: "browser-close-ok", at: performance.now() }); return r; }
+      catch (e) { lifecycle.events.push({ kind: "browser-close-error", at: performance.now(), error: String(e) }); throw e; }
+    }, exited, holdsLeader: () => !exited() && browser.pid === started?.pid,
+    inspect: async () => {
+      const until = performance.now() + 500;
+      for (;;) {
+        let snapshot;
+        try { snapshot = group(browser.pid); } catch (e) { noteFault(e); throw e; }
+        const verdict = cleanupOwnership(started, snapshot, known, exited());
+        assert(ownership.length < BUDGET.observerRows, "OWNERSHIP_RECORD_CAP");
+        ownership.push({ ...ownershipEvidence(started, snapshot, lifecycle.phase, performance.now(), childState()),
+          cleanupVerdict: verdict });
+        if (verdict.status === "FAIL") {
+          const e = Error(`CLEANUP_OWNERSHIP_UNKNOWN:${verdict.reason}`);
+          e.evidence = ownership.at(-1); noteFault(e);
+        }
+        if (verdict.status !== "EXITING" || performance.now() >= until) return snapshot;
+        await delay(25); // Known exiting members only; never a signal authorization.
+      }
+    }, waitExit: async ms => {
       const end = performance.now() + ms; while (!exited() && performance.now() < end) await delay(25);
     }, signal: (pid, signal) => process.kill(pid, signal), recover: async ms => {
       const end = performance.now() + ms;
@@ -214,23 +280,20 @@ async function runStage(stage, d, reference, globalDeadline, output) {
   };
   try {
     assert(started, "START_IDENTITY_UNKNOWN");
-    wall = setTimeout(() => { fail("WALL_TIMEOUT"); void termination.wallTimeout().catch(fail); },
+    wall = setTimeout(() => { fail(Error("WALL_TIMEOUT")); void termination.wallTimeout().catch(fail); },
       deadlineBudget(stage, performance.now(), globalDeadline));
     monitor = setInterval(() => {
-      if (exited()) return;
-      try {
-        const g = group(browser.pid);
-        if (!g.live.length) return;
-        const sample = resourceGate(started, g, identity(process.pid), BUDGET);
-        assert(samples.length < BUDGET.observerRows, "RESOURCE_RECORD_CAP"); samples.push(sample);
-      } catch (e) { fail(e); }
+      if (lifecycle.phase !== "RUNNING") return;
+      try { sampleRunning(); } catch (e) { fail(e); }
     }, 100);
-    const version = await call("Browser.getVersion");
+    version = await call("Browser.getVersion");
+    assert.equal(version.product, "Chrome/152.0.7977.64", "CHROME_ENV");
     const target = await call("Target.createTarget", { url: "about:blank" });
     ({ sessionId } = await call("Target.attachToTarget", { targetId: target.targetId, flatten: true }));
     await page("Page.enable"); await page("Runtime.enable");
     await page("Performance.enable");
-    await page("Emulation.setDeviceMetricsOverride", { width: 852, height: 760, deviceScaleFactor: 1, mobile: false });
+    await page("Emulation.setDeviceMetricsOverride", { width: LAYOUT.viewportWidth,
+      height: LAYOUT.viewportHeight, deviceScaleFactor: LAYOUT.dpr, mobile: false });
     await page("Runtime.addBinding", { name: "__load29Send" });
     await page("Fetch.enable", { patterns: [{ urlPattern: "*" }] });
     await page("Page.addScriptToEvaluateOnNewDocument", {
@@ -242,9 +305,14 @@ async function runStage(stage, d, reference, globalDeadline, output) {
       assert(performance.now() < readyEnd, "PAGE_START_TIMEOUT"); await delay(100);
     }
     await evaluate("window.__load29.start()");
+    let layoutChecked = false;
     while (true) {
       const state = await evaluate("({done:window.__load29.snapshot().done,fault:window.__load29.snapshot().fault})");
       assert(!state.fault, state.fault);
+      if (!layoutChecked) {
+        const observed = await evaluate("window.__load29Observer.geometry()");
+        if (observed.canvases.length >= 2) { layoutGate(observed); layout = observed; layoutChecked = true; }
+      }
       if (state.done) break;
       assert(performance.now() - began < BUDGET.wallMs[stage], "WALL_TIMEOUT");
       await delay(250);
@@ -253,15 +321,17 @@ async function runStage(stage, d, reference, globalDeadline, output) {
     await delay(250);
     beforeDispose = await evaluate("window.__load29.snapshot()");
     observer = await evaluate("window.__load29Observer.snapshot()");
-    const browserMetrics = await page("Performance.getMetrics");
+    browserMetrics = await page("Performance.getMetrics");
+    layout = await evaluate("window.__load29Observer.geometry()"); layoutGate(layout);
     glGate(observer);
     assert(beforeDispose.status.processedInputs === d.inputs.length &&
       beforeDispose.status.acceptedMarketEvents === marketCount(d.inputs), "INPUT_COMPLETION");
     assert(beforeDispose.panels.every(p => p.exists && (p.testid === "delta-panel" || Number(p.revision) === beforeDispose.revision) &&
       p.rect.width > 0 && p.rect.height > 0), "PANEL_REVISION_OR_SIZE");
-    assert(observer.rows.some(r => r.kind === "delta-clear" && r.revision === beforeDispose.revision), "DELTA_DRAW_MISSING");
+    assert(observer.rows.some(r => r.kind === "delta-draw" && r.revision === beforeDispose.revision), "DELTA_DRAW_MISSING");
     assert(beforeDispose.panels.find(p => p.testid === "vp-panel").svgRects > 0, "VP_SVG_MISSING");
     assert(observer.contexts.filter(c => c.connected).every(c => !c.lost && c.error === 0), "CONTEXT_UNAVAILABLE");
+    assert(observer.contexts.filter(c => c.connected).every(c => /SwiftShader.*Subzero/.test(c.renderer)), "GPU_ENV");
     for (const layer of ["heatmap", "bubble"]) {
       assert(observer.contexts.some(c => c.layer === layer && c.connected), `CANVAS_MISSING:${layer}`);
       assert(beforeDispose.panels.find(p => p.testid === `${layer}-canvas`).status === "READY", `NOT_READY:${layer}`);
@@ -278,8 +348,8 @@ async function runStage(stage, d, reference, globalDeadline, output) {
     result = { status: "PASS", version, browserMetrics, beforeDispose, afterDispose, observer, observerAfter };
   } catch (error) { result = { status: "FAIL", error: String(error), beforeDispose, afterDispose, observer, observerAfter }; }
   finally {
-    const cleanup = await termination.finish();
-    if (monitor) clearInterval(monitor);
+    const cleanup = await shutdown();
+    lifecycle.closed();
     if (wall) clearTimeout(wall);
     for (const p of pending.values()) { clearTimeout(p.timer); p.reject(Error("CDP_CLOSED")); } pending.clear();
     const residual = group(browser.pid);
@@ -292,20 +362,23 @@ async function runStage(stage, d, reference, globalDeadline, output) {
     }
     const checkpoint = journalOut.checkpoint();
     result ??= { status: "FAIL", error: fault ?? "RUN_INCOMPLETE" };
-    Object.assign(result, { stage, started, fault, cleanup, profileRemoved,
+    Object.assign(result, { stage, started, fault, faults, ownership, lifecycle: lifecycle.events,
+      lastVerifiedOwnership: { at: knownAt, processes: known },
+      version, browserMetrics, layout, cleanup, profileRemoved,
       remainingProfile: fs.existsSync(profile), samples, checkpoint,
       wallMs: performance.now() - began, parentCpuUs: process.cpuUsage(cpuStart),
       cpuClockHz: Number(execFileSync("/usr/bin/getconf", ["CLK_TCK"], { encoding: "utf8" })),
       cpuClockSource: "getconf CLK_TCK checked before run", inputSha256: d.inputSha256,
       frameCanonicalSchema: "frozen Node canonical BigInt/Map encoding", resources: "100ms samples, not instantaneous peak" });
-    if (cleanup.status !== "PASS" || fault || !profileRemoved || !samples.length) result.status = "FAIL";
+    if (cleanup.status !== "PASS" || cleanup.close !== "OK" || fault || !profileRemoved || !samples.length) result.status = "FAIL";
     output.write(`stage${stage}-checkpoint.json`, result);
     output.write(`stage${stage}-cleanup.json`, { status: result.cleanup.status, cleanup: result.cleanup,
       profileRemoved: result.profileRemoved, remainingProfile: result.remainingProfile });
   }
   if (result.status === "PASS") {
     // Derived references only: original #29-A inputs/reference are never edited.
-    const hub = createAnalysisHub(d.scope, () => 0), checks = []; let consumed = 0, lastFrame;
+    const hub = createAnalysisHub(d.scope, () => 0), checks = [], deltaChecks = []; let consumed = 0, lastFrame;
+    const deltaByRevision = new Map();
     try {
       for (const receipt of result.checkpoint.blocks) {
         const wire = output.read(receipt.file);
@@ -320,6 +393,14 @@ async function runStage(stage, d, reference, globalDeadline, output) {
           const expected = canonical(hub.readRenderFrame(d.query));
           assert.equal(row.canonical, expected, `PREFIX_FRAME_MISMATCH:${row.prefix}`);
           lastFrame = JSON.parse(row.canonical);
+          if (row.kind === "frame") {
+            const frame = hub.readRenderFrame(d.query);
+            for (const draw of result.observer.rows.filter(x => x.kind === "delta-draw" && x.revision === row.revision)) {
+              deltaChecks.push(deltaDrawingGate(draw, projectDeltaTimeline(frame.delta.items, draw.viewport, 126), row.revision));
+              deltaByRevision.set(row.revision, true);
+            }
+            assert(deltaByRevision.has(row.revision), `DELTA_REVISION_DRAW_MISSING:${row.revision}`);
+          }
           checks.push({ kind: row.kind, prefix: row.prefix, revision: row.revision, sha256: sha(row.canonical),
             quality: lastFrame.quality.channels.L2_MBP.status, readMs: row.readMs ?? row.ms, cache: row.cache });
         }
@@ -331,11 +412,14 @@ async function runStage(stage, d, reference, globalDeadline, output) {
         for (const prefix of conditionPrefixes) assert(checks.some(c => c.prefix === prefix && c.kind === "probe"), `QUALITY_BOUNDARY_NOT_OBSERVED:${prefix}`);
         assert(checks.some(c => c.quality === "GAP") && checks.some(c => c.quality === "RESYNCING"), "QUALITY_BOUNDARY_MISSING");
       }
-      result.correctness = { status: "PASS", prefixes: checks, finalPublicFrameSha256: sha(canonical(lastFrame)) };
+      assert(deltaChecks.some(c => c.validBins > 0), "DELTA_VALID_DATA_NOT_OBSERVED");
+      assert(result.observer.rows.filter(r => r.kind === "delta-draw")
+        .every(r => deltaByRevision.has(r.revision)), "DELTA_UNPUBLISHED_REVISION");
+      result.correctness = { status: "PASS", prefixes: checks, deltaChecks, finalPublicFrameSha256: sha(canonical(lastFrame)) };
       const reads = result.beforeDispose.readRows;
       result.performance = { frameMiss: timeStats(reads.filter(c => c.cache === "MISS").map(c => c.ms)),
         frameHit: timeStats(reads.filter(c => c.cache === "HIT").map(c => c.ms)) };
-    } catch (error) { result.status = "FAIL"; result.correctness = { status: "FAIL", error: String(error), checkedPrefixes: checks }; }
+    } catch (error) { result.status = "FAIL"; result.correctness = { status: "FAIL", error: String(error), checkedPrefixes: checks, deltaChecks }; }
   }
   return result;
 }
@@ -387,11 +471,13 @@ async function main(args) {
     return runStage(stage, definitions[stage], references[stage], started + BUDGET.totalWallMs, output);
   }, async (stage, result) => { output.write(`stage${stage}-result.json`, result); });
   pins();
-  writeAggregate(output, { status: results.length === 3 && results.every(r => r.status === "PASS") ? "PASS" : "FAIL",
+  const aggregate = { status: results.length === 3 && results.every(r => r.status === "PASS") ? "PASS" : "FAIL",
     stages: results.map(r => ({ stage: r.stage, status: r.status, fault: r.fault, error: r.error })),
     browserLaunches: results.length, retries: 0, wallMs: performance.now() - started,
     correctness: "all observed prefixes compared post-browser to real Node hub; counts alone never suffice",
-    performance: "Browser/Node differences are not product failure thresholds", GateB2B: "HOLD" });
+    performance: "Browser/Node differences are not product failure thresholds", GateB2B: "HOLD" };
+  writeAggregate(output, aggregate);
+  process.exitCode = aggregateExitCode(aggregate);
   } catch (error) {
     const failure = recordFailure(output, error);
     console.error(JSON.stringify(failure)); process.exitCode = 1;

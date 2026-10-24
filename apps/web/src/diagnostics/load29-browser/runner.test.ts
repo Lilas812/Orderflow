@@ -6,6 +6,8 @@ const driverModule = "./runner.mjs", processModule = "./process.mjs";
 const { verifyInput, publicMatch, decodeBlock, glGate } = await import(driverModule);
 const { parseArguments, validateOutputPath, createOutput, recordFailure, pins, writeAggregate } = await import(driverModule);
 const { parseProcess, resourceGate } = await import(processModule);
+const { ownershipEvidence, cleanupOwnership, createMonitorLifecycle } = await import(processModule);
+const { aggregateExitCode } = await import(driverModule);
 import { BUDGET } from "./contracts";
 import fs from "node:fs";
 import os from "node:os";
@@ -72,6 +74,54 @@ describe("driver gates (artificial data only)", () => {
       expect(() => publicMatch(JSON.parse(rows[0].canonical), digest(text))).not.toThrow();
       expect(() => j.append({ huge: "x".repeat(BUDGET.wireBytes + 1) })).toThrow("ROW_CAP");
     } finally { fs.rmSync(directory, { recursive: true }); }
+  });
+});
+describe("ownership transitions and CLI automation (no OS signals)", () => {
+  const leader = { pid: 100, ppid: 10, pgid: 100, sid: 100, startTicks: 20, uid: 1000, state: "R" };
+  const child = { ...leader, pid: 101, ppid: 100, startTicks: 21 };
+  const snap = (processes: any[]) => ({ processes, live: processes.map(p => p.pid), zombies: [] });
+  it("records verified running ownership and the actual conditions", () => {
+    const r = ownershipEvidence(leader, snap([leader, child]), "RUNNING", 42, { heldLeader: true });
+    expect(r.status).toBe("PASS"); expect(r.observed.processes.length).toBe(2);
+    expect(r.child.heldLeader).toBe(true); expect(r.at).toBe(42);
+  });
+  it("retains reason, phase, expected identity and snapshot on PID reuse", () => {
+    const s = snap([{ ...leader, startTicks: 999 }]);
+    const r = ownershipEvidence(leader, s, "RUNNING", 43);
+    expect(r.code).toBe("OWNERSHIP_UNKNOWN"); expect(r.reason).toBe("PID_OR_PGID_REUSED");
+    expect(r.targetPid).toBe(100); expect(r.expected).toEqual(leader); expect(r.observed).toEqual(s);
+  });
+  it("does not waive unknown or reused processes during cleanup", () => {
+    const unknown = { ...child, pid: 102, ppid: 1 };
+    expect(cleanupOwnership(leader, snap([unknown]), [leader, child], true).status).toBe("FAIL");
+    expect(cleanupOwnership(leader, snap([{ ...child, startTicks: 99 }]), [leader, child], true).status).toBe("FAIL");
+  });
+  it("distinguishes known exiting descendants from an empty, confirmed exit", () => {
+    expect(cleanupOwnership(leader, snap([child]), [leader, child], true).status).toBe("EXITING");
+    expect(cleanupOwnership(leader, snap([]), [leader, child], true).status).toBe("EMPTY");
+    expect(cleanupOwnership(leader, snap([]), [leader, child], false).status).toBe("FAIL");
+  });
+  it("stops RUNNING sampling before close and does not resume it", () => {
+    let t = 1; const life = createMonitorLifecycle(() => t++);
+    expect(life.phase).toBe("RUNNING"); life.beginCleanup(); life.beginCleanup();
+    expect(life.phase).toBe("CLEANUP");
+    expect(life.events.map((e: any) => e.kind)).toEqual(["monitor-start", "monitor-stop"]);
+    life.closed(); expect(life.phase).toBe("CLOSED");
+  });
+  it("returns zero only for all three successful stages", () => {
+    const good = { status: "PASS", stages: [0, 1, 2].map(stage => ({ stage, status: "PASS" })) };
+    expect(aggregateExitCode(good)).toBe(0);
+    expect(aggregateExitCode({ ...good, stages: good.stages.slice(0, 1) })).toBe(1);
+    for (const status of ["FAIL", "HOLD"]) expect(aggregateExitCode({ ...good, status })).toBe(1);
+  });
+  it("keeps cleanup, original, and save failures nonzero without exiting early", () => {
+    const stages = [0, 1, 2].map(stage => ({ stage, status: "PASS" }));
+    expect(aggregateExitCode({ status: "PASS", stages: stages.map((s, i) => i ? s : { ...s, cleanup: { status: "FAIL" } }) })).toBe(1);
+    expect(aggregateExitCode({ status: "PASS", stages: stages.map((s, i) => i ? s : { ...s, error: "ORIGINAL_FAIL" }) })).toBe(1);
+    expect(aggregateExitCode({ status: "FAIL", error: "SAVE_FAILED", originalResult: { error: "DRAW_FAILED" } })).toBe(1);
+    const source = fs.readFileSync(new URL("./runner.mjs", import.meta.url), "utf8");
+    expect(source).toContain("process.exitCode = aggregateExitCode(aggregate)");
+    expect(source).not.toContain("process.exit(");
   });
 });
 

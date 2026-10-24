@@ -33,13 +33,56 @@ export function group(pgid) {
     const f = stat.slice(stat.lastIndexOf(")") + 2).trim().split(/\s+/);
     if (Number(f[2]) !== pgid && Number(f[3]) !== pgid) continue;
     try { processes.push(identity(Number(name))); }
-    catch (e) { if (!["ENOENT", "ESRCH"].includes(e.code)) throw e; }
+    catch (e) {
+      if (!["ENOENT", "ESRCH"].includes(e.code)) {
+        e.targetPid = Number(name);
+        e.snapshot = { processes: [...processes], live: processes.filter(p =>
+          !["Z", "X"].includes(p.state)).map(p => p.pid), partial: true };
+        throw e;
+      }
+    }
   }
   return { processes, live: processes.filter(p => p.pgid === pgid && !["Z", "X"].includes(p.state)).map(p => p.pid),
     zombies: processes.filter(p => ["Z", "X"].includes(p.state)).map(p => p.pid) };
 }
+export function ownershipEvidence(started, snapshot, phase, at, child = {}) {
+  const verdict = verifyBrowserOwnership(started, snapshot);
+  return { ...verdict, code: verdict.status === "PASS" ? "OWNERSHIP_VERIFIED" : "OWNERSHIP_UNKNOWN",
+    at, phase, targetPid: started?.pid ?? null, expected: started, observed: snapshot,
+    child, conditions: ["PID/PGID/SID/startTicks/UID", "unique identities",
+      "same session", "ancestry reaches held leader", "no reused PID"] };
+}
+export function createMonitorLifecycle(now = () => performance.now()) {
+  let phase = "RUNNING";
+  const events = [{ kind: "monitor-start", at: now() }];
+  return {
+    get phase() { return phase; }, events,
+    beginCleanup() {
+      if (phase === "RUNNING") { phase = "CLEANUP"; events.push({ kind: "monitor-stop", at: now() }); }
+    },
+    closed() { phase = "CLOSED"; events.push({ kind: "cleanup-complete", at: now() }); },
+  };
+}
+/** EXITING is evidence of known descendants, NOT an ownership PASS. Cleanup
+ * still requires an empty group; no signal can be authorized by this result. */
+export function cleanupOwnership(started, snapshot, known, childExited) {
+  if (!snapshot.processes.length) return { status: childExited ? "EMPTY" : "FAIL",
+    reason: childExited ? "EXIT_CONFIRMED_EMPTY" : "LEADER_DISAPPEARED_BEFORE_EXIT" };
+  const verdict = verifyBrowserOwnership(started, snapshot);
+  if (verdict.status === "PASS") return verdict;
+  const allKnown = snapshot.processes.every(p => known.some(k =>
+    ["pid", "pgid", "sid", "startTicks", "uid"].every(field => k[field] === p[field])));
+  if (childExited && allKnown && verdict.reason === "LEADER_NOT_VERIFIABLE")
+    return { status: "EXITING", reason: "KNOWN_DESCENDANTS_STILL_EXITING" };
+  return { status: "FAIL", reason: verdict.reason };
+}
 export function resourceGate(started, snapshot, parent, budget) {
-  assert.equal(verifyBrowserOwnership(started, snapshot).status, "PASS", "OWNERSHIP_UNKNOWN");
+  const evidence = ownershipEvidence(started, snapshot, "RUNNING", performance.now());
+  if (evidence.status !== "PASS") {
+    const error = Error(`OWNERSHIP_UNKNOWN:${evidence.reason}`);
+    error.evidence = evidence;
+    throw error;
+  }
   const live = snapshot.processes.filter(p => !["Z", "X"].includes(p.state));
   assert(live.length <= budget.processes, "PROCESS_CAP");
   assert(live.every(p => typeof p.rss === "number") && typeof parent.rss === "number", "RSS_UNKNOWN");

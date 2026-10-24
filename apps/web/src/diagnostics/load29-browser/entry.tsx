@@ -6,7 +6,7 @@ import { createRecorder } from "../mockDiagnostics";
 import { DEFAULT_DISPLAY_SETTINGS } from "@workspace/core/settings-schema";
 import type { UnifiedSnapshot } from "../../hooks/useMockAnalysisSession";
 import type { AnalysisRenderFrame } from "@workspace/core/analysis-hub";
-import { atomic, BUDGET, canonical, marketCount, validate, viewportSeed, type Definition } from "./contracts";
+import { atomic, BUDGET, canonical, LAYOUT, marketCount, validate, viewportSeed, type Definition } from "./contracts";
 import "../../styles.css";
 
 declare global {
@@ -14,7 +14,7 @@ declare global {
     __load29Input: { stage: number; definition: Definition };
     __load29Send: (data: string) => void;
     __load29: { start(): void; dispose(): unknown; snapshot(): unknown };
-    __load29Observer: { snapshot(): unknown; dispose(): unknown };
+    __load29Observer: { snapshot(): unknown; geometry(): unknown; dispose(): unknown };
   }
 }
 const { stage, definition: d } = window.__load29Input;
@@ -110,7 +110,8 @@ function App() {
     reactRows.push({ revision: state.frame?.revision ?? 0, ms, at: performance.now() });
     if (reactRows.length > BUDGET.observerRows) failure("REACT_ROW_LIMIT");
   }}>
-    <div className="app" style={{ height: "100vh", display: "flex", flexDirection: "column" }} data-testid="load29-page">
+    <div className="app" style={{ height: "100vh", width: LAYOUT.parentWidth, maxWidth: "100%",
+      padding: `16px ${LAYOUT.padding}px`, display: "flex", flexDirection: "column" }} data-testid="load29-page">
       <div>MOCK / SIMULATED — Task29 Stage {stage} — {d.inputs.length} inputs — NOT LIVE</div>
       <ChartShell trades={[]} mockOn={false} onToggleMock={() => {}} onAddThird={() => {}}
         heatmap={null} onSelectHeatmap={() => {}} bubbleId={null} onSelectBubble={() => {}} onBubbleRaw={() => {}}
