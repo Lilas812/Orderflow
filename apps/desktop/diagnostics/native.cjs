@@ -34,6 +34,7 @@ require("../dist/main/main.js");
 app.whenReady().then(async () => {
   try {
     const { writer, LIMITS, geometryGate, stats } = await import("./contracts.mjs");
+    const { installLayoutMonitor, layoutGate, stableLayout } = await import("./layout.mjs");
     save = writer(out, path.dirname(out));
     assert([0, 1, 2].includes(stage), "STAGE");
     const definition = JSON.parse(fs.readFileSync(arg("input")));
@@ -81,14 +82,71 @@ app.whenReady().then(async () => {
     for (let i = 0; !await evaluate('!!window.__load29 && !!document.querySelector(\'[data-testid="chart-area"]\')'); i++) {
       assert(i < 100, "ENTRY_TIMEOUT"); await wait(100);
     }
-    // Declare the Canvas size from the actual pre-input plot, never a 403px constant.
-    result.expected = await evaluate(`(()=>{const grid=document.querySelector(".cs-grid");
-      return {innerWidth,innerHeight,dpr:devicePixelRatio,width:grid.clientWidth-72-240,height:324,
-        recipe:"pre-input grid clientWidth minus existing price axis 72 and VP 240; stable scrollbar"};})()`);
+    await evaluate(`(${installLayoutMonitor.toString()})()`);
+    if (process.argv.includes("--layout-probe")) {
+      // Artificial DOM height only. No session.start, no market inputs.
+      await evaluate(`document.getElementById("desktop-layout").disabled=true;
+        document.documentElement.style.overflowY="scroll"`);
+      await wait(300);
+      result.legacyBefore = await evaluate("window.__desktopLayout.read()");
+      await evaluate(`(()=>{const e=document.createElement("div");e.id="artificial-height";
+        e.style.height="2000px";e.style.flexShrink="0";
+        document.querySelector('[data-testid="load29-page"]').append(e);})()`);
+      await wait(300);
+      result.legacyAfter = await evaluate("window.__desktopLayout.read()");
+      await evaluate(`document.getElementById("artificial-height").remove();
+        document.documentElement.style.overflowY="";
+        document.getElementById("desktop-layout").disabled=false`);
+      await wait(300);
+      result.fixedBefore = await evaluate("window.__desktopLayout.read()");
+      await evaluate(`(()=>{const e=document.createElement("div");e.id="artificial-height";
+        e.style.height="2000px";e.style.flexShrink="0";
+        document.querySelector('[data-testid="load29-page"]').append(e);})()`);
+      await wait(300);
+      result.fixedAfter = await evaluate("window.__desktopLayout.read()");
+      result.cause = {
+        bodyScrollbarPx: result.legacyBefore.body.clientWidth - result.legacyAfter.body.clientWidth,
+        gridLossPx: result.legacyBefore.grid.width - result.legacyAfter.grid.width,
+        legacyDeclaredWidth: result.legacyBefore.grid.width - 72 - 240,
+        legacyOverflowWidth: result.legacyAfter.grid.width - 72 - 240,
+        fixedGridChange: result.fixedBefore.grid.width - result.fixedAfter.grid.width,
+      };
+      save("scrollbar-probe.json", { ...result, noMarketInput: true });
+      assert.equal(result.cause.bodyScrollbarPx, 15, "SCROLLBAR_CAUSE_NOT_REPRODUCED");
+      assert.equal(result.cause.gridLossPx, 15, "GRID_SCROLLBAR_CAUSE");
+      assert.equal(result.cause.fixedGridChange, 0, "FIXED_SCROLLBAR_WIDTH");
+      assert.equal(await evaluate("window.__load29.snapshot().status.processedInputs"), 0, "PROBE_MARKET_INPUT");
+      await evaluate(`document.getElementById("artificial-height").remove();window.__desktopLayout.dispose()`);
+      result.dispose = await disposed();
+      await evaluate("window.__load29Observer.dispose()");
+      result.status = "PASS";
+      return;
+    }
+    await evaluate("window.__load29.prepareLayout();window.__desktopLayout.watch()");
+    const settle = [];
+    for (let i = 0; i < 50; i++) {
+      await wait(100);
+      await evaluate("window.__desktopLayout.watch()");
+      settle.push(await evaluate("window.__desktopLayout.read()"));
+      if (settle.length < 3) continue;
+      try { result.expected = stableLayout(settle); break; } catch {}
+    }
+    assert(result.expected, "LAYOUT_NOT_SETTLED_BEFORE_INPUT");
+    assert.equal(result.expected.height, 324, "SAVED_CANVAS_HEIGHT_CONDITION");
+    assert.equal(await evaluate("window.__load29.snapshot().status.processedInputs"), 0, "PRE_LAYOUT_MARKET_INPUT");
+    result.layoutBefore = settle.at(-1);
     save("start.json", { stage, before: result.before, window: result.window, expected: result.expected,
-      inputSha256: definition.inputSha256, productionBuild: true, independentSession: true });
+      layoutBefore: result.layoutBefore, settle, inputSha256: definition.inputSha256,
+      productionBuild: true, independentSession: true });
     await evaluate("window.__load29.start()");
-    while (!complete) { assert(!fault, fault); await wait(100); }
+    result.layoutSamples = [];
+    while (!complete) {
+      assert(!fault, fault); await wait(100);
+      const s = await evaluate("window.__desktopLayout.read()");
+      layoutGate(s, result.expected);
+      assert(result.layoutSamples.length < 2100, "LAYOUT_SAMPLE_CAP");
+      result.layoutSamples.push(s);
+    }
     await wait(250); assert(!fault, fault);
     result.state = await evaluate("window.__load29.snapshot()");
     result.finalUi = await evaluate(`({
@@ -101,6 +159,9 @@ app.whenReady().then(async () => {
     result.observer = await evaluate("window.__load29Observer.snapshot()");
     result.geometry = await evaluate("window.__load29Observer.geometry()");
     geometryGate(result.geometry, result.expected);
+    result.layoutAfter = await evaluate("window.__desktopLayout.read()");
+    result.resizeObserver = await evaluate("window.__desktopLayout.rows");
+    layoutGate(result.layoutAfter, result.expected);
     const s = result.state;
     assert.equal(s.status.processedInputs, definition.inputs.length, "INPUT_COUNT");
     assert.equal(s.revision, definition.inputs.length, "FINAL_REVISION");
@@ -140,6 +201,7 @@ app.whenReady().then(async () => {
     assert(result.resize.canvases.every(c => c.width === Math.round(c.cssWidth * result.resize.dpr) &&
       c.bufferWidth === c.width && c.bufferHeight === c.height), "RESIZE_BUFFER");
     assert.equal(await evaluate("window.__load29.snapshot().revision"), s.revision, "RESIZE_REVISION");
+    result.layoutMonitorDisposed = await evaluate("window.__desktopLayout.dispose()");
     result.dispose = await disposed(); await wait(100);
     result.afterObserver = await evaluate("window.__load29Observer.snapshot()");
     assert.equal(result.dispose.timers, 0); assert.equal(result.dispose.after.subscribers, 0);
@@ -150,6 +212,10 @@ app.whenReady().then(async () => {
     result.status = "PASS";
   } catch (e) {
     result.status = "FAIL"; result.error = String(e);
+    if (web && !web.isDestroyed()) {
+      try { result.failureLayout = await web.executeJavaScript("window.__desktopLayout?.read()"); } catch {}
+      try { await web.executeJavaScript("window.__desktopLayout?.dispose()"); } catch {}
+    }
     await disposed();
   } finally {
     clearTimeout(wall);

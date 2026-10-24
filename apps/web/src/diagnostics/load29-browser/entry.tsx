@@ -13,7 +13,7 @@ declare global {
   interface Window {
     __load29Input: { stage: number; definition: Definition; host?: "electron" };
     __load29Send: (data: string) => void;
-    __load29: { start(): void; dispose(): unknown; snapshot(): unknown };
+    __load29: { start(): void; prepareLayout?(): void; dispose(): unknown; snapshot(): unknown };
     __load29Observer: { snapshot(): unknown; geometry(): unknown; dispose(): unknown };
   }
 }
@@ -132,6 +132,17 @@ function App() {
 root.render(<App />);
 window.__load29 = {
   start,
+  ...(window.__load29Input.host === "electron" ? { prepareLayout() {
+    if (started || snap.phase !== "OFF") throw Error("LAYOUT_PREPARE_ONCE");
+    // A real empty hub frame mounts the real four panels before timed input.
+    // No events, clock changes, fake market state or publication timer.
+    const frame = session.readFrame(d.query);
+    atomic(frame);
+    snap = { ...snap, phase: "RUNNING", frame, status: session.getStatus(), runId: 1 };
+    send({ kind: "frame", stage, prefix: 0, revision: frame.revision, canonical: canonical(frame),
+      purpose: "pre-input-layout-only" });
+    update(snap);
+  } } : {}),
   snapshot: () => ({ stage, started, done, disposed, fault, status: session.getStatus(),
     timers: Number(timer !== null) + session.getStatus().timers, recorder: recorder.snapshot(),
     frameRows: [...frameRows], readRows: [...readRows], reactRows: [...reactRows], revision: lastRevision,

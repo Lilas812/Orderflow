@@ -6,6 +6,8 @@ import { inputGate, verifyFrames, recheckSavedDraw } from "../diagnostics/verify
 const contractPath = "../diagnostics/contracts.mjs", runPath = "../diagnostics/run.mjs";
 const { writer, geometryGate, stats, LIMITS, exitCode, signalTarget } = await import(contractPath);
 const { environment, main } = await import(runPath);
+const layoutPath = "../diagnostics/layout.mjs";
+const { layoutGate, stableLayout } = await import(layoutPath);
 const definition = () => JSON.parse(fs.readFileSync("../../.local/diagnostics/task29-a/stage0-input.json", "utf8"));
 it("checks frozen input bytes and rejects reordered inputs", () => {
   const d = definition();
@@ -55,6 +57,52 @@ it("rejects missing canvas, native resize during a stage, DPR, attributes or buf
     (g: any) => g.innerWidth++, (g: any) => g.canvases[0].width++, (g: any) => g.canvases[1].bufferWidth++]) {
     const g = geo(); change(g); expect(() => geometryGate(g, expected)).toThrow();
   }
+});
+const layout = () => ({ epoch: 4, geometry: geo(),
+  html: { overflowY: "hidden" }, body: { overflowY: "hidden" }, root: { overflowY: "hidden" },
+  page: { gutter: "stable", overflowY: "auto", scrollHeight: 720, clientHeight: 720 },
+  chart: { width: 647, height: 324 } });
+it("settles actual two-canvas geometry before any input, with completed ResizeObserver delivery", () => {
+  expect(stableLayout([layout(), layout(), layout()])).toEqual(expected);
+  expect(() => stableLayout([layout()])).toThrow("SETTLE");
+  expect(() => stableLayout([{ ...layout(), epoch: 3 }, layout(), layout()])).toThrow("RESIZE_OBSERVER_PENDING");
+});
+it("retains width when only the bounded inner scroll region becomes vertically overflowing", () => {
+  const before = layout(), after = layout(); after.page.scrollHeight = 2000;
+  expect(() => layoutGate(after, stableLayout([before, before, before]))).not.toThrow();
+});
+it("rejects the old 647 to 632 transition instead of adopting a new expectation", () => {
+  const after = layout();
+  after.chart.width = 632;
+  after.geometry.canvases.forEach(c => { c.cssWidth = c.width = c.bufferWidth = 632; });
+  expect(() => layoutGate(after, expected)).toThrow("NATIVE_CANVAS_GEOMETRY");
+});
+it("rejects independent root scrolling even when Canvas sizes agree", () => {
+  const bad = layout(); bad.body.overflowY = "auto";
+  expect(() => layoutGate(bad, expected)).toThrow("OUTER_SCROLL_REGION");
+});
+for (const dpr of [1, 2]) it(`validates CSS, attributes and drawing buffers at DPR ${dpr}`, () => {
+  const s = layout(); s.geometry.dpr = dpr;
+  for (const c of s.geometry.canvases) {
+    c.width = c.bufferWidth = c.cssWidth * dpr;
+    c.height = c.bufferHeight = c.cssHeight * dpr;
+  }
+  expect(stableLayout([s, s, s])).toEqual({ ...expected, dpr });
+  s.geometry.canvases[1].bufferHeight--;
+  expect(() => layoutGate(s, { ...expected, dpr })).toThrow();
+});
+it("fails pre-input settling when canvas mount or size is incomplete", () => {
+  const s = layout(); s.geometry.canvases = [];
+  expect(() => stableLayout([s, s, s])).toThrow("LAYOUT_CANVASES");
+});
+it("limits layout preparation to the real empty Electron hub frame, without starting timers", () => {
+  const entry = fs.readFileSync("../web/src/diagnostics/load29-browser/entry.tsx", "utf8");
+  const prepare = entry.split('prepareLayout() {')[1].split('} } : {})')[0];
+  expect(prepare).toContain('session.readFrame(d.query)');
+  expect(prepare).toContain('prefix: 0');
+  expect(prepare).not.toContain('session.start()');
+  expect(prepare).not.toContain('setInterval');
+  expect(entry).toContain('window.__load29Input.host === "electron"');
 });
 it("never reports incomplete stages or cleanup faults as PASS", () => {
   expect(exitCode({ status: "PASS", stages: [] })).toBe(1);

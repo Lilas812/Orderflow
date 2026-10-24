@@ -36,7 +36,7 @@ function decode(wire) {
   assert.equal(bytes.length, wire.bytes); assert.equal(sha(bytes), wire.sha256);
   return JSON.parse(bytes.toString());
 }
-export async function stageRun(stage, definition, reference, directory, compiled, deadline, env) {
+export async function stageRun(stage, definition, reference, directory, compiled, deadline, env, probe = false) {
   const folder = path.join(directory, `stage${stage}`);
   fs.mkdirSync(folder, { mode: 0o700 }); const save = writer(folder, directory);
   const profile = fs.mkdtempSync(path.join(os.tmpdir(), `orderflow-a2-${stage}-`));
@@ -45,6 +45,7 @@ export async function stageRun(stage, definition, reference, directory, compiled
     budget: LIMITS, cadenceMs: 300, notificationMs: 250, defaultNativeSize: [1440, 960],
     dpr: 1, initialCanvas: "actual chart-area CSS width measured before inputs", stageRetries: 0 });
   const child = spawn(require("electron"), [path.join(root, "apps/desktop/diagnostics/native.cjs"),
+    ...(probe ? ["--layout-probe"] : []),
     `--stage=${stage}`, `--output=${folder}`, `--build=${compiled.renderer}`,
     `--input=${path.join(root, `.local/diagnostics/task29-a/stage${stage}-input.json`)}`,
     `--user-data-dir=${profile}`, "--use-angle=swiftshader", "--enable-unsafe-swiftshader"],
@@ -128,9 +129,9 @@ export async function stageRun(stage, definition, reference, directory, compiled
       records.push(...decode(JSON.parse(raw.toString())));
     }
     assert.equal(records.length, result.native.recordCount, "LOSSLESS_RECORD_COUNT");
-    result.correctness = compiled.verify.verifyFrames(definition, reference, records,
+    if (!probe) result.correctness = compiled.verify.verifyFrames(definition, reference, records,
       result.native.observer, result.native.expected.width, result.native.finalUi);
-    if (stage === 2) assert(result.correctness.checks.some(c => c.quality === "GAP") &&
+    if (!probe && stage === 2) assert(result.correctness.checks.some(c => c.quality === "GAP") &&
       result.correctness.checks.some(c => c.quality === "RESYNCING") &&
       result.correctness.checks.at(-1).quality === "VALID", "GAP_RECOVERY");
     assert(performance.now() <= deadline && performance.now() - began <= LIMITS.wall[stage], "VERIFICATION_WALL");
@@ -142,19 +143,20 @@ export async function stageRun(stage, definition, reference, directory, compiled
   return result;
 }
 export async function main(args) {
-  assert.deepEqual(args, ["--run"], "EXPLICIT_RUN_REQUIRED");
-  const directory = path.join(root, ".local/diagnostics/task30-a2/formal");
+  assert(args.length === 1 && ["--run", "--probe"].includes(args[0]), "EXPLICIT_RUN_REQUIRED");
+  const probe = args[0] === "--probe";
+  const directory = path.join(root, `.local/diagnostics/task30-a3/${probe ? "layout-probe" : "formal"}`);
   fs.mkdirSync(directory, { mode: 0o700 }); // Exclusive, never adopts a previous trial.
   const save = writer(directory), summary = { status: "FAIL", stages: [], GateB2B: "HOLD" };
   try {
-    const baseline = JSON.parse(fs.readFileSync(path.join(root, ".local/diagnostics/task30-a2/baseline.json")));
-    for (const row of baseline.evidence) assert.equal(sha(fs.readFileSync(row.path)), row.sha256, row.path);
-    const allowed = new Set(["apps/web/src/diagnostics/load29-browser/observer.mjs",
-      "apps/web/src/diagnostics/load29-browser/observer.test.ts",
-      "apps/web/src/diagnostics/load29-browser/contracts.ts",
-      "apps/web/src/diagnostics/load29-browser/contracts.test.ts",
+    const baseline = JSON.parse(fs.readFileSync(path.join(root, ".local/diagnostics/task30-a3/baseline.json")));
+    for (const row of [...baseline.evidence, ...baseline.inputs])
+      assert.equal(sha(fs.readFileSync(row.path)), row.sha256, row.path);
+    const allowed = new Set([
+      "apps/desktop/diagnostics/index.html", "apps/desktop/diagnostics/native.cjs",
+      "apps/desktop/diagnostics/run.mjs", "apps/desktop/tests/diagnostics.test.ts",
       "apps/web/src/diagnostics/load29-browser/entry.tsx",
-      ".agents/memory/desktop-product-direction.md"]);
+    ]);
     for (const row of baseline.tracked) if (!allowed.has(row.path))
       assert.equal(sha(fs.readFileSync(row.path)), row.sha256, `PROTECTED_SOURCE:${row.path}`);
     const sources = [...allowed, ...fs.readdirSync(path.join(root, "apps/desktop/diagnostics")).map(n =>
@@ -183,21 +185,21 @@ export async function main(args) {
         cpuMax: fs.readFileSync("/sys/fs/cgroup/cpu.max", "utf8").trim(),
         memoryMax: fs.readFileSync("/sys/fs/cgroup/memory.max", "utf8").trim() } });
     const began = performance.now(), deadline = began + LIMITS.total;
-    for (const stage of [0, 1, 2]) {
-      const result = await stageRun(stage, definitions[stage], references[stage], directory, compiled, deadline, env);
+    for (const stage of probe ? [0] : [0, 1, 2]) {
+      const result = await stageRun(stage, definitions[stage], references[stage], directory, compiled, deadline, env, probe);
       summary.stages.push({ stage, status: result.status, error: result.error ?? result.fault,
         cleanup: result.cleanup, wallMs: result.wallMs, performance: result.native?.performance,
         correctness: result.correctness, rss: result.rss });
       console.log(`Stage ${stage}: ${result.status} ${result.error ?? ""}`);
       if (result.status !== "PASS") break;
     }
-    summary.status = summary.stages.length === 3 && summary.stages.every(s => s.status === "PASS") ? "PASS" : "FAIL";
+    summary.status = summary.stages.length === (probe ? 1 : 3) && summary.stages.every(s => s.status === "PASS") ? "PASS" : "FAIL";
   } catch (e) { summary.error = String(e); }
   save("aggregate.json", summary);
   save("manifest.json", fs.readdirSync(directory).filter(n => fs.statSync(path.join(directory, n)).isFile()).map(file => {
     const bytes = fs.readFileSync(path.join(directory, file)); return { file, bytes: bytes.length, sha256: sha(bytes) };
   }));
-  usage(directory); return exitCode(summary);
+  usage(directory); return probe ? (summary.status === "PASS" ? 0 : 1) : exitCode(summary);
 }
 function spawnSyncLdd(exe, env) { return execFileSync("ldd", [exe], { env, encoding: "utf8" }); }
 if (process.argv[1] && pathToFileURL(path.resolve(process.argv[1])).href === import.meta.url)
