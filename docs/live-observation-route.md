@@ -129,3 +129,33 @@ Window close, renderer loss and app quit dispose the Node scope.
 Not performed: actual provider connection, authenticated catalog queries,
 Windows build/ASAR execution, Windows monitor/DPR tests, physical GPU performance,
 live completeness/roll/session validation, persistence or load-stage certification.
+
+## Prerequisite decision — HOLD (2026-10-25 JST)
+
+The user explicitly chose to maintain HOLD because the separate authentication
+and entitlement prerequisites remain unresolved. The existing conclusion in
+`docs/live-connection-permission-investigation.md` has not been superseded by
+new evidence. No authentication or L2 entitlement investigation was repeated.
+
+This decision is a stop, not approval to design or verify a catalog-to-frame
+mapping. No authenticated catalog request, actual connection, market-data
+persistence, product-code change or analytics enablement was performed.
+The existing null contract/session and NO DATA analytics remain unchanged.
+The verification results above belong to the earlier offline implementation;
+they do not verify expiry/session mapping or grant permission to enable it.
+
+Deferred until the separate prerequisites are resolved and additional approval
+is given:
+
+- Establish whether provider `contract` / `contractSince` can identify each
+  frame without guessing, including delayed delivery and roll boundaries.
+- Establish exchange-session evidence independently of local connection
+  generations, timestamps and receive ordinals.
+- Design and verify rejection of ambiguous identity and prevention of
+  cross-contract aggregation at roll. Do not invent Trade IDs, sequence or
+  coverage when the provider evidence is absent.
+
+After those steps, calculation enablement still requires separate approval and
+must reuse the existing engines. Neither a catalog value nor a resolved session
+alone establishes completeness or exact deduplication. No automatic connection
+or persistence is authorized by this decision or by later offline verification.
