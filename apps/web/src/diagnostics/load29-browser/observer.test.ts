@@ -2,7 +2,7 @@ import { it, expect } from "vitest";
 import { runInNewContext } from "node:vm";
 const modulePath = "./observer.mjs";
 const { installObserver } = await import(modulePath);
-function fixture() {
+function fixture(withLayout = false) {
   return runInNewContext(`
   const callbacks=new Map();let next=1;
   const performance={now:()=>1};
@@ -43,9 +43,10 @@ function fixture() {
   const window={devicePixelRatio:1,innerWidth:852,innerHeight:760,
     requestAnimationFrame(fn){const id=next++;callbacks.set(id,fn);return id;},
     cancelAnimationFrame(id){callbacks.delete(id);}};
-  (${installObserver.toString()})();
+  let layoutIdentity=null;
+  (${installObserver.toString()})(${withLayout ? "{identifyLayout:()=>({...layoutIdentity})}" : ""});
   const canvas=new HTMLCanvasElement(),gl=canvas.getContext("webgl2");
-  ({window,canvas,gl,callbacks,setBins(b){bins=b;},
+  ({window,canvas,gl,callbacks,setBins(b){bins=b;},setLayout(l){layoutIdentity=l;},
     delta(){const c=new HTMLCanvasElement();c.dataset.testid="delta-canvas";c.height=126;
       return c.getContext("2d");},
     fire(id){const fn=callbacks.get(id);callbacks.delete(id);fn(1);}})
@@ -139,4 +140,21 @@ it("restores native Canvas2D functions on observer disposal", () => {
   ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.fillRect(0, 0, 403, 126);
   expect(x.window.__load29Observer.snapshot().rows).toEqual([]);
   expect(ctx.calls.length).toBe(2);
+});
+it("captures each actual Delta cycle's native layout identity without combining revision0 generations", () => {
+  const x = fixture(true), ctx = x.delta();
+  x.setLayout({ phase: "initial", generation: 0, cssWidth: 887, dpr: 1, at: 1 });
+  ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.save(); ctx.restore();
+  x.setLayout({ phase: "formal", generation: 3, cssWidth: 647, dpr: 1, at: 1 });
+  ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.save(); ctx.restore();
+  const rows = x.window.__load29Observer.snapshot().rows;
+  expect(rows[0].layout).toMatchObject({ phase: "initial", generation: 0, cssWidth: 887 });
+  expect(rows[1].layout).toMatchObject({ phase: "formal", generation: 3, cssWidth: 647 });
+  expect(rows[0].revision).toBe(rows[1].revision);
+  expect(ctx.calls.filter((c: any) => c.api === "setTransform")).toHaveLength(2);
+});
+it("does not add native layout assumptions to the ordinary browser observer", () => {
+  const x = fixture(), ctx = x.delta();
+  ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.save(); ctx.restore();
+  expect(x.window.__load29Observer.snapshot().rows[0]).not.toHaveProperty("layout");
 });

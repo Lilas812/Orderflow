@@ -9,6 +9,7 @@ import type { AnalysisRenderFrame } from "@workspace/core/analysis-hub";
 import { atomic, BUDGET, canonical, LAYOUT, marketCount, validate, viewportSeed, type Definition } from "./contracts";
 import "../../styles.css";
 import { emptyLayout } from "./emptyLayout";
+import { createPublicationPump } from "./publicationPump";
 
 declare global {
   interface Window {
@@ -20,8 +21,8 @@ declare global {
 }
 const { stage, definition: d } = window.__load29Input;
 validate(d, stage);
-let sends = 0, fault: string | null = null, timer: ReturnType<typeof setInterval> | null = null;
-let started = false, done = false, disposed = false, lastRevision = 0, lastAt = -Infinity;
+let sends = 0, fault: string | null = null, pump: ReturnType<typeof createPublicationPump> | null = null;
+let started = false, done = false, disposed = false, lastRevision = 0;
 let snap: UnifiedSnapshot = { phase: "OFF", frame: null, status: null, notices: 0, runId: 0, inputEveryMs: BUDGET.inputMs };
 const frameRows: { revision: number; prefix: number; readMs: number; cache: string; hit: number; at: number; due: number }[] = [];
 const reactRows: { revision: number; ms: number; at: number }[] = [];
@@ -62,8 +63,7 @@ function send(event: unknown) {
 function failure(error: unknown) {
   fault = String(error);
   session.stop();
-  if (timer !== null) clearInterval(timer);
-  timer = null; done = true;
+  pump?.dispose(); done = true;
   send({ kind: "failure", stage, fault });
 }
 function start() {
@@ -72,20 +72,18 @@ function start() {
   session.start();
   snap = { ...snap, phase: "RUNNING", status: session.getStatus(), runId: 1 };
   update(snap);
-  const base = performance.now(); let ticks = 0;
-  timer = setInterval(() => {
-    const at = performance.now(), due = base + (++ticks) * BUDGET.publishMs;
-    try {
+  pump = createPublicationPump({
+    period: BUDGET.publishMs, wallMs: BUDGET.wallMs[stage],
+    status: () => session.getStatus(),
+    publish(at, due) {
       const status = session.getStatus();
-      if (status.state === "STOPPED") throw Error(status.reason);
-      if (status.revision !== lastRevision && at - lastAt >= BUDGET.publishMs) {
         const firstRead = read(status.processedInputs, "publication");
         const secondRead = read(status.processedInputs, "immediate-hit");
         const frame = firstRead.frame, same = secondRead.frame;
         if (same !== frame) throw Error("CACHE_HIT_IDENTITY");
         if (frame.revision !== status.revision) throw Error("NOTICE_FRAME_REVISION");
         atomic(frame);
-        lastRevision = frame.revision; lastAt = at;
+        lastRevision = frame.revision;
         frameRows.push({ revision: frame.revision, prefix: status.processedInputs, readMs: firstRead.ms, cache: firstRead.cache,
           hit: secondRead.ms, at, due });
         if (frameRows.length > BUDGET.observerRows) throw Error("FRAME_LIMIT");
@@ -94,13 +92,28 @@ function start() {
         snap = { phase: status.state === "COMPLETED" ? "COMPLETED" : "RUNNING", frame, status,
           notices: snap.notices + 1, runId: 1, inputEveryMs: BUDGET.inputMs };
         update(snap);
-      }
-      if (status.state === "COMPLETED") {
-        clearInterval(timer!); timer = null; done = true;
-        send({ kind: "complete", stage, status });
-      }
-    } catch (error) { failure(error); }
-  }, BUDGET.publishMs);
+        return frame.revision;
+    },
+    observe() {
+      const observer = window.__load29Observer.snapshot() as { rows: { kind: string; layer?: string; revision?: number }[] };
+      const latest = (layer: string) => {
+        for (let i = observer.rows.length - 1; i >= 0; i--) {
+          const r = observer.rows[i];
+          if (layer === "delta" ? r.kind === "delta-draw" :
+            r.layer === layer && (r.kind === "draw" || r.kind === "clear")) return r.revision ?? -1;
+        }
+        return -1;
+      };
+      return {
+        react: Number(document.querySelector('[data-testid="text-unified-revisions"]')?.getAttribute("data-revision") ?? -1),
+        heatmap: latest("heatmap"), bubble: latest("bubble"), delta: latest("delta"),
+        volumeProfile: Number(document.querySelector('[data-testid="vp-panel"]')?.getAttribute("data-revision") ?? -1),
+      };
+    },
+    complete() { done = true; send({ kind: "complete", stage, status: session.getStatus(), publication: pump!.snapshot() }); },
+    failure,
+  });
+  pump.start();
 }
 const root = createRoot(document.getElementById("root")!);
 function App() {
@@ -145,7 +158,8 @@ window.__load29 = {
     update(snap);
   } } : {}),
   snapshot: () => ({ stage, started, done, disposed, fault, status: session.getStatus(),
-    timers: Number(timer !== null) + session.getStatus().timers, recorder: recorder.snapshot(),
+    timers: (pump?.snapshot().timers ?? 0) + session.getStatus().timers, recorder: recorder.snapshot(),
+    publication: pump?.snapshot() ?? null,
     frameRows: [...frameRows], readRows: [...readRows], reactRows: [...reactRows], revision: lastRevision,
     viewport: document.querySelector('[data-testid="unified-controls"]')?.getAttribute("data-diagnostic-viewport"),
     panels: ["heatmap-canvas", "bubble-canvas", "delta-panel", "vp-panel"].map(testid => {
@@ -157,8 +171,8 @@ window.__load29 = {
     }) }),
   dispose: () => {
     const before = session.getStatus();
-    if (timer !== null) clearInterval(timer);
-    timer = null; root.unmount(); session.dispose(); disposed = true;
+    pump?.dispose();
+    root.unmount(); session.dispose(); disposed = true;
     return { before, after: session.getStatus(), timers: 0, mountedCanvases: document.querySelectorAll("canvas").length };
   },
 };

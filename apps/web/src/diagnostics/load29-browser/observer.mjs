@@ -1,5 +1,5 @@
 /** Browser-only external observer. Never changes market state, renderer input, or results. */
-export function installObserver() {
+export function installObserver(options = {}) {
   const rows = [], contexts = new Set(), pending = new Map(), saved = [];
   const totals = { reserved: 0, callbacks: 0, cancelled: 0, draws: 0, vertices: 0,
     uploadBytes: 0, buffers: 0, deletes: 0, errors: 0, loss: 0, restore: 0 };
@@ -38,6 +38,7 @@ export function installObserver() {
         cycles.set(this, { kind: "delta-draw", canvasId: id(canvasIds, canvas),
           contextId: id(contextIds, this), started: performance.now(),
           revision: Number(document.querySelector('[data-testid="text-unified-revisions"]')?.getAttribute("data-revision") ?? -1),
+          ...(options.identifyLayout ? { layout: options.identifyLayout(canvas) } : {}),
           width: canvas.width, height: canvas.height, operations: [], path: [], depth: 0 });
         return out;
       }

@@ -37,7 +37,17 @@ export function installLayoutMonitor() {
     }
   };
   watch();
-  window.__desktopLayout = { read, watch, rows,
+  window.__desktopLayout = { read, watch, rows, phase: "initial",
+    beginFormal() {
+      if (this.phase !== "initial") throw Error("FORMAL_START_ONCE");
+      const snapshot = read();
+      this.phase = "formal";
+      return { at: performance.now(), generation: epoch, snapshot };
+    },
+    endFormal() {
+      if (this.phase !== "formal") throw Error("FORMAL_END_ORDER");
+      const at = performance.now(); this.phase = "ended"; return at;
+    },
     dispose: () => { if (!ended) observer.disconnect(); ended = true; return { disconnected: ended }; } };
 }
 

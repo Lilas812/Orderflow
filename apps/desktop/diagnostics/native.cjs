@@ -132,6 +132,7 @@ app.whenReady().then(async () => {
       try { result.expected = stableLayout(settle); break; } catch {}
     }
     assert(result.expected, "LAYOUT_NOT_SETTLED_BEFORE_INPUT");
+    assert.equal(result.expected.width, 647, "SAVED_CANVAS_WIDTH_CONDITION");
     assert.equal(result.expected.height, 324, "SAVED_CANVAS_HEIGHT_CONDITION");
     assert.equal(await evaluate("window.__load29.snapshot().status.processedInputs"), 0, "PRE_LAYOUT_MARKET_INPUT");
     result.layoutBefore = settle.at(-1);
@@ -165,16 +166,20 @@ app.whenReady().then(async () => {
       result.status = "PASS";
       return;
     }
+    result.formalInterval = { start: await evaluate("window.__desktopLayout.beginFormal()") };
     await evaluate("window.__load29.start()");
     result.layoutSamples = [];
     while (!complete) {
       assert(!fault, fault); await wait(100);
       const s = await evaluate("window.__desktopLayout.read()");
       layoutGate(s, result.expected);
+      assert.equal(s.epoch, result.formalInterval.start.generation, "FORMAL_RESIZE_OBSERVER_GENERATION");
+      assert.deepEqual(s.canvasRects, result.layoutBefore.canvasRects, "FORMAL_CANVAS_POSITION");
       assert(result.layoutSamples.length < 2100, "LAYOUT_SAMPLE_CAP");
       result.layoutSamples.push(s);
     }
     await wait(250); assert(!fault, fault);
+    result.formalInterval.end = await evaluate("window.__desktopLayout.endFormal()");
     result.state = await evaluate("window.__load29.snapshot()");
     result.finalUi = await evaluate(`({
       vpTotals:document.querySelector('[data-testid="vp-totals"]')?.textContent,
@@ -192,6 +197,10 @@ app.whenReady().then(async () => {
     const s = result.state;
     assert.equal(s.status.processedInputs, definition.inputs.length, "INPUT_COUNT");
     assert.equal(s.revision, definition.inputs.length, "FINAL_REVISION");
+    assert(s.publication?.done && s.publication.hub === s.revision &&
+      s.publication.published === s.revision &&
+      Object.values(s.publication.reflected).every(r => r === s.revision) &&
+      s.publication.timers === 0, "FINAL_FOUR_PANEL_PUBLICATION");
     assert(s.panels.every(p => p.exists && p.rect.width > 0 && p.rect.height > 0 &&
       (p.testid === "delta-panel" || Number(p.revision) === s.revision)), "PANEL_REVISION");
     assert(s.panels.find(p => p.testid === "vp-panel").svgRects > 0, "VP_EMPTY");
@@ -203,7 +212,7 @@ app.whenReady().then(async () => {
     assert(!s.recorder.saturated && s.recorder.dropped === 0, "DIAGNOSTIC_LOSS");
     const reads = s.readRows, obs = result.observer.rows, ing = s.recorder.rows ?? [];
     result.performance = {
-      interval: "start to final completed publication; resize and cleanup excluded",
+      interval: "input/read timings formal only; React/observer totals also include explicitly recorded pre-input initialization",
       frameMiss: stats(reads.filter(r => r.cache === "MISS").map(r => r.ms)),
       frameHit: stats(reads.filter(r => r.cache === "HIT").map(r => r.ms)),
       reactRoot: stats(s.reactRows.map(r => r.ms)),
@@ -235,17 +244,27 @@ app.whenReady().then(async () => {
     result.status = "FAIL"; result.error = String(e);
     if (web && !web.isDestroyed()) {
       try { result.failureLayout = await web.executeJavaScript("window.__desktopLayout?.read()"); } catch {}
+      try { result.failureState = await web.executeJavaScript("window.__load29?.snapshot()"); } catch {}
+      try { result.failureObserver = await web.executeJavaScript("window.__load29Observer?.snapshot()"); } catch {}
       try { await web.executeJavaScript("window.__desktopLayout?.dispose()"); } catch {}
     }
-    await disposed();
+    result.dispose = await disposed();
+    if (web && !web.isDestroyed()) {
+      try {
+        await wait(100);
+        result.afterObserver = await web.executeJavaScript("window.__load29Observer?.snapshot()");
+        await web.executeJavaScript("window.__load29Observer?.dispose()");
+      } catch {}
+    }
   } finally {
     clearTimeout(wall);
     if (fault) { result.status = "FAIL"; result.error ??= fault; }
     try { flush(); result.blocks = receipts; result.recordCount = count; save("native-result.json", result); }
     catch (e) { result.status = "FAIL"; console.error("EVIDENCE_SAVE_FAILED"); }
-    if (result.status !== "PASS") process.exitCode = 1;
+    const code = result.status === "PASS" ? 0 : 1;
+    process.exitCode = code;
     if (web?.debugger.isAttached()) web.debugger.detach();
     process.stdout.write("\nA2_CLEANUP\n");
-    app.quit();
+    app.exit(code); // Cleanup finished; Electron otherwise ignores process.exitCode.
   }
 }).catch(() => { process.exitCode = 1; app.quit(); });

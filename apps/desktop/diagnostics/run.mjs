@@ -130,7 +130,7 @@ export async function stageRun(stage, definition, reference, directory, compiled
     }
     assert.equal(records.length, result.native.recordCount, "LOSSLESS_RECORD_COUNT");
     if (!probe) result.correctness = compiled.verify.verifyFrames(definition, reference, records,
-      result.native.observer, result.native.expected.width, result.native.finalUi);
+      result.native.observer, result.native.expected.width, result.native.finalUi, result.native.formalInterval);
     if (!probe && stage === 2) assert(result.correctness.checks.some(c => c.quality === "GAP") &&
       result.correctness.checks.some(c => c.quality === "RESYNCING") &&
       result.correctness.checks.at(-1).quality === "VALID", "GAP_RECOVERY");
@@ -145,12 +145,13 @@ export async function stageRun(stage, definition, reference, directory, compiled
 export async function main(args) {
   assert(args.length === 1 && ["--run", "--probe", "--empty-layout"].includes(args[0]), "EXPLICIT_RUN_REQUIRED");
   const probe = args[0] !== "--run", empty = args[0] === "--empty-layout";
-  const directory = path.join(root, `.local/diagnostics/task30-a3/continuation/${empty ? "empty-layout" : probe ? "layout-probe" : "formal"}`);
+  const directory = path.join(root, `.local/diagnostics/task30-a4/${empty ? "empty-layout" : probe ? "layout-probe" : "formal"}`);
   fs.mkdirSync(directory, { mode: 0o700 }); // Exclusive, never adopts a previous trial.
   const save = writer(directory), summary = { status: "FAIL", stages: [], GateB2B: "HOLD" };
   try {
-    const baseline = JSON.parse(fs.readFileSync(path.join(root, ".local/diagnostics/task30-a3/baseline.json")));
-    for (const row of [...baseline.evidence, ...baseline.inputs])
+    const baseline = JSON.parse(fs.readFileSync(path.join(root, ".local/diagnostics/task30-a4/baseline.json")));
+    const frozenInputs = JSON.parse(fs.readFileSync(path.join(root, ".local/diagnostics/task30-a3/baseline.json"))).inputs;
+    for (const row of [...baseline.evidence, ...frozenInputs])
       assert.equal(sha(fs.readFileSync(row.path)), row.sha256, row.path);
     const allowed = new Set([
       "apps/desktop/diagnostics/index.html", "apps/desktop/diagnostics/native.cjs",
@@ -158,6 +159,11 @@ export async function main(args) {
       "apps/web/src/diagnostics/load29-browser/entry.tsx",
       "apps/desktop/diagnostics/layout.mjs",
       "apps/web/src/diagnostics/load29-browser/emptyLayout.ts",
+      "apps/web/src/diagnostics/load29-browser/publicationPump.ts",
+      "apps/web/src/diagnostics/load29-browser/observer.mjs",
+      "apps/web/src/diagnostics/load29-browser/observer.test.ts",
+      "apps/desktop/diagnostics/verify.ts", "apps/desktop/diagnostics/bootstrap.mjs",
+      "apps/desktop/tests/publication.test.ts",
     ]);
     for (const row of baseline.tracked) if (!allowed.has(row.path))
       assert.equal(sha(fs.readFileSync(row.path)), row.sha256, `PROTECTED_SOURCE:${row.path}`);
