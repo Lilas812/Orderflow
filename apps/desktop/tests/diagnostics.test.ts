@@ -1,4 +1,6 @@
-import { it, expect } from "vitest";
+import { it, expect, vi } from "vitest";
+import { emptyLayout } from "../../web/src/diagnostics/load29-browser/emptyLayout";
+import { createMockAnalysisSession } from "../../web/src/lib/mockAnalysisSession";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -59,6 +61,7 @@ it("rejects missing canvas, native resize during a stage, DPR, attributes or buf
   }
 });
 const layout = () => ({ epoch: 4, geometry: geo(),
+  canvasRects: [{ x: 10, y: 20, width: 647, height: 324 }, { x: 10, y: 20, width: 647, height: 324 }],
   html: { overflowY: "hidden" }, body: { overflowY: "hidden" }, root: { overflowY: "hidden" },
   page: { gutter: "stable", overflowY: "auto", scrollHeight: 720, clientHeight: 720 },
   chart: { width: 647, height: 324 } });
@@ -95,14 +98,38 @@ it("fails pre-input settling when canvas mount or size is incomplete", () => {
   const s = layout(); s.geometry.canvases = [];
   expect(() => stableLayout([s, s, s])).toThrow("LAYOUT_CANVASES");
 });
-it("limits layout preparation to the real empty Electron hub frame, without starting timers", () => {
+it("limits layout preparation to the real empty Electron hub frame, without starting workload timers", () => {
   const entry = fs.readFileSync("../web/src/diagnostics/load29-browser/entry.tsx", "utf8");
   const prepare = entry.split('prepareLayout() {')[1].split('} } : {})')[0];
-  expect(prepare).toContain('session.readFrame(d.query)');
+  expect(prepare).toContain('emptyLayout(d)');
   expect(prepare).toContain('prefix: 0');
   expect(prepare).not.toContain('session.start()');
   expect(prepare).not.toContain('setInterval');
   expect(entry).toContain('window.__load29Input.host === "electron"');
+});
+it("uses the real start/read/dispose lifecycle with no input, timers or change to the workload session", () => {
+  vi.useFakeTimers();
+  const d = definition(), workload = createMockAnalysisSession(d);
+  try {
+    expect(() => workload.readFrame()).toThrow("No active analysis hub");
+    const before = JSON.stringify(d);
+    const result = emptyLayout(d);
+    expect(result.frame.revision).toBe(0);
+    expect(result.status.processedInputs).toBe(0);
+    expect(result.status.state).toBe("COMPLETED");
+    expect(result.status.timers).toBe(0);
+    expect(vi.getTimerCount()).toBe(0);
+    expect(workload.getStatus().state).toBe("IDLE");
+    expect(JSON.stringify(d)).toBe(before);
+    workload.setNotificationsEnabled(false);
+    workload.start();
+    expect(workload.readFrame().revision).toBe(0);
+    expect(workload.getStatus().processedInputs).toBe(0);
+  } finally { workload.dispose(); vi.useRealTimers(); }
+});
+it("rejects offset layers even when all sizes and buffers agree", () => {
+  const s = layout(); s.canvasRects[1].x++;
+  expect(() => layoutGate(s, expected)).toThrow("CANVAS_POSITION");
 });
 it("never reports incomplete stages or cleanup faults as PASS", () => {
   expect(exitCode({ status: "PASS", stages: [] })).toBe(1);

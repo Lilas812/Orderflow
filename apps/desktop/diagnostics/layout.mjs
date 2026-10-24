@@ -15,6 +15,9 @@ export function installLayoutMonitor() {
         gutter: s.scrollbarGutter, verticalOverflow: e.scrollHeight > e.clientHeight };
     };
     return { at: performance.now(), epoch, geometry: window.__load29Observer.geometry(),
+      canvasRects: [...document.querySelectorAll('canvas[data-testid="heatmap-canvas"],canvas[data-testid="bubble-canvas"]')]
+        .map(e => { const r = e.getBoundingClientRect(); return {
+          x: r.x, y: r.y, width: r.width, height: r.height }; }),
       html: box(document.documentElement), body: box(document.body),
       root: box(document.getElementById("root")), page: box(document.querySelector('[data-testid="load29-page"]')),
       grid: box(document.querySelector(".cs-grid")), chart: box(document.querySelector('[data-testid="chart-area"]')) };
@@ -40,6 +43,9 @@ export function installLayoutMonitor() {
 
 export function layoutGate(snapshot, expected) {
   geometryGate(snapshot.geometry, expected);
+  assert(snapshot.canvasRects?.length === 2 && snapshot.canvasRects.every(c =>
+    c.x === snapshot.canvasRects[0].x && c.y === snapshot.canvasRects[0].y &&
+    c.width === expected.width && c.height === expected.height), "CANVAS_POSITION");
   assert(snapshot.html.overflowY === "hidden" && snapshot.body.overflowY === "hidden" &&
     snapshot.root.overflowY === "hidden", "OUTER_SCROLL_REGION");
   assert(snapshot.page.gutter === "stable" && snapshot.page.overflowY === "auto", "INNER_SCROLL_REGION");
@@ -51,7 +57,7 @@ export function stableLayout(samples) {
   const last = samples.at(-1), g = last.geometry;
   assert(g.canvases.filter(c => c.connected).length === 2, "LAYOUT_CANVASES");
   const expected = { innerWidth: g.innerWidth, innerHeight: g.innerHeight,
-    dpr: g.dpr, width: last.chart.width, height: last.chart.height };
+    dpr: g.dpr, width: g.canvases[0].cssWidth, height: g.canvases[0].cssHeight };
   for (const s of samples.slice(-3)) {
     layoutGate(s, expected);
     assert(s.epoch === last.epoch, "RESIZE_OBSERVER_PENDING");

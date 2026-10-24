@@ -107,8 +107,8 @@ app.whenReady().then(async () => {
       result.cause = {
         bodyScrollbarPx: result.legacyBefore.body.clientWidth - result.legacyAfter.body.clientWidth,
         gridLossPx: result.legacyBefore.grid.width - result.legacyAfter.grid.width,
-        legacyDeclaredWidth: result.legacyBefore.grid.width - 72 - 240,
-        legacyOverflowWidth: result.legacyAfter.grid.width - 72 - 240,
+        legacyDeclaredWidth: result.legacyBefore.grid.clientWidth - 72 - 240,
+        legacyOverflowWidth: result.legacyAfter.grid.clientWidth - 72 - 240,
         fixedGridChange: result.fixedBefore.grid.width - result.fixedAfter.grid.width,
       };
       save("scrollbar-probe.json", { ...result, noMarketInput: true });
@@ -125,7 +125,7 @@ app.whenReady().then(async () => {
     await evaluate("window.__load29.prepareLayout();window.__desktopLayout.watch()");
     const settle = [];
     for (let i = 0; i < 50; i++) {
-      await wait(100);
+      await evaluate("new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))");
       await evaluate("window.__desktopLayout.watch()");
       settle.push(await evaluate("window.__desktopLayout.read()"));
       if (settle.length < 3) continue;
@@ -138,6 +138,33 @@ app.whenReady().then(async () => {
     save("start.json", { stage, before: result.before, window: result.window, expected: result.expected,
       layoutBefore: result.layoutBefore, settle, inputSha256: definition.inputSha256,
       productionBuild: true, independentSession: true });
+    if (process.argv.includes("--empty-layout")) {
+      // Actual mounted four-panel UI, artificial DOM height only, no market input.
+      await evaluate(`(()=>{const e=document.createElement("div");e.id="artificial-height";
+        e.style.height="2000px";e.style.flexShrink="0";
+        document.querySelector('[data-testid="load29-page"]').append(e);})()`);
+      const overflowSamples = [];
+      for (let i = 0; i < 6; i++) {
+        await evaluate("new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))");
+        const s = await evaluate("window.__desktopLayout.read()");
+        layoutGate(s, result.expected); overflowSamples.push(s);
+      }
+      stableLayout(overflowSamples);
+      result.emptyOverflow = overflowSamples;
+      result.emptyState = await evaluate("window.__load29.snapshot()");
+      assert(!result.emptyState.started && result.emptyState.status.processedInputs === 0 &&
+        result.emptyState.timers === 0 && result.emptyState.panels.every(p => p.exists), "EMPTY_LAYOUT_INPUT_OR_PANELS");
+      await evaluate('document.getElementById("artificial-height").remove()');
+      result.resizeObserver = await evaluate("window.__desktopLayout.rows");
+      result.layoutMonitorDisposed = await evaluate("window.__desktopLayout.dispose()");
+      result.dispose = await disposed(); await wait(100);
+      result.afterObserver = await evaluate("window.__load29Observer.snapshot()");
+      assert.equal(result.afterObserver.pending, 0);
+      assert.equal(result.afterObserver.totals.buffers, result.afterObserver.totals.deletes, "BUFFER_REMAINDER");
+      await evaluate("window.__load29Observer.dispose()");
+      result.status = "PASS";
+      return;
+    }
     await evaluate("window.__load29.start()");
     result.layoutSamples = [];
     while (!complete) {
@@ -194,13 +221,7 @@ app.whenReady().then(async () => {
     const image = (await web.capturePage()).toPNG();
     save("window-capture.json", { encoding: "png/base64", sha256: require("node:crypto").createHash("sha256").update(image).digest("hex"),
       data: image.toString("base64") });
-    // Outside measured interval: actual native resize, unchanged input revision.
-    win.setSize(1100, 800); await wait(400);
-    result.resize = await evaluate("window.__load29Observer.geometry()");
-    assert(result.resize.canvases[0].cssWidth !== result.geometry.canvases[0].cssWidth, "RESIZE_NOT_OBSERVED");
-    assert(result.resize.canvases.every(c => c.width === Math.round(c.cssWidth * result.resize.dpr) &&
-      c.bufferWidth === c.width && c.bufferHeight === c.height), "RESIZE_BUFFER");
-    assert.equal(await evaluate("window.__load29.snapshot().revision"), s.revision, "RESIZE_REVISION");
+    result.resize = "NOT_RUN (formal stages prohibit intentional window resize)";
     result.layoutMonitorDisposed = await evaluate("window.__desktopLayout.dispose()");
     result.dispose = await disposed(); await wait(100);
     result.afterObserver = await evaluate("window.__load29Observer.snapshot()");

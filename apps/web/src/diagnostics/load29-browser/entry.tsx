@@ -8,6 +8,7 @@ import type { UnifiedSnapshot } from "../../hooks/useMockAnalysisSession";
 import type { AnalysisRenderFrame } from "@workspace/core/analysis-hub";
 import { atomic, BUDGET, canonical, LAYOUT, marketCount, validate, viewportSeed, type Definition } from "./contracts";
 import "../../styles.css";
+import { emptyLayout } from "./emptyLayout";
 
 declare global {
   interface Window {
@@ -136,9 +137,9 @@ window.__load29 = {
     if (started || snap.phase !== "OFF") throw Error("LAYOUT_PREPARE_ONCE");
     // A real empty hub frame mounts the real four panels before timed input.
     // No events, clock changes, fake market state or publication timer.
-    const frame = session.readFrame(d.query);
+    const { frame, status } = emptyLayout(d);
     atomic(frame);
-    snap = { ...snap, phase: "RUNNING", frame, status: session.getStatus(), runId: 1 };
+    snap = { ...snap, phase: "RUNNING", frame, status, runId: 1 };
     send({ kind: "frame", stage, prefix: 0, revision: frame.revision, canonical: canonical(frame),
       purpose: "pre-input-layout-only" });
     update(snap);
