@@ -12,6 +12,7 @@ const utc = (ns: string) => new Date(Number(BigInt(ns) / 1_000_000n)).toISOStrin
 const WITHHELD = "withheld (not computed)";
 
 interface Props {
+  observation?: boolean;
   revision?: number;
   frame: DeltaFrame | null;
   vp: Viewport;
@@ -21,7 +22,7 @@ interface Props {
   onPan: (dx: number) => void;
 }
 
-export function DeltaPanel({ frame, vp, sourceOf, error, onZoom, onPan, revision }: Props) {
+export function DeltaPanel({ frame, vp, sourceOf, error, onZoom, onPan, revision, observation = false }: Props) {
   useLayoutEffect(() => { if (revision !== undefined) diagnostics()?.add("received", revision, -1, "delta"); }, [revision]);
   const { fmt: fmtJst, tzLabel } = useTimeFormat();
   const ref = useRef<HTMLDivElement>(null);
@@ -113,7 +114,7 @@ export function DeltaPanel({ frame, vp, sourceOf, error, onZoom, onPan, revision
         onPointerLeave={() => setHover(null)} onLostPointerCapture={() => { drag.current = null; }}>
         <canvas ref={cv} className="dl-canvas" data-testid="delta-canvas" data-status={status}
           data-zero-y={frame?.zeroY ?? ""} style={{ width: w, height: h }} />
-        <span className="dl-label">DELTA (Buy - Sell) / exact Trade bins / MOCK / {status}</span>
+        <span className="dl-label">{observation ? "DELTA / COVERAGE UNKNOWN / WITHHELD" : "DELTA (Buy - Sell) / exact Trade bins / MOCK"} / {status}</span>
         {(error || renderError) && <div className="dbg-warn dl-err" role="alert">DELTA ERROR: {error ?? renderError}</div>}
         {hover && b && (
           <div className="dl-tip" data-testid="delta-tooltip"

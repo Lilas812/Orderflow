@@ -1,10 +1,9 @@
 import { createRoot } from "react-dom/client";
-import App from "../../web/src/App";
+import { DesktopHost } from "./DesktopHost";
 import "../../web/src/styles.css";
-import { desktopSettings } from "./services";
 
 const root = createRoot(document.getElementById("root")!);
-root.render(<App initialMock settingsTransport={desktopSettings} />);
+root.render(<DesktopHost />);
 let disposed = false;
 const dispose = () => {
   if (disposed) return;

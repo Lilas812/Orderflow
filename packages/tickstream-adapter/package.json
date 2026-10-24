@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "exports": {
+    "./analysis-observation": "./src/analysisObservation.ts",
     ".": "./src/parsePublicSample.ts",
     "./live-observation": "./src/liveObservation.ts",
     "./read-only-feed": "./src/readOnlyFeed.ts",

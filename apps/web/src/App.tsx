@@ -8,9 +8,10 @@ import { SettingsDrawer, SettingsErrorBanner } from "./components/SettingsDrawer
 import { TimeFormatProvider, type HeatmapActions } from "./components/SettingsContext";
 import { useSettings } from "./hooks/useSettings";
 import { useMockAnalysisSession, UNIFIED_SPEEDS, UNIFIED_DEFAULT_SPEED } from "./hooks/useMockAnalysisSession";
+import type { ObservationDisplay } from "./lib/observationDisplay";
 
-interface AppProps { initialMock?: boolean; settingsTransport?: SettingsTransport }
-function App({ initialMock = false, settingsTransport }: AppProps = {}) {
+interface AppProps { initialMock?: boolean; settingsTransport?: SettingsTransport; observation?: ObservationDisplay }
+function App({ initialMock = false, settingsTransport, observation }: AppProps = {}) {
   const [count, setCount] = useState(0); // 0 = MOCK disabled, 2 or 3 loaded MOCK events
   const [hmId, setHmId] = useState<HeatmapId | null>(null);
   const trades = useMemo(() => MOCK_TRADES.slice(0, count), [count]);
@@ -26,8 +27,8 @@ function App({ initialMock = false, settingsTransport }: AppProps = {}) {
   const uniExit = uni.exit;
   const settings = useSettings(settingsTransport);
   useEffect(() => {
-    if (initialMock) uni.start(UNIFIED_DEFAULT_SPEED);
-  }, [initialMock, uni.start]);
+    if (initialMock && !observation) uni.start(UNIFIED_DEFAULT_SPEED);
+  }, [initialMock, uni.start, !!observation]);
   const heatmapActions = useRef<HeatmapActions | null>(null);
   const gearRef = useRef<HTMLButtonElement>(null);
   const wasOpen = useRef(false);
@@ -60,8 +61,8 @@ function App({ initialMock = false, settingsTransport }: AppProps = {}) {
       <header className="bar">
         <h1 className="brand">Orderflow Lab</h1>
         <span className="instrument">{NQ.root} (contract not selected)</span>
-        <span className="tag tag-source">MOCK • SIMULATED</span>
-        <span className="tag tag-state" data-testid="status-data">{statusText}</span>
+        <span className="tag tag-source">{observation ? observation.frame?.label ?? "LIVE HOLD / NOT CONNECTED" : "MOCK • SIMULATED"}</span>
+        <span className="tag tag-state" data-testid="status-data">{observation ? observation.frame?.state ?? "HOLD" : statusText}</span>
         <span className="tag tag-source" data-testid="status-settings">
           {settings.dirty ? "SETTINGS DRAFT (unsaved)" : settings.persisted ? "SETTINGS SAVED" : "SETTINGS DEFAULTS (not saved)"}
         </span>
@@ -77,7 +78,7 @@ function App({ initialMock = false, settingsTransport }: AppProps = {}) {
       </header>
       {!settings.open && <SettingsErrorBanner c={settings} />}
       <main className="stage-chart">
-        <ChartShell trades={trades} mockOn={count > 0}
+        <ChartShell trades={trades} mockOn={count > 0} observation={observation}
           heatmap={scene} onSelectHeatmap={selectHeatmap}
           bubbleId={bubbleId} onSelectBubble={selectBubble} onBubbleRaw={setBubbleRaw}
           deltaId={deltaId} onSelectDelta={selectDelta} onDeltaRaw={setDeltaRaw}
@@ -89,7 +90,8 @@ function App({ initialMock = false, settingsTransport }: AppProps = {}) {
           onAddThird={() => setTradeCount((c) => (c === 2 ? 3 : c))} />
       </main>
       <footer className="foot" data-testid="text-footer">
-        {uniActive
+        {observation ? `${observation.frame?.label ?? "LIVE HOLD / NOT CONNECTED"} / NQ root / contract UNKNOWN / session UNKNOWN / coverage UNKNOWN / RAM ONLY`
+          : uniActive
           ? `Data source: MOCK / SIMULATED (not live) / Events loaded: ${uSt?.processedMarketEvents ?? 0} market events received, ${uSt?.acceptedMarketEvents ?? 0} accepted (unified MOCK; ${uSt?.processedInputs ?? 0}/${uSt?.sourceInputs ?? 0} inputs)`
           : ladderId && !deltaId && !bubbleId && !scene && count === 0
           ? `Data source: MOCK / Events loaded: ${ladderRaw} (raw market inputs of independent Ladder MOCK ${ladderId}; not derived from rows)`
@@ -117,13 +119,13 @@ function App({ initialMock = false, settingsTransport }: AppProps = {}) {
 }
 
 /** Explicit driver-only lifecycle exercise; no controls/timers in the normal application. */
-function DiagnosticRoot() {
+function DiagnosticRoot(props: AppProps = {}) {
   const [mounted, setMounted] = useState(true);
   useEffect(() => {
     const unmount = () => setMounted(false);
     window.addEventListener("orderflow:diagnostic-unmount", unmount, { once: true });
     return () => window.removeEventListener("orderflow:diagnostic-unmount", unmount);
   }, []);
-  return mounted ? <App /> : null;
+  return mounted ? <App {...props} /> : null;
 }
 export default diagnosticMode() === "off" ? App : DiagnosticRoot;

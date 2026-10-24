@@ -15,3 +15,4 @@
 - [測定結果の根拠保持](measurement-evidence.md) — 一時領域の出力だけに依存せず、除外済みworkspace内へMOCK計測ログを保存する。
 - [LIVE受信・保存の許諾境界](live-trial-permission.md) — デスクトップRAM受信は条件付き承認。キーのquery格納禁止。旧Ticks保存許諾をL2へ拡張しない。
 - [デスクトップ製品方針](desktop-product-direction.md) — 最終ターゲットはWindows 11／Electron。Webは既存資産・検証基盤として再利用し、Linux起動をWindows保証としない。
+- [root NQ観測の契約](live-observation-contract.md) — 自動ロールrootを推定限月へ付け替えない。人工データ経路の承認は実接続や完全性の保証ではない。

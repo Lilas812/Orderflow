@@ -33,7 +33,9 @@ const snapshot = `(() => {
     checks:[...document.querySelectorAll('[data-testid="unified-checks"] [data-ok]')].map(x=>({text:x.textContent,ok:x.dataset.ok})),
     delta:!!document.querySelector('[data-testid="delta-panel"]'),
     vp:!!document.querySelector('[data-testid="vp-panel"]'),
-    dpr:devicePixelRatio,canvases,bridge:window.orderflowDesktop,
+    dpr:devicePixelRatio,canvases,bridge:{appName:window.orderflowDesktop.appName,
+      mode:window.orderflowDesktop.mode,apiVersion:window.orderflowDesktop.apiVersion,
+      observationCommands:Object.keys(window.orderflowDesktop.observations)},
     requireType:typeof window.require,processType:typeof window.process};
 })()`;
 
@@ -98,6 +100,41 @@ app.whenReady().then(async () => {
     assert.equal(dpr.dpr, 2); canvasGate(dpr);
     report.syntheticDpr = dpr;
     await web.debugger.sendCommand("Emulation.clearDeviceMetricsOverride");
+    // Real production main/preload/renderer route; no endpoint, Secrets or raw
+    // market input. Switching is a source change, not relabeling the MOCK frame.
+    await web.executeJavaScript(`(() => {
+      const e=document.querySelector('[aria-label="Desktop data source"]');
+      e.value="OBSERVATIONS"; e.dispatchEvent(new Event("change",{bubbles:true}));
+    })()`);
+    await wait(500);
+    const hold = await web.executeJavaScript(`(() => ({
+      status:document.querySelector('[data-testid="status-data"]')?.textContent,
+      text:document.querySelector('[data-testid="observation-status"]')?.textContent,
+      revision:document.querySelector('[data-testid="observation-revisions"]')?.dataset.revision,
+      ladder:!!document.querySelector('[data-testid="observation-ladder"]'),
+      delta:!!document.querySelector('[data-testid="delta-panel"]'),
+      mockButton:!!document.querySelector('[data-testid="button-mock-toggle"]'),
+      generation:document.querySelector('[data-testid="observation-status"]')?.dataset.generation,
+      qty:[...document.querySelectorAll('[data-testid="ladder-row"]')].map(r=>[r.dataset.qtyBid,r.dataset.qtyAsk])
+    }))()`);
+    assert.equal(hold.status, "HOLD"); assert.equal(hold.revision, "0");
+    assert(hold.text.includes("coverage UNKNOWN") && hold.text.includes("NOT_CONNECTED"), "HOLD_QUALITY");
+    assert(hold.ladder && hold.delta && !hold.mockButton, "SOURCE_ISOLATION");
+    assert(Number(hold.generation) > 0, "IPC_GENERATION_MISSING");
+    report.observationHold = hold;
+    fs.writeFileSync(path.join(dir, "native-observation-hold.png"), (await web.capturePage()).toPNG(), { flag: "wx", mode: 0o600 });
+    await web.executeJavaScript(`(() => {
+      [...document.querySelectorAll("button")].find(b=>b.textContent==="受信表示を停止").click();
+    })()`);
+    await wait(300);
+    assert((await web.executeJavaScript(`document.querySelector('[data-testid="observation-status"]').textContent`)).includes("USER_STOPPED"));
+    await web.executeJavaScript(`(() => {
+      [...document.querySelectorAll("button")].find(b=>b.textContent==="表示世代を再開始").click();
+    })()`);
+    await wait(300);
+    const generation = await web.executeJavaScript(`document.querySelector('[data-testid="observation-status"]').dataset.generation`);
+    assert(Number(generation) > Number(hold.generation), "RESTART_GENERATION");
+    report.observationRestartGeneration = generation;
     web.debugger.detach();
     report.metrics = app.getAppMetrics(); // Snapshot, not a sustained CPU/RSS benchmark.
     // Real React unmount and effect cleanups, observed before closing the native window.

@@ -1,6 +1,6 @@
 import { expect, it, vi, beforeEach } from "vitest";
 
-const f = vi.hoisted(() => ({ app: null as any, ses: null as any, protocol: null as any, win: null as any }));
+const f = vi.hoisted(() => ({ app: null as any, ses: null as any, protocol: null as any, win: null as any, ipc: null as any }));
 vi.mock("electron", async () => {
   const { EventEmitter } = await import("node:events");
   f.app = Object.assign(new EventEmitter(), { setName: vi.fn(), enableSandbox: vi.fn(), isPackaged: false,
@@ -10,13 +10,14 @@ vi.mock("electron", async () => {
       onBeforeRequest: vi.fn(), onHeadersReceived: vi.fn(),
     } });
   f.protocol = { registerSchemesAsPrivileged: vi.fn() };
+  f.ipc = { handle: vi.fn(), removeHandler: vi.fn() };
   class FakeWindow extends EventEmitter {
-    webContents = Object.assign(new EventEmitter(), { setWindowOpenHandler: vi.fn() });
+    webContents = Object.assign(new EventEmitter(), { setWindowOpenHandler: vi.fn(), mainFrame: { url: "orderflow://app/index.html" } });
     loadURL = vi.fn(async () => {});
     show = vi.fn();
     constructor(public options: any) { super(); f.win = this; }
   }
-  return { app: f.app, protocol: f.protocol, session: { fromPartition: () => f.ses }, BrowserWindow: FakeWindow };
+  return { app: f.app, protocol: f.protocol, ipcMain: f.ipc, session: { fromPartition: () => f.ses }, BrowserWindow: FakeWindow };
 });
 // Vitest 5 clears call history before each test. Initialize after that boundary
 // rather than relying on beforeAll's already-cleared initialization history.
@@ -63,5 +64,19 @@ it("denies external requests before network, allowing only built app content", (
 });
 it("quits on close rather than leaving a hidden desktop service", () => {
   f.win.emit("closed"); expect(f.app.quit).toHaveBeenCalled();
+  expect(f.ipc.removeHandler).toHaveBeenCalledWith("orderflow:observations:v1");
   f.app.emit("window-all-closed"); expect(f.app.quit).toHaveBeenCalledTimes(2);
+});
+it("registers just one fixed local IPC and invalidates the generation on navigation", () => {
+  expect(f.ipc.handle).toHaveBeenCalledOnce();
+  const [channel, handler] = f.ipc.handle.mock.calls[0];
+  expect(channel).toBe("orderflow:observations:v1");
+  const event = { sender: f.win.webContents, senderFrame: f.win.webContents.mainFrame };
+  expect(handler(event, { op: "select", generation: 0 })).toMatchObject({ generation: 1, frame: { state: "HOLD" } });
+  expect(() => handler({ ...event, senderFrame: { url: event.senderFrame.url } },
+    { op: "read", generation: 1 })).toThrow("IPC_SENDER");
+  f.win.webContents.emit("did-start-navigation", {}, "orderflow://app/index.html", false, true);
+  expect(() => handler(event, { op: "read", generation: 1 })).toThrow("IPC_GENERATION");
+  expect(handler(event, { op: "select", generation: 0 }).generation).toBe(2);
+  f.win.emit("closed");
 });

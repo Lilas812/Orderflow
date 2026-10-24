@@ -2,6 +2,9 @@ import {
   validateMarketEvent, validateDataQualityInterval, validateEventHeader,
   type MarketEvent, type DataQualityInterval, type EventHeader,
 } from "./events";
+// Separate observations cannot enter the normalized MOCK reducer contract below.
+export { createLiveAnalysisHub, LIVE_LIMITS } from "./liveAnalysis";
+export type { LiveObservation, LiveFrame } from "./liveAnalysis";
 import {
   createMarketQualityState, ingestMarketEvent, ingestMbpBatch, markChannelCondition,
   currentMbpBook, type MarketQualityConfig, type MarketQualityState, type QualityChannel,

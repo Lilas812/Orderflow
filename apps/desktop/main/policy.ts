@@ -4,7 +4,7 @@ import { realpath, readFile } from "node:fs/promises";
 export const APP_NAME = "Orderflow Lab";
 export const LOCAL_DOCUMENT = "orderflow://app/index.html";
 export const WINDOW = Object.freeze({ width: 1440, height: 960, minWidth: 1024, minHeight: 720 });
-export const BRIDGE = Object.freeze({ appName: APP_NAME, mode: "MOCK / SIMULATED", apiVersion: 1 });
+export const BRIDGE = Object.freeze({ appName: APP_NAME, mode: "MOCK / SIMULATED", apiVersion: 2 });
 
 export function developmentOrigin(value: string, packaged: boolean): string {
   const u = new URL(value);

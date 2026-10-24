@@ -190,6 +190,9 @@ importers:
       '@workspace/render':
         specifier: workspace:*
         version: link:../../packages/render
+      '@workspace/tickstream-adapter':
+        specifier: workspace:*
+        version: link:../../packages/tickstream-adapter
       electron:
         specifier: 45.0.0
         version: 45.0.0

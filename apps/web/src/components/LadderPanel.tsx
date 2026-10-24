@@ -10,6 +10,7 @@ interface Props {
   observedNs: string | null;
   stepLabel: string;
   timeMode: "LIVE" | "HISTORY";
+  observation?: boolean;
 }
 
 const tickLabel = (view: LadderView, tick: number | null) => {
@@ -20,7 +21,7 @@ const tickLabel = (view: LadderView, tick: number | null) => {
 const txt = (o: unknown) => (o === null || o === undefined ? "\u2014" : Object.entries(o as Record<string, unknown>).map(([k, v]) => `${k}=${String(v)}`).join(" / "));
 
 /** Plot column (same grid row as the chart; no header above) + status panel in the Delta/time-axis rows. */
-export function LadderPanel({ view, error, observedNs, stepLabel, timeMode }: Props) {
+export function LadderPanel({ view, error, observedNs, stepLabel, timeMode, observation = false }: Props) {
   const { fmt } = useTimeFormat();
   const jst = (ns: string | null) => (ns ? fmt(ns, true) : "\u2014");
   return (
@@ -33,10 +34,10 @@ export function LadderPanel({ view, error, observedNs, stepLabel, timeMode }: Pr
         </div>
       </div>
       <div className="lad-info">
-        <div data-testid="ladder-reference" data-time-mode={timeMode}>LATEST MOCK SNAPSHOT / {timeMode}
-          <div>{timeMode === "HISTORY" ? "チャート過去 / ラダー最新MOCK（別時点）" : "LIVE viewportのみ・実市場には未接続"}</div></div>
+        <div data-testid="ladder-reference" data-time-mode={timeMode}>{observation ? "LAST RECEIVED OBSERVATION / NOT CURRENT MARKET" : "LATEST MOCK SNAPSHOT"} / {timeMode}
+          <div>{observation ? "root NQ / 限月・session未解決 / coverage UNKNOWN" : timeMode === "HISTORY" ? "チャート過去 / ラダー最新MOCK（別時点）" : "LIVE viewportのみ・実市場には未接続"}</div></div>
         <div data-testid="ladder-status" data-quality={view?.quality ?? "NONE"}>
-          <b>{view?.quality ?? "NO DATA"}</b> / <span title={stepLabel}>{stepLabel.split(":")[0]}</span>
+          <b>{observation ? "OBSERVATION / UNKNOWN" : view?.quality ?? "NO DATA"}</b> / <span title={stepLabel}>{stepLabel.split(":")[0]}</span>
           {view?.crossed && <span className="dbg-warn"> CROSSED</span>}
           {view?.locked && <span className="dbg-warn"> LOCKED</span>}
           {error && <span className="dbg-warn" role="alert"> {error}</span>}
@@ -47,8 +48,8 @@ export function LadderPanel({ view, error, observedNs, stepLabel, timeMode }: Pr
             : <>範囲内候補、市場全体Best未保証: B {tickLabel(view, view.observedBidTick)} / A {tickLabel(view, view.observedAskTick)}</>) : "\u2014"}
         </div>
         <div data-testid="ladder-time" data-book-ns={view?.asOfNs ?? ""} data-observed-ns={observedNs ?? ""}>
-          <div>板 {jst(view?.asOfNs ?? null)} ({view?.asOfKind === "EXCHANGE_TIME_NS" ? "exchange" : view?.asOfKind === "RECEIVE_TIME_NS" ? "receive" : "NONE"})</div>
-          <div>検証時計 {jst(observedNs)}</div>
+          <div>板 {jst(view?.asOfNs ?? null)} ({observation ? "provider timestamp / precision seconds" : view?.asOfKind === "EXCHANGE_TIME_NS" ? "exchange" : view?.asOfKind === "RECEIVE_TIME_NS" ? "receive" : "NONE"})</div>
+          <div>{observation ? "受信時計" : "検証時計"} {jst(observedNs)}</div>
         </div>
         <div className="dim" title={txt(view?.identity)}>{view?.identity ? txt(view.identity) : "identity \u2014"}</div>
         <div className="dim" title={txt(view?.depthScope)}>depth {view?.depthScope ? txt(view.depthScope) : "\u2014"}</div>

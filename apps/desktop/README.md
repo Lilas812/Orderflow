@@ -4,8 +4,10 @@ This is the native Electron host for the **existing** Web React App, real
 AnalysisHub, WebGL2 renderers and finite baseline13 MOCK session. Engines and
 fixtures are not copied. The Web app keeps its normal NO DATA startup.
 
-**Not LIVE.** No TickStream, secrets, order execution, gateway or market-data
-storage. R29-B-R5 Stage 0 remains FAIL (`DELTA_BIN_COUNT`); Stage 1/2 NOT_RUN.
+**No actual LIVE connection.** The desktop now has a RAM-only observation route,
+fixed IPC and a separate LIVE HOLD display. Only synthetic input is enabled in
+the Node test seam; the production host has no connected feed. No credentials,
+order execution or market-data storage. R29-B-R5 Stage 0 remains FAIL (`DELTA_BIN_COUNT`); Stage 1/2 NOT_RUN.
 This shell and its baseline13 functional smoke do not certify those stages.
 The Windows desktop is the intended product; the Web app remains the
 implementation/verification foundation.
@@ -57,7 +59,9 @@ Those Nix paths are environment-specific, not a Windows prerequisite.
 
 ## Assets, security and lifecycle
 
-- Main/preload: TypeScript -> CJS, `dist/main`.
+- Main/preload: Vite SSR bundles workspace ESM/TypeScript into CJS, `dist/main`.
+  Electron/Node built-ins stay external; the sandboxed preload has no local
+  module dependency. No runtime TypeScript loader or new external package.
 - Renderer: imports `apps/web/src/App.tsx` and its styles directly. The only
   Web startup wiring is optional `initialMock` and `settingsTransport` props;
   ordinary Web callers omit them.
@@ -70,8 +74,10 @@ Those Nix paths are environment-specific, not a Windows prerequisite.
   fullscreen chart design.
 - Sandboxed renderer/preload: `sandbox`, `contextIsolation`, `webSecurity`
   enabled; `nodeIntegration`, insecure content and webviews disabled.
-- Preload publishes frozen name/MOCK/version metadata only. **No custom IPC
-  channels exist**, hence no arbitrary IPC, filesystem or command bridge.
+- Preload publishes frozen initial-source metadata and four fixed observation
+  methods: select/read/stop/release. A single owned-window/main-frame/document
+  checked IPC channel carries bounded replies. There is no arbitrary channel,
+  filesystem, command, credential, or raw-wire-input bridge.
 - Production loads `orderflow://app/index.html` and only whitelisted bundled
   assets through a realpath-contained handler. Remote/file navigation,
   redirects, downloads, popups, native permissions and remote network are
@@ -82,6 +88,34 @@ Those Nix paths are environment-specific, not a Windows prerequisite.
 - Existing settings preview/cancel run unchanged. Desktop host supplies cloned
   defaults and **explicitly rejects persistence**; it does not write the Web
   settings JSON, SQLite, events or a new settings file.
+
+## Root NQ observations (offline implementation)
+
+See [the contract and verification report](../../docs/live-observation-route.md).
+The desktop selector switches between independent MOCK and observation screens;
+it never relabels a MOCK frame as LIVE. LIVE selection is HOLD / NOT CONNECTED
+until a separately authorized feed is integrated. Restart owns a new generation.
+Stopping or switching clears quantities and cancels the renderer publication pump.
+
+The provider documents root futures as automatically rolling, unadjusted
+front-month continuous symbols, not individually addressable expiries. Tick/book
+frames do not identify the expiry or exchange session. We retain both as null.
+The latest Snapshot can be shown as an **observation**, not current market depth;
+unlisted levels remain unknown, including when listed quantity zero is valid.
+Without identity/completeness evidence, existing TWA, finalized Bubble, Delta
+and Volume Profile calculations are not supplied with invented MarketEvents.
+The four displays receive one coherent revision with explicit NO DATA states.
+The last Trade observation is not an exactly deduplicated total.
+
+Safety limits for this finite offline path: 1 MiB raw frame, 400 levels per side,
+800 normalized levels, 20,000 accepted observations or 16 MiB cumulative normalized
+input, and a 256 KiB IPC reply. Exceeding a budget stops, clears and reports the
+reason; no eviction, truncation, storage or automatic reconnect. These are not
+approved long-running market-data retention limits. Node publications are
+coalesced at >=250 ms; the renderer allows only one request in flight, clears
+quantities on a 2 s request timeout, and stops its timers. An observed book is
+cleared after 2 s without a new book in the Node monotonic clock; this is a
+conservative local display cutoff, not a provider freshness guarantee.
 - Closing the window dispatches the browser unload lifecycle; desktop root
   unmount invokes existing session/timer/subscriber/GL cleanups. The app exits
   with its last window; no background service or auto-restart is installed.

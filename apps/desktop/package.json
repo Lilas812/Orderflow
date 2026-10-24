@@ -7,7 +7,7 @@
   "type": "commonjs",
   "main": "dist/main/main.js",
   "scripts": {
-    "build:main": "tsc -p tsconfig.main.json",
+    "build:main": "pnpm typecheck && vite build --config vite.main.config.mts",
     "build": "pnpm build:main && vite build --config vite.config.mts",
     "dev": "pnpm build:main && node tools/launch.mjs --dev",
     "start": "node tools/launch.mjs",
@@ -23,6 +23,7 @@
     "@types/react-dom": "catalog:",
     "@vitejs/plugin-react": "catalog:",
     "@workspace/core": "workspace:*",
+    "@workspace/tickstream-adapter": "workspace:*",
     "@workspace/fixtures": "workspace:*",
     "@workspace/render": "workspace:*",
     "electron": "45.0.0",

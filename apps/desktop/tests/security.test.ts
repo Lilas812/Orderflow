@@ -74,18 +74,29 @@ describe("desktop security policy", () => {
       expect((await localResponse(new Request("orderflow://app/assets/missing.js"), root)).status).toBe(404);
     } finally { await rm(temp, { recursive: true, force: true }); }
   });
-  it("sandboxed preload exposes frozen metadata and zero IPC/native APIs", () => {
+  it("sandboxed preload exposes frozen metadata and only fixed observation commands, no arbitrary IPC/native APIs", async () => {
     const code = ts.transpileModule(readFileSync("main/preload.ts", "utf8"),
       { compilerOptions: { module: ts.ModuleKind.CommonJS } }).outputText;
     let name = "", value: unknown;
+    const calls: unknown[] = [];
     vm.runInNewContext(code, { exports: {}, require: (module: string) => {
       expect(module).toBe("electron");
-      return { contextBridge: { exposeInMainWorld: (n: string, v: unknown) => { name = n; value = v; } } };
+      return { contextBridge: { exposeInMainWorld: (n: string, v: unknown) => { name = n; value = v; } },
+        ipcRenderer: { invoke: async (...args: unknown[]) => { calls.push(args); } } };
     } });
     expect(name).toBe("orderflowDesktop");
-    expect(value).toEqual(BRIDGE);
+    const { observations, ...metadata } = value as any;
+    expect(metadata).toEqual(BRIDGE);
     expect(Object.isFrozen(value)).toBe(true);
-    expect(Object.values(value as object).some(v => typeof v === "function")).toBe(false);
+    expect(Object.keys(observations).sort()).toEqual(["read", "release", "select", "stop"]);
+    expect(Object.isFrozen(observations)).toBe(true);
+    await observations.select(); await observations.read(2); await observations.stop(2); await observations.release(2);
+    expect(calls).toEqual([
+      ["orderflow:observations:v1", { op: "select", generation: 0 }],
+      ["orderflow:observations:v1", { op: "read", generation: 2 }],
+      ["orderflow:observations:v1", { op: "stop", generation: 2 }],
+      ["orderflow:observations:v1", { op: "release", generation: 2 }],
+    ]);
   });
   it("settings are defaults/read-only, cloned, and never silently file-saved", async () => {
     const first = await desktopSettings.load(), second = await desktopSettings.load();
@@ -96,8 +107,9 @@ describe("desktop security policy", () => {
   });
   it("shares the real App/AnalysisHub path without an engine copy or load29 entry", () => {
     const renderer = readFileSync("renderer/main.tsx", "utf8"), web = readFileSync("../web/src/App.tsx", "utf8");
-    expect(renderer).toContain('from "../../web/src/App"');
-    expect(renderer).toContain("<App initialMock settingsTransport={desktopSettings}");
+    const host = readFileSync("renderer/DesktopHost.tsx", "utf8");
+    expect(host).toContain('from "../../web/src/App"');
+    expect(host).toContain('<App key="mock" initialMock settingsTransport={desktopSettings}');
     expect(renderer).toContain("root.unmount()");
     expect(renderer).toContain('"beforeunload"');
     expect(renderer).not.toContain("load29");
