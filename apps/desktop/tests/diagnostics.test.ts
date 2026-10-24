@@ -176,3 +176,14 @@ it("keeps the real host/preload and sandbox, a production-built shared renderer,
   expect(run).not.toContain('"--no-sandbox"');
   expect(run).toContain('status !== "PASS"');
 });
+it("uses exclusive A6 output and fixed trial-identity control messages, without changing old evidence", () => {
+  const run = fs.readFileSync("diagnostics/run.mjs", "utf8");
+  const native = fs.readFileSync("diagnostics/native.cjs", "utf8");
+  expect(run).toContain('".local/diagnostics/task30-a6"');
+  expect(run).toContain("fs.mkdtempSync(path.join(base");
+  expect(run).toContain('type: "DIAGNOSTIC_STOP", runId');
+  expect(native).toContain('message.runId === runId');
+  expect(native).toContain('message.type === "DIAGNOSTIC_STOP"');
+  expect(native).toContain('app.once("will-quit"');
+  expect(native).toContain("LIVE_TIMER_REMAINDER");
+});

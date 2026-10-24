@@ -7,19 +7,111 @@ const { pathToFileURL } = require("node:url");
 const { gzipSync } = require("node:zlib");
 const arg = key => process.argv.find(a => a.startsWith(`--${key}=`))?.slice(key.length + 3);
 const out = path.resolve(arg("output")), stage = Number(arg("stage")), build = path.resolve(arg("build"));
-let save, wall, web, fault = null, complete = false, result = { stage, status: "RUNNING", forcedTermination: false };
+const runId = arg("run-id"), tools = import("./processMonitor.mjs");
+let save, wall, web, fault = null, complete = false, shutdownRequested = false, shutdownTask;
+let result = { stage, runId, status: "RUNNING", forcedTermination: false,
+  primaryFault: null, cleanupFaults: [], evidenceFaults: [] };
 let records = [], recordBytes = 0, count = 0, block = 0, receipts = [];
 const wait = ms => new Promise(r => setTimeout(r, ms));
 const policy = require("../dist/main/policy.js"), original = policy.localResponse;
 policy.localResponse = request => original(request, build); // Assets only, not market state.
-const disposed = async () => {
-  if (!web || web.isDestroyed()) return;
-  try { return await web.executeJavaScript("window.__load29?.dispose()"); } catch { return null; }
+let disposal, layoutDisposal, observerDisposal;
+const disposed = () => disposal ??= Promise.resolve().then(() => {
+  assert(web && !web.isDestroyed(), "DISPOSE_WEB_MISSING");
+  return web.executeJavaScript("window.__load29?.dispose()");
+});
+const disposeLayout = () => layoutDisposal ??= Promise.resolve().then(() => {
+  assert(web && !web.isDestroyed(), "LAYOUT_DISPOSE_WEB_MISSING");
+  return web.executeJavaScript("window.__desktopLayout?.dispose()");
+});
+const disposeObserver = () => observerDisposal ??= Promise.resolve().then(() => {
+  assert(web && !web.isDestroyed(), "OBSERVER_DISPOSE_WEB_MISSING");
+  return web.executeJavaScript("window.__load29Observer?.dispose()");
+});
+function primary(error, phase) {
+  fault ??= error instanceof Error ? error.message : String(error);
+  result.primaryFault ??= { phase, timestamp: performance.now(), reason: fault,
+    stack: error instanceof Error ? error.stack : null };
+  result.status = "FAIL"; result.error ??= fault;
+}
+function shutdown(reason) {
+  if (reason) primary(reason, "SHUTDOWN_REQUEST");
+  if (shutdownTask) return shutdownTask;
+  shutdownRequested = true;
+  shutdownTask = tools.then(async ({ createShutdown, bounded, faultRecord }) => {
+    const send = type => process.connected ? bounded(new Promise((resolve, reject) =>
+      process.send({ type, runId }, e => e ? reject(e) : resolve())), 250, "CONTROL_SEND_TIMEOUT") : Promise.resolve();
+    const close = createShutdown([
+      ["DISPOSING", async () => { clearTimeout(wall); await send("DIAGNOSTIC_DISPOSING"); }],
+      ["LAYOUT_DISPOSE", () => bounded(disposeLayout(), 1000, "LAYOUT_DISPOSE_TIMEOUT")],
+      ["SESSION_DISPOSE", async () => {
+        result.dispose = await bounded(disposed(), 1000, "SESSION_DISPOSE_TIMEOUT");
+        assert(result.dispose?.after?.timers === 0 && result.dispose.after.subscribers === 0 &&
+          result.dispose.mountedCanvases === 0, "SESSION_DISPOSAL_UNCONFIRMED");
+        // Unlike the legacy dispose().timers literal, snapshot observes the actual pump + session.
+        result.shutdownSnapshot = await bounded(web.executeJavaScript(
+          "(()=>{const s=window.__load29?.snapshot();return s?{timers:s.timers,disposed:s.disposed,status:s.status}:null})()"),
+        1000, "SHUTDOWN_SNAPSHOT_TIMEOUT");
+        assert(result.shutdownSnapshot?.disposed && result.shutdownSnapshot.timers === 0, "LIVE_TIMER_REMAINDER");
+      }],
+      ["OBSERVER_DISPOSE", async () => {
+        if (!result.afterObserver) result.afterObserver = await bounded(
+          web.executeJavaScript("window.__load29Observer?.snapshot()"), 1000, "OBSERVER_SNAPSHOT_TIMEOUT");
+        assert(result.afterObserver && !result.afterObserver.fault && result.afterObserver.pending === 0 &&
+          result.afterObserver.totals.buffers === result.afterObserver.totals.deletes &&
+          result.afterObserver.totals.errors === 0, "OBSERVER_RESOURCE_REMAINDER");
+        const released = await bounded(disposeObserver(), 1000, "OBSERVER_DISPOSE_TIMEOUT");
+        assert(released && released.pending === 0 && !released.fault, "OBSERVER_DISPOSE_UNCONFIRMED");
+      }],
+      ["DEBUGGER_DETACH", () => { if (web?.debugger.isAttached()) web.debugger.detach(); }],
+    ], record => result.cleanupFaults.push(record));
+    result.shutdown = await close();
+    if (fault && !result.primaryFault) primary(fault, "NATIVE_FAULT");
+    if (fault || result.cleanupFaults.length) result.status = "FAIL";
+    try {
+      flush(); result.blocks = receipts; result.recordCount = count;
+      assert(save, "NATIVE_WRITER_UNAVAILABLE"); save("native-result.json", result);
+    } catch (e) {
+      result.status = "FAIL"; result.evidenceFaults.push(faultRecord(e, "NATIVE_RESULT_WRITE"));
+      console.error("EVIDENCE_SAVE_FAILED");
+    }
+    try { await send("DIAGNOSTIC_SAVED"); }
+    catch (e) { primary(e, "SAVED_ACK"); }
+    // app.quit allows normal window closing and will-quit. app.exit is used only
+    // after that barrier (or as a recorded FAIL after a finite quit timeout).
+    let quitFinished = false;
+    const code = () => result.status === "PASS" ? 0 : 1;
+    const quitReceipt = (name, value) => {
+      try { assert(save, "NATIVE_WRITER_UNAVAILABLE"); save(name, value); }
+      catch { result.status = "FAIL"; console.error("QUIT_EVIDENCE_SAVE_FAILED"); }
+    };
+    const quitTimer = setTimeout(() => {
+      if (quitFinished) return;
+      primary("NATIVE_QUIT_TIMEOUT", "QUIT");
+      quitReceipt("quit-timeout.json", { runId, status: "FAIL", reason: "NATIVE_QUIT_TIMEOUT" });
+      app.exit(1);
+    }, 2000);
+    app.once("will-quit", () => {
+      quitFinished = true; clearTimeout(quitTimer);
+      const windows = BrowserWindow.getAllWindows().length;
+      if (windows !== 0) primary("WINDOWS_REMAINING", "QUIT");
+      quitReceipt("quit.json", { runId, status: result.status, windows, willQuit: true,
+        primaryFault: result.primaryFault, evidenceFaults: result.evidenceFaults });
+      process.exitCode = code(); app.exit(code());
+    });
+    try { app.quit(); }
+    catch (e) {
+      primary(e, "APP_QUIT"); clearTimeout(quitTimer);
+      quitReceipt("quit-error.json", { runId, status: "FAIL", primaryFault: result.primaryFault }); app.exit(1);
+    }
+  });
+  return shutdownTask;
 };
-process.on("SIGTERM", () => {
-  fault ??= "PARENT_STOP"; result.status = "FAIL"; result.error = fault;
-  try { if (save) { flush(); result.blocks = receipts; result.recordCount = count; save("emergency.json", result); } } catch {}
-  app.quit();
+process.on("SIGTERM", () => { void shutdown("PARENT_STOP"); });
+process.on("message", message => {
+  if (message && Object.keys(message).length === 2 && message.runId === runId && message.type === "DIAGNOSTIC_STOP")
+    void shutdown("PARENT_STOP");
+  else void shutdown("CONTROL_MESSAGE_INVALID");
 });
 const flush = () => {
   if (!records.length) return;
@@ -37,11 +129,12 @@ app.whenReady().then(async () => {
     const { installLayoutMonitor, layoutGate, stableLayout } = await import("./layout.mjs");
     save = writer(out, path.dirname(out));
     assert([0, 1, 2].includes(stage), "STAGE");
+    assert(/^[a-f0-9-]{36}$/.test(runId ?? ""), "RUN_ID");
     const definition = JSON.parse(fs.readFileSync(arg("input")));
     result.versions = process.versions;
     assert.equal(process.versions.electron, "45.0.0", "ELECTRON_VERSION");
     assert.equal(process.versions.chrome, "156.0.8078.48", "CHROMIUM_VERSION");
-    wall = setTimeout(() => { fault = "WALL_TIMEOUT"; void disposed().finally(() => app.quit()); }, LIMITS.wall[stage]);
+    wall = setTimeout(() => { void shutdown("WALL_TIMEOUT"); }, LIMITS.wall[stage]);
     let win;
     for (let i = 0; i < 150; i++) {
       win = BrowserWindow.getAllWindows()[0];
@@ -53,8 +146,8 @@ app.whenReady().then(async () => {
     assert(result.window.visible && result.window.preferences.sandbox &&
       result.window.preferences.contextIsolation && !result.window.preferences.nodeIntegration, "WINDOW_SECURITY");
     assert.equal(web.getURL(), "orderflow://app/index.html", "PRODUCTION_ORIGIN");
-    web.on("console-message", (_e, level) => { if (level === 3) fault ??= "RENDERER_CONSOLE_ERROR"; });
-    web.on("preload-error", () => { fault ??= "PRELOAD_ERROR"; });
+    web.on("console-message", (_e, level) => { if (level === 3) primary("RENDERER_CONSOLE_ERROR", "CONSOLE"); });
+    web.on("preload-error", () => { primary("PRELOAD_ERROR", "PRELOAD"); });
     web.debugger.attach("1.3");
     await web.debugger.sendCommand("Runtime.enable");
     await web.debugger.sendCommand("Performance.enable");
@@ -66,11 +159,13 @@ app.whenReady().then(async () => {
         assert(n <= LIMITS.file && ++count <= LIMITS.rows, "RECORD_CAP");
         if (recordBytes + n > 1024 ** 2) flush();
         records.push(row); recordBytes += n;
-        if (row.kind === "failure") fault ??= row.fault;
+        if (row.kind === "failure") primary(row.fault, "BINDING_FAILURE");
         if (row.kind === "complete") complete = true;
-      } catch (e) { fault ??= String(e); }
+      } catch (e) { primary(e, "BINDING"); }
     });
-    const evaluate = expression => web.executeJavaScript(expression);
+    const evaluate = expression => {
+      assert(!shutdownRequested, "SHUTDOWN_IN_PROGRESS"); return web.executeJavaScript(expression);
+    };
     for (let i = 0; !await evaluate("!!window.__desktopA2Ready"); i++) {
       assert(i < 100, "BOOTSTRAP_TIMEOUT"); await wait(100);
     }
@@ -116,9 +211,10 @@ app.whenReady().then(async () => {
       assert.equal(result.cause.gridLossPx, 15, "GRID_SCROLLBAR_CAUSE");
       assert.equal(result.cause.fixedGridChange, 0, "FIXED_SCROLLBAR_WIDTH");
       assert.equal(await evaluate("window.__load29.snapshot().status.processedInputs"), 0, "PROBE_MARKET_INPUT");
-      await evaluate(`document.getElementById("artificial-height").remove();window.__desktopLayout.dispose()`);
+      await evaluate(`document.getElementById("artificial-height").remove()`);
+      await disposeLayout();
       result.dispose = await disposed();
-      await evaluate("window.__load29Observer.dispose()");
+      await disposeObserver();
       result.status = "PASS";
       return;
     }
@@ -157,12 +253,12 @@ app.whenReady().then(async () => {
         result.emptyState.timers === 0 && result.emptyState.panels.every(p => p.exists), "EMPTY_LAYOUT_INPUT_OR_PANELS");
       await evaluate('document.getElementById("artificial-height").remove()');
       result.resizeObserver = await evaluate("window.__desktopLayout.rows");
-      result.layoutMonitorDisposed = await evaluate("window.__desktopLayout.dispose()");
+      result.layoutMonitorDisposed = await disposeLayout();
       result.dispose = await disposed(); await wait(100);
       result.afterObserver = await evaluate("window.__load29Observer.snapshot()");
       assert.equal(result.afterObserver.pending, 0);
       assert.equal(result.afterObserver.totals.buffers, result.afterObserver.totals.deletes, "BUFFER_REMAINDER");
-      await evaluate("window.__load29Observer.dispose()");
+      await disposeObserver();
       result.status = "PASS";
       return;
     }
@@ -231,40 +327,23 @@ app.whenReady().then(async () => {
     save("window-capture.json", { encoding: "png/base64", sha256: require("node:crypto").createHash("sha256").update(image).digest("hex"),
       data: image.toString("base64") });
     result.resize = "NOT_RUN (formal stages prohibit intentional window resize)";
-    result.layoutMonitorDisposed = await evaluate("window.__desktopLayout.dispose()");
+    result.layoutMonitorDisposed = await disposeLayout();
     result.dispose = await disposed(); await wait(100);
     result.afterObserver = await evaluate("window.__load29Observer.snapshot()");
     assert.equal(result.dispose.timers, 0); assert.equal(result.dispose.after.subscribers, 0);
     assert.equal(result.dispose.mountedCanvases, 0);
     assert.equal(result.afterObserver.pending, 0);
     assert.equal(result.afterObserver.totals.buffers, result.afterObserver.totals.deletes, "BUFFER_REMAINDER");
-    await evaluate("window.__load29Observer.dispose()");
+    await disposeObserver();
     result.status = "PASS";
   } catch (e) {
-    result.status = "FAIL"; result.error = String(e);
+    primary(e, "NATIVE_EXECUTION");
     if (web && !web.isDestroyed()) {
       try { result.failureLayout = await web.executeJavaScript("window.__desktopLayout?.read()"); } catch {}
       try { result.failureState = await web.executeJavaScript("window.__load29?.snapshot()"); } catch {}
       try { result.failureObserver = await web.executeJavaScript("window.__load29Observer?.snapshot()"); } catch {}
-      try { await web.executeJavaScript("window.__desktopLayout?.dispose()"); } catch {}
-    }
-    result.dispose = await disposed();
-    if (web && !web.isDestroyed()) {
-      try {
-        await wait(100);
-        result.afterObserver = await web.executeJavaScript("window.__load29Observer?.snapshot()");
-        await web.executeJavaScript("window.__load29Observer?.dispose()");
-      } catch {}
     }
   } finally {
-    clearTimeout(wall);
-    if (fault) { result.status = "FAIL"; result.error ??= fault; }
-    try { flush(); result.blocks = receipts; result.recordCount = count; save("native-result.json", result); }
-    catch (e) { result.status = "FAIL"; console.error("EVIDENCE_SAVE_FAILED"); }
-    const code = result.status === "PASS" ? 0 : 1;
-    process.exitCode = code;
-    if (web?.debugger.isAttached()) web.debugger.detach();
-    process.stdout.write("\nA2_CLEANUP\n");
-    app.exit(code); // Cleanup finished; Electron otherwise ignores process.exitCode.
+    await shutdown();
   }
-}).catch(() => { process.exitCode = 1; app.quit(); });
+}).catch(e => { void shutdown(e); });
