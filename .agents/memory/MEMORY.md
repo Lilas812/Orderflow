@@ -1,0 +1,2 @@
+- [Phase scope and approvals](phase-scope.md) — follow the uploaded rules; stop at each phase and obtain permission for unapproved decisions.
+- [TICK STREAM verification cautions](tickstream-cautions.md) — published examples and SDK source disagree; seconds-based history pagination can stall.
