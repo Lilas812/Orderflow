@@ -1,45 +1,50 @@
-# [Project name]
+# replit.md
 
-_Replace the heading above with the project's name, and this line with one sentence describing what this app does for users._
+## Overview
 
-## Run & Operate
+NQ先物（CME）向けの、ヒートマップ型オーダーフロー画面を作る個人用Webアプリ。
+データは TICK STREAM（Realtime + L2 プラン）から取得する。将来はフットプリントなどの画面を追加する。
 
-- `pnpm --filter @workspace/api-server run dev` — run the API server (port 5000)
-- `pnpm run typecheck` — full typecheck across all packages
-- `pnpm run build` — typecheck + build all packages
-- `pnpm --filter @workspace/api-spec run codegen` — regenerate API hooks and Zod schemas from the OpenAPI spec
-- `pnpm --filter @workspace/db run push` — push DB schema changes (dev only)
-- Required env: `DATABASE_URL` — Postgres connection string
+- 全体仕様の正本：`docs/SPEC.md`
+- 画面仕様の正本：`docs/UI_SPEC_HEATMAP.md`
+- 作業ルール：`docs/AGENT_RULES.md`（すべての作業に適用する）
 
-## Stack
+## User Preferences
 
-- pnpm workspaces, Node.js 24, TypeScript 5.9
-- API: Express 5
-- DB: PostgreSQL + Drizzle ORM
-- Validation: Zod (`zod/v4`), `drizzle-zod`
-- API codegen: Orval (from OpenAPI spec)
-- Build: esbuild (CJS bundle)
+- 報告と質問は日本語で、簡潔に書く。
+- 1回の依頼で1つのタスクだけを行い、終わったら止まって報告する。
+- 仕様にないことを推測で埋めない。判断が必要なら質問する。
+- ユーザーは情報工学の学生でコードは読める。変更点はファイル名・関数名まで具体的に書く。
 
-## Where things live
+## System Architecture
 
-_Populate as you build — short repo map plus pointers to the source-of-truth file for DB schema, API contracts, theme files, etc._
+- サーバー：Node.js + TypeScript の1プロセス。TICK STREAM への接続（1本だけ）、正規化、板の状態管理、集計、保存、ブラウザへの配信をすべて持つ。
+- ブラウザ：Vite + TypeScript。チャートは Canvas で描画する。ブラウザは TICK STREAM に直接接続しない。
+- 配信：サーバー → ブラウザは WebSocket。板はサーバーで間引いてから送る。
+- 保存：デプロイ環境のファイルシステムは再デプロイで消えるため、永続データは Replit App Storage に置く。
+- 詳細は `docs/SPEC.md` を参照。
 
-## Architecture decisions
+## External Dependencies
 
-_Populate as you build — non-obvious choices a reader couldn't infer from the code (3-5 bullets)._
+- TICK STREAM
+  - WebSocket：`wss://stream.tick-stream.xyz/v1/stream`
+  - REST：`https://api.tick-stream.xyz/v1`
+  - APIキー：Secrets の `TICKSTREAM_API_KEY`（コード・ログ・ブラウザに出さない）
+- Replit App Storage（永続データ）
+- 公開時：Reserved VM デプロイ、アクセスは Invite only
 
-## Product
+## Protected Files
 
-_Describe the high-level user-facing capabilities of this app once they exist._
+次のファイルと節は、ユーザーの明示的な許可なく変更しない。
 
-## User preferences
+- `docs/AGENT_RULES.md`
+- `docs/SPEC.md`
+- `docs/UI_SPEC_HEATMAP.md`
+- この `replit.md` の Overview / User Preferences / System Architecture / External Dependencies / Protected Files 節
 
-_Populate as you build — explicit user instructions worth remembering across sessions._
+Agent が更新してよいのは、下の Current Status 節だけ。
 
-## Gotchas
+## Current Status
 
-_Populate as you build — sharp edges, "always run X before Y" rules._
-
-## Pointers
-
-- See the `pnpm-workspace` skill for workspace structure, TypeScript setup, and package details
+- 2026-10-25：Phase 0 の中間報告（`docs/PHASE0_REPORT.md`）を作成。日曜で市場が閉まっていたため、取引時間中のライブ測定は未了。
+- 2026-10-25：仕様一式を `docs/` に配置し直し、`SPEC.md` を中間報告の内容で更新。チャットに添付された古い仕様書は使わない。

@@ -1,12 +1,10 @@
 ---
-name: Phase scope and approvals
-description: User-approved scope and strict boundaries for the NQ heatmap project.
+name: Specification handoff
+description: Avoid confusing chat-provided project instructions with actual canonical files.
 ---
 
-Follow the project's canonical docs/AGENT_RULES.md, docs/SPEC.md and docs/UI_SPEC_HEATMAP.md. Do not use the old chat attachments as specifications. Work on one task/phase at a time, stop with the prescribed Japanese report, and do not silently decide items marked proposed or undecided.
+Pasting project instructions into chat or uploading revised specifications does not itself replace the canonical workspace files.
 
-**Why:** The user explicitly instructed that docs/ contains the authoritative updated specifications and that old chat attachments must not be used. They approved Phase 0 only, not an all-phases implementation.
+**Why:** A specification handoff stated that canonical files had already been updated, while inspection showed only a generic project template and the intermediate measurement report. Treating the handoff as proof would have used obsolete specifications.
 
-**How to apply:** Check that the canonical files exist before further implementation. If unavailable, ask for the updated files rather than reconstructing them from obsolete attachments. Directory changes, added dependencies, protected specs, behavior changes, data formats, persistence and deployment require prior explanation and permission. Follow the user's supplied replit.md instructions rather than generic scaffold guidance.
-
-The user approved a dependency-free Node WebSocket probe, a 60-second live observation, two one-minute historical windows, a script under scripts/src and a Phase 0 report. This is not blanket permission for later phases or production technology decisions.
+**How to apply:** Verify file existence and contents before implementation. If the authoritative revision is unavailable, request it instead of reconstructing it from obsolete attachments. After authorized placement, compare source and destination bytes. Current scope and approval rules belong in replit.md and the canonical specifications, not duplicated here.

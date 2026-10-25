@@ -1,2 +1,2 @@
-- [Phase scope and approvals](phase-scope.md) — follow the uploaded rules; stop at each phase and obtain permission for unapproved decisions.
+- [Specification handoff](phase-scope.md) — pasted project instructions and uploaded specs do not automatically replace canonical workspace files.
 - [TICK STREAM verification cautions](tickstream-cautions.md) — published examples and SDK source disagree; seconds-based history pagination can stall.

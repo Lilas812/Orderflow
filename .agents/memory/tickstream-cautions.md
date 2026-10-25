@@ -5,7 +5,7 @@ description: External SDK discrepancies and API measurement limitations that sho
 
 Do not assume the public Node SDK source matches the protocol documentation or npm package. Inspect the current source before adoption, especially subscription operation/path, JSON heartbeat replies, unit inference and credential-bearing warnings.
 
-**Why:** The public source inspected during Phase 0 differed from official subscription examples and had a warning path exposing part of a credential. Raw Node WebSocket was explicitly approved for the probe only.
+**Why:** The public source inspected during Phase 0 differed from official subscription examples and had a warning path exposing part of a credential.
 
 **How to apply:** Revalidate against current provider sources. Do not install or select libraries without the user's required approval.
 
