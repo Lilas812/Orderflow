@@ -195,10 +195,10 @@ export class LocalStore implements Store {
     const trades = this.trades.get(hour);
     if (trades?.length) {
       const file = this.file("tick", hour);
-      const incoming = trades.slice().sort((a, b) => a.tsUs - b.tsUs || a.seq - b.seq);
-      // A backfilled hour can precede already persisted live trades. Stable merge; no content-based Set.
+      const incoming = trades.slice();
+      // Preserve arrival order even when exchange timestamps move backwards.
       if (this.held.has(hour)) {
-        const all = [...await this.tradeRows(hour), ...incoming].sort((a, b) => a.tsUs - b.tsUs || a.seq - b.seq);
+        const all = [...await this.tradeRows(hour), ...incoming];
         await this.atomic(file, await gzip(all.map(t => JSON.stringify(t) + "\n").join("")));
       } else {
         await fs.mkdir(path.dirname(file), { recursive: true, mode: 0o700 });
@@ -243,7 +243,7 @@ export class LocalStore implements Store {
     const rows: Trade[] = [];
     for (let h = hourOf(start); h < end; h += 3600) rows.push(...await this.tradeRows(h));
     return rows.filter(t => t.tsUs >= start * 1_000_000 && t.tsUs < end * 1_000_000)
-      .sort((a, b) => a.tsUs - b.tsUs || a.seq - b.seq);
+      .sort((a, b) => a.seq - b.seq);
   }
   private async retention() {
     const cutoff = Math.floor(this.now() / 1000) - 7 * 86400;

@@ -62,8 +62,8 @@ test("ダミー：履歴800行・同一1600行・異なる1600行は後半、件
   assert.equal(historyColumns(rows800(ts), 10, 11, m)[0].bids.length, 400);
   assert.equal(historyColumns([...rows800(ts), ...rows800(ts)], 10, 11, m)[0].bids[0].size, 1);
   assert.equal(historyColumns([...rows800(ts), ...rows800(ts, 2)], 10, 11, m)[0].bids[0].size, 2);
-  assert.equal(m.counts.historyDoubledSame, 1); assert.equal(m.counts.historyDoubledDifferent, 1);
-  assert.equal(m.examples.historyDoubledDifferent.length, 1);
+  assert.equal(m.counts.historyRepeated2Same, 1); assert.equal(m.counts.historyRepeated2Different, 1);
+  assert.equal(m.examples.historyRepeated2Different.length, 1);
 });
 test("ダミー：履歴半開区間・同じ検査・巻き戻り・段の構造違反", () => {
   const m = newMetrics();
@@ -72,7 +72,7 @@ test("ダミー：履歴半開区間・同じ検査・巻き戻り・段の構�
   assert.deepEqual(result.map(c => c.tsSec), [10]); assert.equal(m.counts.crossedBook, 1);
   assert.equal(historyColumns(rows800(10_000_000).slice(1), 10, 11, m).length, 0);
   historyColumns([...rows800(11_000_000), ...rows800(10_000_000)], 10, 12, m);
-  assert.equal(m.counts.timestampRollback, 1);
+  assert.equal(m.counts.bookTimestampRollback, 1);
 });
 test("ダミー：履歴約定は単位を保持し、内容が同一でも別seqで残す", () => {
   let seq = 0;
@@ -155,7 +155,9 @@ test("ダミー：保存済み秒を再取得せず、0行を記録、切詰め�
       assert.equal(active++, 0); calls.push([kind, a, b]); await Promise.resolve(); active--;
       return { rows: [], truncated: b - a > 1 };
     } };
-    const backfill = new Backfill(source, store, newMetrics(), () => 1, () => {});
+    let now = Date.now();
+    const clock = { now: () => now, wait: async (ms: number) => { now += ms; } };
+    const backfill = new Backfill(source, store, newMetrics(), () => 1, () => {}, clock);
     backfill.start(L); await backfill.settled();
     assert.equal(backfill.status.state, "complete"); assert.equal(backfill.status.completedWindows, 180);
     assert.deepEqual(calls.slice(0, 3), [["book", L - 2, L], ["book", L - 1, L], ["book", L - 2, L - 1]]);

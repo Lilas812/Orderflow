@@ -1,4 +1,4 @@
 - [Specification handoff](phase-scope.md) — pasted project instructions and uploaded specs do not automatically replace canonical workspace files.
 - [TICK STREAM verification cautions](tickstream-cautions.md) — published examples and SDK source disagree; seconds-based history pagination can stall.
 - [仕様の正本](phase-scope.md) — 仕様の正本は replit.md と docs/ の4ファイル（AGENT_RULES.md、SPEC.md、UI_SPEC_HEATMAP.md、PHASE0_REPORT.md）だけ。attached_assets/ や .local/ にある同名のコピーは読まない。
-- [ローカル保存の保持期間](local-retention.md) — SPEC第9節では案だが、7日より古い保存ファイルの削除はユーザーが確定した。
+- [再取得回数の数え方](retry-semantics.md) — 直近0行は初回＋再取得3回。通信失敗は初回を含む3回で区切る。

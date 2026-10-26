@@ -5,13 +5,19 @@ import type { Log } from "../logger.ts";
 
 export interface HistoryResponse { rows: HistoryRow[]; truncated: boolean; }
 export interface HistorySource { get(kind: Kind, start: number, end: number, signal: AbortSignal): Promise<HistoryResponse>; }
+export class WindowUnavailableError extends Error {
+  readonly reason: string;
+  constructor(reason: string) { super(reason); this.name = "WindowUnavailableError"; this.reason = reason; }
+}
 export interface HistoryNetworkStats {
   requests: number; fetchedBookRows: number; fetchedTradeRows: number;
-  errors: number; waits: number; waitUntilUs: number | null; lastError: string | null;
+  errors: number; retries: number; exhaustedRequests: number;
+  waits: number; waitUntilUs: number | null; lastError: string | null;
 }
 export class HistoryClient implements HistorySource {
   readonly stats: HistoryNetworkStats = {
-    requests: 0, fetchedBookRows: 0, fetchedTradeRows: 0, errors: 0, waits: 0, waitUntilUs: null, lastError: null,
+    requests: 0, fetchedBookRows: 0, fetchedTradeRows: 0, errors: 0, retries: 0, exhaustedRequests: 0,
+    waits: 0, waitUntilUs: null, lastError: null,
   };
   private apiKey: string;
   private log: Log;
@@ -29,6 +35,17 @@ export class HistoryClient implements HistorySource {
   async get(kind: Kind, start: number, end: number, signal: AbortSignal): Promise<HistoryResponse> {
     const url = new URL(`https://api.tick-stream.xyz/v1/history/${kind === "book" ? "book" : "ticks"}`);
     for (const [k, v] of Object.entries({ symbol: "NQ", start, end, limit: 500000 })) url.searchParams.set(k, String(v));
+    let failures = 0;
+    const retryFailure = async (reason: string) => {
+      this.stats.errors++; this.stats.lastError = reason;
+      this.log("history_request_failed", { kind, start, end, reason, failure: ++failures });
+      if (failures >= 3) {
+        this.stats.exhaustedRequests++;
+        throw new WindowUnavailableError(reason);
+      }
+      this.stats.retries++;
+      await this.pause(60000, signal);
+    };
     while (true) {
       signal.throwIfAborted();
       let response: Response;
@@ -38,15 +55,16 @@ export class HistoryClient implements HistorySource {
           signal: AbortSignal.any([signal, AbortSignal.timeout(30000)]) });
       } catch {
         signal.throwIfAborted();
-        this.stats.errors++; this.stats.lastError = "network_or_timeout";
-        this.log("history_request_failed", { kind, start, end, reason: this.stats.lastError });
-        await this.pause(60000, signal); continue;
+        await retryFailure("network_or_timeout"); continue;
       }
       if (!response.ok) {
         await response.body?.cancel();
+        if (response.status >= 500) {
+          await retryFailure(`http_${response.status}`); continue;
+        }
         this.stats.errors++; this.stats.lastError = `http_${response.status}`;
         this.log("history_request_failed", { kind, start, end, reason: this.stats.lastError });
-        if (response.status === 429 || response.status >= 500) {
+        if (response.status === 429) {
           const retry = response.headers.get("retry-after");
           const seconds = retry !== null && /^\d+(?:\.\d+)?$/.test(retry) ? Number(retry) * 1000
             : retry !== null ? Date.parse(retry) - Date.now() : NaN;
@@ -57,7 +75,11 @@ export class HistoryClient implements HistorySource {
       }
       let payload: Record<string, unknown>;
       try { payload = await response.json() as Record<string, unknown>; }
-      catch { this.stats.errors++; this.stats.lastError = "invalid_history_json"; throw Error(this.stats.lastError); }
+      catch (error) {
+        signal.throwIfAborted();
+        if (!(error instanceof SyntaxError)) { await retryFailure("network_or_timeout"); continue; }
+        this.stats.errors++; this.stats.lastError = "invalid_history_json"; throw Error(this.stats.lastError);
+      }
       const rows = payload[kind === "book" ? "book" : "ticks"];
       if (!Array.isArray(rows) || typeof payload.truncated !== "boolean"
         || rows.some(r => !r || typeof r !== "object" || Array.isArray(r))

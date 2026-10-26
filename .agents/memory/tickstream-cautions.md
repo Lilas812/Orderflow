@@ -19,4 +19,4 @@ Seconds-based history pagination can repeat a page if a page is smaller than one
 
 **Why:** Phase 2aの取引時間中の取得で確認した。Phase 0の同一内容だけだった小標本を、全履歴の保証として扱うと誤った板を採用する。
 
-**How to apply:** 1,600行はSPEC 5.5の後半採用ルールに従う。2,400行の採用方法は仕様未定のため、勝手に一般化せずユーザー判断を求める。詳細な測定結果は `server/PHASE2A_REPORT.md` を参照。
+**How to apply:** 小標本から「同一時刻なら全組が同じ内容」と決めつけない。2,400行の扱いが未定だったという旧報告を現在の制約と混同せず、現行SPEC 5.5を優先する。詳細な測定結果は `server/PHASE2A_REPORT.md` を参照。

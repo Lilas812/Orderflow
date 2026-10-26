@@ -71,7 +71,7 @@ test("ダミー：正常な板で全量置換し、古い段を残さない", ()
   });
 });
 
-test("ダミー：時刻巻き戻りは棄却、板と約定は別基準・同秒は許可", () => {
+test("ダミー：板の巻き戻りは棄却、約定は保持し別件数・同秒は許可", () => {
   const r = new Receiver(() => {});
   send(r, book({ ts: 100 }));
   const previous = r.book.latest;
@@ -80,8 +80,10 @@ test("ダミー：時刻巻き戻りは棄却、板と約定は別基準・同�
   send(r, tick({ ts: 49 }));
   send(r, tick({ ts: 50 }));
   assert.equal(r.book.latest, previous);
-  assert.equal(r.trades.size, 2);
-  assert.equal(r.metrics.counts.timestampRollback, 2);
+  assert.equal(r.trades.size, 3);
+  assert.deepEqual(r.trades.latest().map(t => t.tsUs), [50_000_000, 49_000_000, 50_000_000]);
+  assert.equal(r.metrics.counts.bookTimestampRollback, 1);
+  assert.equal(r.metrics.counts.tradeTimestampRollback, 1);
 });
 
 test("ダミー：壊れた形式・不正約定は採用せず、時刻の単位も推測しない", () => {

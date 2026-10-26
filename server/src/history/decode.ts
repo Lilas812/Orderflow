@@ -16,17 +16,40 @@ export function historyColumns(rows: HistoryRow[], start: number, end: number, m
   const finish = () => {
     if (!group.length) return;
     const ts = group[0].ts;
-    let selected = group;
-    if (group.length === 1600) {
-      const first = group.slice(0, 800), second = group.slice(800);
-      const fields = ["ts", "side", "level", "price", "size", "flag"];
-      const same = first.every((a, i) => fields.every(k => a[k] === second[i][k]));
-      metrics.issue(same ? "historyDoubledSame" : "historyDoubledDifferent",
-        { tsUs: ts, first: first[0], second: second[0] });
-      selected = second;
-    } else if (group.length !== 800) {
+    if (group.length % 800 !== 0) {
       metrics.issue("invalidMessage", { type: "history_book", reason: "snapshot_row_count", rows: group.length, ts });
+      metrics.count("historyInvalidGroups");
       metrics.count("rejectedBook"); return;
+    }
+    const chunks: HistoryRow[][] = [];
+    // Verified against the two real 2400-row examples: contiguous 800-row snapshots.
+    for (let i = 0; i < group.length; i += 800) {
+      const chunk = group.slice(i, i + 800);
+      const keys = new Set(chunk.map(r => `${r.side}:${r.level}`));
+      if (keys.size !== 800 || chunk.some(r => r.flag !== 0 || typeof r.level !== "number")
+        || !["bid", "ask"].every(side => Array.from({ length: 400 }, (_, n) => n + 1)
+          .every(level => keys.has(`${side}:${level}`)))) {
+        metrics.issue("invalidMessage", { type: "history_book", reason: "snapshot_structure", ts, chunk: i / 800 });
+        metrics.count("historyInvalidGroups");
+        metrics.count("rejectedBook"); return;
+      }
+      chunks.push(chunk);
+    }
+    const selected = chunks.at(-1)!;
+    if (chunks.length >= 2) {
+      const fields = ["ts", "side", "level", "price", "size", "flag"];
+      const first = chunks[0];
+      const same = chunks.slice(1).every(chunk => first.every((a, i) => fields.every(k => a[k] === chunk[i][k])));
+      const differingChunk = chunks.findIndex(chunk => first.some((a, i) => fields.some(k => a[k] !== chunk[i][k])));
+      const differingRow = differingChunk < 0 ? -1
+        : first.findIndex((a, i) => fields.some(k => a[k] !== chunks[differingChunk][i][k]));
+      metrics.issue(`historyRepeated${chunks.length}${same ? "Same" : "Different"}`, {
+        tsUs: ts, repetitions: chunks.length,
+        first: first[0], last: selected[0],
+        difference: differingRow < 0 ? null : {
+          chunk: differingChunk, row: differingRow, first: first[differingRow], other: chunks[differingChunk][differingRow],
+        },
+      });
     }
     const sides = (side: string) => selected.filter(r => r.side === side).sort((a, b) => Number(a.level) - Number(b.level));
     const bids = sides("bid"), asks = sides("ask");
@@ -39,7 +62,7 @@ export function historyColumns(rows: HistoryRow[], start: number, end: number, m
       symbol: "NQ", ts, bids: bids.map(r => [r.price, r.size]), asks: asks.map(r => [r.price, r.size]),
     }, Number(ts), "history", metrics, (tsUs) => {
       if (previous !== undefined && tsUs < previous) {
-        metrics.issue("timestampRollback", { type: "history_book", tsUs, previous }); return true;
+        metrics.issue("bookTimestampRollback", { type: "history_book", tsUs, previous }); return true;
       }
       return false;
     });
@@ -70,7 +93,7 @@ export function historyTrades(
       metrics.issue("invalidMessage", { type: "history_tick", reason: "invalid_fields" }); invalid = true;
     }
     if (tsUs !== null && previous !== undefined && tsUs < previous) {
-      metrics.issue("timestampRollback", { type: "history_tick", tsUs, previous }); invalid = true;
+      metrics.issue("tradeTimestampRollback", { type: "history_tick", tsUs, previous });
     }
     if (invalid) { metrics.count("rejectedTrade"); continue; }
     previous = tsUs!;

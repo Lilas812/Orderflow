@@ -39,8 +39,8 @@ export class Receiver {
   private rollback(type: "tick" | "book", tsUs: number): boolean {
     const previous = this.lastTs[type];
     if (previous !== undefined && tsUs < previous) {
-      this.metrics.issue("timestampRollback", { type, tsUs, previous });
-      return true;
+      this.metrics.issue(type === "book" ? "bookTimestampRollback" : "tradeTimestampRollback", { type, tsUs, previous });
+      return type === "book";
     }
     return false;
   }
@@ -116,7 +116,7 @@ export class Receiver {
       this.metrics.issue("invalidMessage", { type: "tick", reason: "invalid_fields", recvUs });
       invalid = true;
     }
-    if (tsUs !== null && this.rollback("tick", tsUs)) invalid = true;
+    if (tsUs !== null) this.rollback("tick", tsUs);
     if (invalid) { this.metrics.count("rejectedTrade"); return; }
     const trade: Trade = {
       tsUs: tsUs!, recvUs, seq: this.nextSequence(), price: price!,
