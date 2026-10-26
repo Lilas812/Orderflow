@@ -4,3 +4,5 @@
 - [再取得回数の数え方](retry-semantics.md) — 直近0行は初回＋再取得3回。通信失敗は初回を含む3回で区切る。
 - [リプレイの時間基準](replay-time-semantics.md) — 約定の250ms区切りは仮想時間とする解釈をユーザーが承認。
 - [ヒートマップの幅と色基準](heatmap-rendering-decisions.md) — ユーザー指定は本体・デルタ・時間軸54%、99パーセンタイルは枚数1以上だけ。
+- [下流の圧縮状態](downstream-compression.md) — 250msごとの板の類似性から、サーバー→ブラウザは圧縮状態を引き継ぐ。
+- [検証時の設定副作用](verification-config-side-effects.md) — 補助ツールによるランタイムの自動追加を、設定変更禁止の作業で見落とさない。

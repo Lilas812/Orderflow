@@ -73,6 +73,22 @@ const baseView: Viewport = {
   priceSpanTicks: 4,
 };
 
+test("ダミー：fractional pan/zoom の縦投影は生の最大値集計と一致する", () => {
+  let seed = 123456;
+  const next = () => { seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0; return seed; };
+  const columns = Array.from({ length: 17 }, (_, i) => column(100 + i, {
+    bids: Array.from({ length: 100 }, (_, p) => [40000 - p, next() % 100 + 1] as [number, number]),
+    asks: Array.from({ length: 100 }, (_, p) => [40001 + p, next() % 100 + 1] as [number, number]),
+  }));
+  const tiles = new TimeTileCache(); tiles.setColumns(columns);
+  for (let i = 0; i < 40; i++) {
+    const view = { startUs: 100000000 + next() % 1000000, durationSec: 10 + next() % 8,
+      centerPriceTicks: 40000 + (next() % 2001 - 1000) / 100,
+      priceSpanTicks: 8 + (next() % 160000) / 100 };
+    assert.deepEqual(tiles.aggregate(view, 67, 123).values, computePixelMax(columns, view, 67, 123).values);
+  }
+});
+
 test("same-P99 data replacement repaints cached scalar pixels", () => {
   withFakeCanvas((renderer, heat) => {
     const first = column(10, { bids: [[100, 10]] });
@@ -101,6 +117,16 @@ test("same-P99 data replacement repaints cached scalar pixels", () => {
     assert.equal(renderer.metrics.recomputedColumns, 1);
     assert.equal(renderer.metrics.rawLevelScans, 1);
     assert.equal(renderer.metrics.tileInvalidations, 1);
+  });
+});
+
+test("ダミー：初期chunkが可視範囲外でもP99=1を固定せず、最初の可視セルから計算する", () => {
+  withFakeCanvas((renderer) => {
+    renderer.draw([column(10, { bids: [[200, 10]] })], baseView, 1, "jst", true);
+    assert.equal(renderer.metrics.p99, 1);
+    assert.equal(renderer.metrics.scaleMs, 0);
+    renderer.draw([column(10, { bids: [[100, 20]] })], baseView, 2, "jst", true);
+    assert.equal(renderer.metrics.p99, 20);
   });
 });
 

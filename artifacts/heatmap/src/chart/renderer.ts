@@ -14,6 +14,10 @@ export interface DrawMetrics extends Partial<TileCacheMetrics> {
   rasterRebuilt?: boolean;
   partialRaster?: boolean;
   repaintPixels?: number;
+  tileSyncMs?: number;
+  colorMs?: number;
+  uploadMs?: number;
+  axisMs?: number;
 }
 
 export class HeatmapRenderer {
@@ -78,7 +82,9 @@ export class HeatmapRenderer {
       this.context.imageSmoothingEnabled = false;
     }
 
+    const syncStart = performance.now();
     this.tileCache.setColumns(columns);
+    const tileSyncMs = performance.now() - syncStart;
     const revision = this.tileCache.dataVersion;
     const rasterKey = [
       revision,
@@ -127,7 +133,9 @@ export class HeatmapRenderer {
     const now = performance.now();
     let scaleMs = 0;
     let scaleChanged = false;
-    if (hasPriceData && columns.length > 0 && (this.threshold === null || now - this.lastScaleAt >= 1_000)) {
+    if (hasPriceData && columns.length > 0
+      && (this.threshold !== null || this.pixelGrid!.values.some(size => size >= 1))
+      && (this.threshold === null || now - this.lastScaleAt >= 1_000)) {
       if (this.scaleTimer !== null) window.clearTimeout(this.scaleTimer);
       this.scaleTimer = null;
       const scaleStart = performance.now();
@@ -145,6 +153,7 @@ export class HeatmapRenderer {
     }
 
     let rasterMs = 0;
+    let colorMs = 0, uploadMs = 0;
     if (strips && !scaleChanged && this.imageData) {
       const rasterStart = performance.now();
       if (shift) {
@@ -160,20 +169,30 @@ export class HeatmapRenderer {
         const stripWidth = b - a;
         const values = new Uint32Array(stripWidth * height);
         for (let y = 0; y < height; y++) values.set(this.pixelGrid!.values.subarray(y * width + a, y * width + b), y * stripWidth);
-        this.context.putImageData(new ImageData(colorize(values, this.threshold ?? 1), stripWidth, height), a, 0);
+        const colorStart = performance.now();
+        const image = new ImageData(colorize(values, this.threshold ?? 1), stripWidth, height);
+        colorMs += performance.now() - colorStart;
+        const uploadStart = performance.now();
+        this.context.putImageData(image, a, 0);
+        uploadMs += performance.now() - uploadStart;
       }
       rasterMs = performance.now() - rasterStart;
     } else if (rasterRebuilt || scaleChanged || !this.imageData) {
       const rasterStart = performance.now();
       const rgba = colorize(this.pixelGrid!.values, this.threshold ?? 1);
       this.imageData = new ImageData(rgba, width, height);
+      colorMs = performance.now() - rasterStart;
+      const uploadStart = performance.now();
       this.context.putImageData(this.imageData, 0, 0);
+      uploadMs = performance.now() - uploadStart;
       rasterMs = performance.now() - rasterStart;
     }
 
     this.lastViewport = { ...view };
+    const axisStart = performance.now();
     if (hasPriceData) drawPriceAxis(this.axis, view);
     else clearPriceAxis(this.axis);
+    const axisMs = performance.now() - axisStart;
     const cacheMetrics = this.tileCache.metrics;
     this.metricsValue = {
       ...cacheMetrics,
@@ -181,6 +200,7 @@ export class HeatmapRenderer {
       aggregationMs,
       scaleMs,
       rasterMs,
+      tileSyncMs, colorMs, uploadMs, axisMs,
       p99: this.threshold ?? 1,
       rasterRebuilt,
       partialRaster: !!strips && !scaleChanged,

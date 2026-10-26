@@ -23,6 +23,7 @@ export interface Source {
   status(): unknown;
 }
 interface Peer {
+  id: number; range: { reqId: number; fromSec: number; toSec: number } | null; closeReason?: string;
   socket: Socket; mode: "live" | "replay"; initializing: boolean; closed: boolean;
   columns: Column[]; trades: Trade[]; queuedBytes: number;
   lastStatus: string; lastStatusAt: number; jobs: Promise<void>; replay?: Replay;
@@ -52,6 +53,7 @@ export class Hub {
   snapshot() { return { path: WS_PATH, connected: this.peers.size, ...this.counts }; }
   private close(p: Peer, code: number, reason: string) {
     if (p.closed) return;
+    p.closeReason = reason;
     p.closed = true; p.replay?.stop(); p.columns = []; p.trades = []; p.queuedBytes = 0;
     p.socket.close(code, reason);
     // Do not keep a dead/slow peer alive indefinitely waiting for its close handshake.
@@ -62,24 +64,29 @@ export class Hub {
   }
   private healthy(p: Peer) {
     if (p.closed || p.socket.readyState !== 1) return false;
-    if (p.socket.bufferedAmount + p.queuedBytes > CLOSE_LIMIT) {
-      this.counts.slowClosed++; this.log("hub_slow_close", { bufferedBytes: p.socket.bufferedAmount, queuedBytes: p.queuedBytes });
+    if (!p.range && p.socket.bufferedAmount + p.queuedBytes > CLOSE_LIMIT) {
+      this.counts.slowClosed++; this.log("hub_slow_close", { ...this.stage(p), bufferedBytes: p.socket.bufferedAmount, queuedBytes: p.queuedBytes });
       this.close(p, 1013, "slow_consumer"); return false;
     }
     return true;
   }
   private send(p: Peer, data: string | Buffer, board = false) {
     if (!this.healthy(p)) return false;
-    if (board && p.socket.bufferedAmount > BOARD_LIMIT) { this.counts.droppedBoards++; return false; }
+    if (board && !p.range && p.socket.bufferedAmount > BOARD_LIMIT) { this.counts.droppedBoards++; return false; }
+    const stage = this.stage(p);
     try {
       p.socket.send(data, error => {
-        if (error) { this.counts.sendErrors++; this.log("hub_send_error", { reason: "send_failed" }); this.close(p, 1011, "send_failed"); }
+        if (error) { this.counts.sendErrors++; this.log("hub_send_error", { ...stage, reason: "send_failed",
+          closedBeforeCallback: p.closed, closeReason: p.closeReason ?? "remote", readyState: p.socket.readyState }); this.close(p, 1011, "send_failed"); }
       });
       return true;
     } catch {
-      this.counts.sendErrors++; this.log("hub_send_error", { reason: "send_failed" }); this.close(p, 1011, "send_failed");
+      this.counts.sendErrors++; this.log("hub_send_error", { ...stage, reason: "send_failed" }); this.close(p, 1011, "send_failed");
       return false;
     }
+  }
+  private stage(p: Peer) {
+    return { peerId: p.id, phase: p.initializing ? "initial" : p.range ? "range" : "steady", reqId: p.range?.reqId ?? null };
   }
   private json(p: Peer, value: unknown) { return this.send(p, JSON.stringify(value)); }
   private status(p: Peer, force = false, replay?: unknown) {
@@ -101,11 +108,15 @@ export class Hub {
       socket.on("close", () => this.clock.cancel(t));
       return;
     }
-    const p: Peer = { socket, mode: "live", initializing: true, closed: false, columns: [], trades: [],
+    const p: Peer = { id: this.counts.totalConnections + 1, range: null, socket, mode: "live", initializing: true, closed: false, columns: [], trades: [],
       queuedBytes: 0, lastStatus: "", lastStatusAt: 0, jobs: Promise.resolve() };
     this.peers.add(p); this.counts.totalConnections++;
-    socket.on("close", () => { p.closed = true; p.replay?.stop(); this.peers.delete(p); });
-    socket.on("error", () => { this.log("hub_socket_error", { reason: "socket_error" }); this.close(p, 1011, "socket_error"); });
+    this.log("hub_connected", { ...this.stage(p) });
+    socket.on("close", (code: number) => {
+      this.log("hub_closed", { ...this.stage(p), code: code ?? null, reason: p.closeReason ?? "remote" });
+      p.closed = true; p.replay?.stop(); this.peers.delete(p);
+    });
+    socket.on("error", () => { this.log("hub_socket_error", { ...this.stage(p), reason: "socket_error" }); this.close(p, 1011, "socket_error"); });
     socket.on("message", (bytes: Buffer, binary: boolean) => {
       p.jobs = p.jobs.then(async () => {
         if (p.closed) return;
@@ -174,12 +185,39 @@ export class Hub {
     await initial;
   }
   private async range(p: Peer, reqId: number, from: number, to: number) {
-    const view = await this.source.read(from, to);
-    if (!p.closed) {
-      this.send(p, encodeFrame(2, reqId, view.columns));
-      this.json(p, { type: "rangeTrades", reqId, trades: view.trades });
+    const initial: View = { columns: [], trades: [] };
+    p.range = { reqId, fromSec: from, toSec: to };
+    const stage = this.stage(p);
+    let columns = 0, trades = 0, chunks = 0, maxBufferedBytes = 0;
+    this.log("hub_range_begin", { ...stage, fromSec: from, toSec: to });
+    const drain = async () => {
+      while (!p.closed && p.socket.readyState === 1 && p.socket.bufferedAmount >= BOARD_LIMIT) {
+        await new Promise<void>(resolve => { this.clock.later(resolve, 50); });
+      }
+    };
+    try {
+      for (let a = from; a < to; a += 300) {
+        // Compression queues are included by ws.bufferedAmount. Yield instead of
+        // enqueuing an entire hour and tripping our own non-range slow threshold.
+        await drain();
+        if (p.closed || p.socket.readyState !== 1) return initial;
+        const view = await this.source.read(a, Math.min(a + 300, to));
+        // Live sends may grow the queue while the disk read is awaiting I/O.
+        await drain();
+        if (p.closed || p.socket.readyState !== 1) return initial;
+        if (!this.send(p, encodeFrame(2, reqId, view.columns))
+          || !this.json(p, { type: "rangeTrades", reqId, trades: view.trades })) return initial;
+        columns += view.columns.length; trades += view.trades.length; chunks++;
+        maxBufferedBytes = Math.max(maxBufferedBytes, p.socket.bufferedAmount);
+        if (reqId === 0) { initial.columns.push(...view.columns); initial.trades.push(...view.trades); }
+      }
+      this.json(p, { type: "rangeDone", reqId, fromSec: from, toSec: to, columns, trades, chunks });
+      this.log("hub_range_done", { ...stage, fromSec: from, toSec: to, columns, trades, chunks, maxBufferedBytes });
+      return initial;
+    } finally {
+      if (p.closed) this.log("hub_range_aborted", { ...stage, columns, trades, chunks });
+      p.range = null;
     }
-    return view;
   }
   book(book: BookSnapshot) { this.latestBook = book; }
   column(column: Column) {
@@ -215,7 +253,16 @@ export class Hub {
 }
 
 export function attachHub(server: Server, hub: Hub) {
-  const wss = new WebSocketServer({ noServer: true, perMessageDeflate: false });
+  const wss = new WebSocketServer({ noServer: true, perMessageDeflate: {
+    zlibDeflateOptions: { level: 3, memLevel: 7 }, threshold: 1024, concurrencyLimit: 1,
+    // ws applies threshold only with no-context-takeover. With takeover it
+    // compresses all messages; document this in diagnostics rather than claiming
+    // the threshold suppressed small status messages.
+    clientNoContextTakeover: true,
+    // Default server direction retains context. Do not force false here: ws
+    // would reject the reset-context offer used by the read-only comparison probe.
+    // Native browsers do not request server_no_context_takeover.
+  } });
   server.on("upgrade", (request, socket, head) => {
     const url = new URL(request.url ?? "/", "http://localhost");
     if (url.pathname !== WS_PATH) { socket.end("HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n"); return; }

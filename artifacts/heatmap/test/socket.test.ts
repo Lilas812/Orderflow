@@ -104,6 +104,13 @@ test("receives initial kind 2/trades, holds kind 3, requests missing range seria
   assert.equal(cache.trades.length, 2);
   assert.equal(latestBooks, 1);
 
+  // Initial delivery remains pending through all six chunks, until rangeDone.
+  for (let i = 0; i < 5; i++) socket.message(makeFrame(2, 0, []));
+  for (let i = 0; i < 6; i++) socket.message(JSON.stringify({ type: "rangeTrades", reqId: 0, trades: [] }));
+  socket.message(JSON.stringify({ type: "rangeDone", reqId: 0, fromSec: 3200, toSec: 5000, columns: 1, trades: 0, chunks: 6 }));
+  assert.equal(client.initialLoading, false);
+  assert.equal(client.traffic.initialComplete, true);
+  assert.equal(client.bytesPerMinute, 0);
   client.requestVisible(1_000, 1_200);
   const request = JSON.parse(socket.sent[0]!) as Record<string, unknown>;
   assert.deepEqual(request, { op: "range", reqId: 1, fromSec: 1_000, toSec: 1_200 });
@@ -111,6 +118,10 @@ test("receives initial kind 2/trades, holds kind 3, requests missing range seria
   assert.equal(cache.size, 2);
   assert.equal(JSON.parse(socket.sent[0]!).reqId, 1);
   socket.message(JSON.stringify({ type: "rangeTrades", reqId: 1, trades: [trade] }));
+  client.requestVisible(600, 700);
+  assert.equal(socket.sent.length, 1, "the first pair does not finish a request");
+  socket.message(JSON.stringify({ type: "rangeDone", reqId: 1, fromSec: 1000, toSec: 1200, columns: 1, trades: 1, chunks: 1 }));
+  assert.equal(socket.sent.length, 2, "the next request starts only after rangeDone");
   assert.equal(cache.trades.length, 2); // The same transport ID in a range response is not a new execution.
   assert.equal(errors.length, 0);
   client.stop();
@@ -155,6 +166,47 @@ test("socket URL forwards only replay transport parameters", () => {
     host: "heatmap.test",
     search: "?tz=ct&debug=1&from=1",
   }), "ws://heatmap.test/api/ws");
+});
+
+test("ダミー：複数chunkのrangeDoneを検査し、初回・範囲を定常受信量へ混ぜない", () => {
+  const cache = new ColumnCache(), fixture = fixtureEnvironment(), errors: string[] = [];
+  const client = new RealtimeClient(cache, {
+    onConnection() {}, onHello() {}, onStatus() {}, onColumns() {}, onLatestBook() {},
+    onTrades() {}, onError: e => errors.push(e), onReplayEnded() {}, onBytesPerMinute() {}, onRangeRequest() {},
+  }, { protocol: "ws:", host: "example.test", search: "" }, fixture.env);
+  client.start();
+  const socket = fixture.sockets[0]!; socket.open();
+  socket.message(JSON.stringify({ type: "hello", symbol: "NQ", tickSize: 0.25,
+    columnSeconds: 1, serverTimeUs: 5000e6, mode: "live", savedRange: null }));
+  client.requestVisible(2000, 2450);
+  for (let i = 0; i < 6; i++) {
+    socket.message(makeFrame(2, 0, []));
+    socket.message(JSON.stringify({ type: "rangeTrades", reqId: 0, trades: [] }));
+    assert.equal(socket.sent.length, 0);
+    assert.equal(client.initialLoading, true);
+  }
+  socket.message(JSON.stringify({ type: "rangeDone", reqId: 0, fromSec: 3200, toSec: 5000,
+    columns: 0, trades: 0, chunks: 6 }));
+  assert.equal(socket.sent.length, 1);
+  assert.equal(client.traffic.initialComplete, true);
+  client.requestVisible(1000, 1100);
+  for (const sec of [2100, 2400]) {
+    socket.message(makeFrame(2, 1, [{ tsSec: sec, bids: [[40000, 5]] }]));
+    socket.message(JSON.stringify({ type: "rangeTrades", reqId: 1, trades: [] }));
+    assert.equal(socket.sent.length, 1);
+  }
+  const done = { type: "rangeDone", reqId: 1, fromSec: 2000, toSec: 2450, columns: 2, trades: 0, chunks: 2 };
+  socket.message(JSON.stringify({ ...done, columns: 1 }));
+  assert.deepEqual(errors, ["invalid_range_done"]);
+  assert.equal(socket.sent.length, 1);
+  socket.message(JSON.stringify(done));
+  assert.equal(socket.sent.length, 2);
+  assert.equal(client.bytesPerMinute, 0);
+  assert.ok(client.traffic.initialBytes > 0 && client.traffic.rangeBytes > 0);
+  assert.equal(client.columnDeliveries.find(c => c.timeUs === 2100e6)?.via, "range:1");
+  socket.message(makeFrame(3, 0, [{ tsSec: 5000, bids: [[40000, 5]] }]));
+  assert.ok(client.bytesPerMinute > 0);
+  client.stop();
 });
 
 test("a replay-ended status is terminal and does not schedule a reconnect", () => {

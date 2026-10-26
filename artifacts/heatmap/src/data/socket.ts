@@ -22,11 +22,14 @@ export interface SocketStatus {
 
 interface PendingRange extends TimeRange {
   reqId: number;
-  gotColumns: boolean;
-  gotTrades: boolean;
+  columns: number;
+  trades: number;
+  chunks: number;
+  tradeChunks: number;
 }
 
 interface SocketLike {
+  readonly extensions?: string;
   readyState: number;
   binaryType: BinaryType;
   onopen: ((event: Event) => void) | null;
@@ -48,7 +51,8 @@ export interface SocketListeners {
   onConnection(state: ConnectionState, message?: string): void;
   onHello(hello: HelloMessage): void;
   onStatus(status: SocketStatus): void;
-  onColumns(columns: readonly HeatColumn[], kind: 1 | 2): void;
+  onColumns(columns: readonly HeatColumn[], kind: 1 | 2, reqId: number): void;
+  onRangeComplete?(reqId: number): void;
   onLatestBook(column: HeatColumn): void;
   onTrades(count: number): void;
   onError(message: string): void;
@@ -93,6 +97,22 @@ export class RealtimeClient {
   private queue: TimeRange[] = [];
   private retryVisible: TimeRange | null = null;
   private byteEvents: { at: number; bytes: number }[] = [];
+  private initialBytes = 0;
+  private initialStartedAt = 0;
+  private initialElapsedMs: number | null = null;
+  private rangeBytes = 0;
+  private readonly deliveries = new WeakMap<HeatColumn, string>();
+
+  get initialLoading(): boolean { return this.pending?.reqId === 0; }
+  get loadingRangeCount(): number { return (this.pending ? 1 : 0) + this.queue.length; }
+  get traffic() {
+    return { initialBytes: this.initialBytes, initialElapsedMs: this.initialElapsedMs,
+      initialComplete: this.initialElapsedMs !== null, steadyBytesPerMinute: this.bytesPerMinute,
+      rangeBytes: this.rangeBytes, extensions: this.socket?.extensions ?? "" };
+  }
+  get columnDeliveries() {
+    return this.cache.columns.map(c => ({ timeUs: c.timeUs, source: c.source, via: this.deliveries.get(c) ?? "unknown" }));
+  }
 
   constructor(
     cache: ColumnCache,
@@ -152,6 +172,8 @@ export class RealtimeClient {
       return;
     }
     this.socket = socket;
+    this.initialBytes = 0; this.initialElapsedMs = null; this.rangeBytes = 0; this.byteEvents = [];
+    this.initialStartedAt = this.env.now();
     socket.binaryType = "arraybuffer";
     socket.onopen = () => {
       if (this.stopped || this.socket !== socket) return;
@@ -186,8 +208,10 @@ export class RealtimeClient {
   private async handleMessage(data: unknown): Promise<void> {
     try {
       if (typeof data === "string") {
-        this.recordBytes(new TextEncoder().encode(data).byteLength);
-        this.handleJson(JSON.parse(data) as Record<string, unknown>);
+        const value = JSON.parse(data) as Record<string, unknown>;
+        this.recordBytes(new TextEncoder().encode(data).byteLength, value.type === "hello" || this.initialLoading
+          ? "initial" : value.type === "rangeTrades" || value.type === "rangeDone" ? "range" : "steady");
+        this.handleJson(value);
         return;
       }
       let bytes: Uint8Array;
@@ -195,18 +219,17 @@ export class RealtimeClient {
       else if (data instanceof Uint8Array) bytes = data;
       else if (data instanceof Blob) bytes = new Uint8Array(await data.arrayBuffer());
       else throw new Error("unsupported_websocket_payload");
-      this.recordBytes(bytes.byteLength);
       const frame = decodeFrame(bytes);
+      this.recordBytes(bytes.byteLength, this.initialLoading ? "initial" : frame.kind === 2 ? "range" : "steady");
       if (frame.kind === 1) {
-        this.acceptColumns(frame.columns, 1);
+        this.acceptColumns(frame.columns, 1, 0);
         return;
       }
       if (frame.kind === 2) {
-        this.acceptColumns(frame.columns, 2);
-        if (frame.reqId === 0) return;
+        this.acceptColumns(frame.columns, 2, frame.reqId);
         if (this.pending?.reqId === frame.reqId) {
-          this.pending.gotColumns = true;
-          this.finishPendingIfReady();
+          this.pending.columns += frame.columns.length;
+          this.pending.chunks++;
         }
         return;
       }
@@ -230,6 +253,8 @@ export class RealtimeClient {
       this.clearPendingRanges();
       this.cache.reset();
       this.cache.markCovered(endSec - 1_800, endSec);
+      this.pending = { reqId: 0, fromSec: Math.max(0, endSec - 1800), toSec: endSec,
+        columns: 0, trades: 0, chunks: 0, tradeChunks: 0 };
       this.reconnectDelay = 1_000;
       this.listeners.onHello(hello);
       if (this.retryVisible) this.requestVisible(this.retryVisible.fromSec, this.retryVisible.toSec);
@@ -242,10 +267,26 @@ export class RealtimeClient {
       if (message.type === "rangeTrades") {
         const reqId = message.reqId;
         if (typeof reqId === "number" && this.pending?.reqId === reqId) {
-          this.pending.gotTrades = true;
-          this.finishPendingIfReady();
+          this.pending.trades += trades.length;
+          this.pending.tradeChunks++;
         }
       }
+      return;
+    }
+    if (message.type === "rangeDone") {
+      const pending = this.pending;
+      if (!pending || message.reqId !== pending.reqId || message.fromSec !== pending.fromSec
+        || message.toSec !== pending.toSec || message.columns !== pending.columns
+        || message.trades !== pending.trades || message.chunks !== pending.chunks
+        || pending.tradeChunks !== pending.chunks
+        || pending.chunks !== Math.ceil((pending.toSec - pending.fromSec) / 300)) {
+        throw new Error("invalid_range_done");
+      }
+      const reqId = pending.reqId;
+      this.pending = null;
+      if (reqId === 0) this.initialElapsedMs = this.env.now() - this.initialStartedAt;
+      this.listeners.onRangeComplete?.(reqId);
+      this.pumpRangeQueue();
       return;
     }
     if (message.type === "status") {
@@ -269,9 +310,10 @@ export class RealtimeClient {
     }
   }
 
-  private acceptColumns(columns: readonly HeatColumn[], kind: 1 | 2): void {
+  private acceptColumns(columns: readonly HeatColumn[], kind: 1 | 2, reqId: number): void {
+    for (const c of columns) this.deliveries.set(c, kind === 1 ? "live-kind1" : reqId === 0 ? "initial-30min" : `range:${reqId}`);
     this.cache.addColumns(columns);
-    this.listeners.onColumns(columns, kind);
+    this.listeners.onColumns(columns, kind, reqId);
   }
 
   private pumpRangeQueue(): void {
@@ -279,7 +321,7 @@ export class RealtimeClient {
     if (!socket || socket.readyState !== 1 || this.pending || this.queue.length === 0 || this.stopped) return;
     const range = this.queue.shift()!;
     this.reqId = this.reqId >= 0xffff_ffff ? 1 : this.reqId + 1;
-    const pending: PendingRange = { ...range, reqId: this.reqId, gotColumns: false, gotTrades: false };
+    const pending: PendingRange = { ...range, reqId: this.reqId, columns: 0, trades: 0, chunks: 0, tradeChunks: 0 };
     this.pending = pending;
     try {
       this.listeners.onRangeRequest(range);
@@ -291,13 +333,6 @@ export class RealtimeClient {
     }
   }
 
-  private finishPendingIfReady(): void {
-    if (this.pending?.gotColumns && this.pending.gotTrades) {
-      this.pending = null;
-      this.pumpRangeQueue();
-    }
-  }
-
   private clearPendingRanges(): void {
     if (this.pending) this.cache.removeCoverage(this.pending.fromSec, this.pending.toSec);
     for (const range of this.queue) this.cache.removeCoverage(range.fromSec, range.toSec);
@@ -305,8 +340,10 @@ export class RealtimeClient {
     this.queue = [];
   }
 
-  private recordBytes(bytes: number): void {
-    this.byteEvents.push({ at: this.env.now(), bytes });
+  private recordBytes(bytes: number, stage: "initial" | "range" | "steady"): void {
+    if (stage === "initial") this.initialBytes += bytes;
+    else if (stage === "range") this.rangeBytes += bytes;
+    else this.byteEvents.push({ at: this.env.now(), bytes });
     this.listeners.onBytesPerMinute(this.bytesPerMinute);
   }
 

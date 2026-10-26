@@ -9,10 +9,14 @@ import { formatAxisTicks, zoneFromSearch, type DisplayZone } from "./chart/timez
 declare global {
   interface Window {
     readonly __heatmapDebug?: Readonly<HeatmapDebugSnapshot>;
+    readonly __heatmapColumnDelivery?: ReturnType<typeof columnDeliverySnapshot>;
   }
 }
 
 export interface HeatmapDebugSnapshot {
+  traffic: RealtimeClient["traffic"];
+  loadingRanges: number;
+  drawBreakdown: DrawMetrics;
   connection: ConnectionState;
   viewport: Readonly<Viewport>;
   follow: boolean;
@@ -173,10 +177,10 @@ const client = new RealtimeClient(cache, {
   },
   onColumns: (_columns, _kind) => {
     receivedColumnRevision += 1;
-    if (follow && cache.latestTimeUs !== null) {
+    if (follow && !client.initialLoading && cache.latestTimeUs !== null) {
       alignFollowToPhysicalPixel();
     }
-    positionPriceFromData();
+    if (!client.initialLoading) positionPriceFromData();
     syncRetentionAndRequests();
     updateStatus();
     renderTimeAxis();
@@ -188,6 +192,13 @@ const client = new RealtimeClient(cache, {
     const wasCentered = centeredOnData;
     positionPriceFromData();
     if (!wasCentered && centeredOnData) scheduleDraw();
+  },
+  onRangeComplete: (reqId) => {
+    if (reqId === 0) {
+      if (follow && cache.latestTimeUs !== null) alignFollowToPhysicalPixel();
+      positionPriceFromData();
+    }
+    syncRetentionAndRequests(); updateStatus(); renderTimeAxis(); scheduleDraw(); updateDebugPanel();
   },
   onTrades: () => {
     updateDebugPanel();
@@ -326,6 +337,7 @@ function updateStatus(): void {
   connectionLabel.textContent = text;
   const statusText = extractUpstreamStatus(latestStatus);
   const parts = [
+    client.loadingRangeCount ? `Loading ${client.loadingRangeCount} range(s)` : "",
     lastConnectionMessage,
     statusText,
     lastDataError ? `Data message: ${lastDataError}` : "",
@@ -366,7 +378,9 @@ function updateDebugPanel(): void {
   const maximum = sample.length ? Math.max(...sample) : 0;
   debugPanel.hidden = false;
   debugPanel.textContent = `${fps} draw/s · ${mean.toFixed(2)} / ${maximum.toFixed(2)} ms
-${cache.size.toLocaleString()} columns · ${(bytesPerMinute / 1_024).toFixed(1)} KB/min
+${cache.size.toLocaleString()} columns · steady ${(bytesPerMinute / 1_024).toFixed(1)} KiB/min (expanded)
+initial ${(client.traffic.initialBytes / 1_024).toFixed(1)} KiB · ${client.traffic.initialElapsedMs ?? "loading"} ms
+range ${(client.traffic.rangeBytes / 1_024).toFixed(1)} KiB · ${client.traffic.extensions || "no compression"} · expanded bytes
 ${connection.toUpperCase()} · ${follow ? "FOLLOW" : "BROWSE"} · ${requestCount} range`;
 }
 
@@ -374,6 +388,9 @@ function debugSnapshot(): HeatmapDebugSnapshot {
   const now = performance.now();
   const sample = drawSamples.slice(-30).map((entry) => entry.ms);
   return Object.freeze({
+    traffic: client.traffic,
+    loadingRanges: client.loadingRangeCount,
+    drawBreakdown: lastMetrics,
     connection,
     viewport: Object.freeze({ ...viewport }),
     follow,
@@ -397,7 +414,9 @@ function debugSnapshot(): HeatmapDebugSnapshot {
   });
 }
 
+function columnDeliverySnapshot() { return client.columnDeliveries; }
 if (debugMode) {
+  Object.defineProperty(window, "__heatmapColumnDelivery", { get: columnDeliverySnapshot });
   Object.defineProperty(window, "__heatmapDebug", {
     configurable: false,
     enumerable: true,

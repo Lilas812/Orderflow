@@ -42,3 +42,59 @@ mtime_ms = 1793037515633
 storage_uri = "gcs://replit-rams-assets-pike/rams/assets/repl:c326af06-2355-4bfb-a52e-f433587c4cd9/22fb1068-c5b8-47c6-836b-0cf5581f849d/99f79750-00f9-4ff5-855b-0b4efbbc553b"
 storage_version_token = "1793038049689958"
 content_type = "image/jpeg"
+
+[[outputs]]
+id = "t7gXCpZhH8XjmWrYe8UQQ"
+uri = "file://data/phase3-fix-checks/before-normal.png"
+type = "image"
+title = "変更前：通常描画"
+description = "保存実データ・P99=14。全描画との差0画素。"
+logical_id = "3339b9f7-4d92-487d-93b6-73b69eff308d"
+content_hash = "sha256:2c079636a8bdf92f4b250a2f2bc001873bc600224744e5617b1116eb4f9ec154"
+size = 50397
+mtime_ms = 1793042137505
+storage_uri = "gcs://replit-rams-assets-pike/rams/assets/repl:c326af06-2355-4bfb-a52e-f433587c4cd9/3339b9f7-4d92-487d-93b6-73b69eff308d/679b5c35-58db-42a7-9988-6614aa5183cf"
+storage_version_token = "1793044146536179"
+content_type = "image/png"
+
+[[outputs]]
+id = "c9PfhM6EaoPHIyUA_kjwg"
+uri = "file://data/phase3-fix-checks/before-full.png"
+type = "image"
+title = "変更前：全描画"
+description = "同じデータ・表示範囲で画像再利用なし。"
+logical_id = "b07b77ba-d11d-47e2-9dd8-b3f2d3f50651"
+content_hash = "sha256:2c079636a8bdf92f4b250a2f2bc001873bc600224744e5617b1116eb4f9ec154"
+size = 50397
+mtime_ms = 1793042137505
+storage_uri = "gcs://replit-rams-assets-pike/rams/assets/repl:c326af06-2355-4bfb-a52e-f433587c4cd9/b07b77ba-d11d-47e2-9dd8-b3f2d3f50651/4de1ba06-7d46-415a-bacf-078f2b06f811"
+storage_version_token = "1793044147831153"
+content_type = "image/png"
+
+[[outputs]]
+id = "4BbIrLHQ3RfGe-L2Ghd_4"
+uri = "file://data/phase3-fix-checks/after-normal.png"
+type = "image"
+title = "変更後：通常描画"
+description = "全描画・変更前画像との差はいずれも0画素。"
+logical_id = "de6f8ccb-f0be-4f9f-bedf-169eb6f7029f"
+content_hash = "sha256:2c079636a8bdf92f4b250a2f2bc001873bc600224744e5617b1116eb4f9ec154"
+size = 50397
+mtime_ms = 1793043084281
+storage_uri = "gcs://replit-rams-assets-pike/rams/assets/repl:c326af06-2355-4bfb-a52e-f433587c4cd9/de6f8ccb-f0be-4f9f-bedf-169eb6f7029f/df76a85a-9c36-4962-8b24-12a1d74dea59"
+storage_version_token = "1793044149097886"
+content_type = "image/png"
+
+[[outputs]]
+id = "3F6X9ypYeALK9QqtmQVbb"
+uri = "file://data/phase3-fix-checks/after-full.png"
+type = "image"
+title = "変更後：全描画"
+description = "独立した最大値集計とも全画素一致。"
+logical_id = "6c0eb104-6ccd-471e-bc95-3c8a0b54dd72"
+content_hash = "sha256:2c079636a8bdf92f4b250a2f2bc001873bc600224744e5617b1116eb4f9ec154"
+size = 50397
+mtime_ms = 1793043084281
+storage_uri = "gcs://replit-rams-assets-pike/rams/assets/repl:c326af06-2355-4bfb-a52e-f433587c4cd9/6c0eb104-6ccd-471e-bc95-3c8a0b54dd72/56c2ea72-e95b-435f-9ac3-dc77e9d9c58b"
+storage_version_token = "1793044150381266"
+content_type = "image/png"

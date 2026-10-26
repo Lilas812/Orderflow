@@ -95,31 +95,19 @@ function upperBound(values: Int32Array, target: number): number {
   return low;
 }
 
-function rangeMaximum(tree: PriceMaxTree, first: number, afterLast: number): number {
-  let left = first + tree.leafCount;
-  let right = afterLast + tree.leafCount;
-  let maximum = 0;
-  while (left < right) {
-    if (left & 1) maximum = Math.max(maximum, tree.tree[left++]!);
-    if (right & 1) maximum = Math.max(maximum, tree.tree[--right]!);
-    left >>>= 1;
-    right >>>= 1;
-  }
-  return maximum;
-}
-
 function projectPriceTree(tree: PriceMaxTree, view: Viewport, height: number): Uint32Array {
   const output = new Uint32Array(height);
   const priceTop = view.centerPriceTicks + view.priceSpanTicks / 2;
-  for (let y = 0; y < height; y += 1) {
-    const priceUpper = priceTop - (y / height) * view.priceSpanTicks;
-    const priceLower = priceTop - ((y + 1) / height) * view.priceSpanTicks;
-    const firstTick = Math.floor(priceLower - 0.5) + 1;
-    const lastTick = Math.ceil(priceUpper + 0.5) - 1;
-    if (firstTick > lastTick) continue;
-    const first = lowerBound(tree.prices, firstTick);
-    const afterLast = upperBound(tree.prices, lastTick);
-    if (first < afterLast) output[y] = rangeMaximum(tree, first, afterLast);
+  const first = upperBound(tree.prices, priceTop - view.priceSpanTicks - 0.5);
+  const end = lowerBound(tree.prices, priceTop + 0.5);
+  // Project each visible quoted price cell once. Querying two binary searches
+  // and a segment tree for every physical row dominated price-zoom redraws.
+  // Keep the exact positive-area overlap and maximum semantics of the raw path.
+  for (let i = first; i < end; i++) {
+    const price = tree.prices[i]!, size = tree.tree[tree.leafCount + i]!;
+    const top = Math.max(0, Math.floor(((priceTop - (price + 0.5)) / view.priceSpanTicks) * height));
+    const bottom = Math.min(height - 1, Math.ceil(((priceTop - (price - 0.5)) / view.priceSpanTicks) * height) - 1);
+    for (let y = top; y <= bottom; y++) if (size > output[y]!) output[y] = size;
   }
   return output;
 }

@@ -109,12 +109,14 @@ test("ダミー：初回読込中の列・約定を保持し、重なりだけ�
   let release!: () => void;
   const gate = new Promise<void>(r => { release = r; }), clock = new Clock(), src = source();
   const first = trade(9999e6, 1), second = trade(9999e6, 2);
-  src.read = async () => { await gate; return { columns: [col(9999)], trades: [first] }; };
+  src.read = async (a, b) => { await gate; return {
+    columns: [col(9999)].filter(c => c.tsSec >= a && c.tsSec < b),
+    trades: [first].filter(t => t.tsUs >= a * 1e6 && t.tsUs < b * 1e6) }; };
   const hub = new Hub(src, () => {}, clock), s = new Socket(), connecting = hub.connect(s, url());
   hub.column(col(9999)); hub.column(col(10000)); hub.trade(first); hub.trade(second);
   clock.advance(250); assert.equal(s.output.length, 1); // hello only
   release(); await connecting; clock.advance(250);
-  assert.deepEqual(s.frames().map(f => [f.kind, f.columns.map(c => c.tsSec)]), [[2, [9999]], [1, [10000]]]);
+  assert.deepEqual(s.frames().filter(f => f.columns.length).map(f => [f.kind, f.columns.map(c => c.tsSec)]), [[2, [9999]], [1, [10000]]]);
   assert.deepEqual(s.json().find(j => j.type === "trades").trades.map((t: Trade) => t.seq), [2]); hub.stop();
 });
 test("ダミー：rangeの空区間を埋めず、kind2直後にrangeTrades。不正要求はerror", async () => {
