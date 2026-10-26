@@ -3,11 +3,11 @@ name: TICK STREAM verification cautions
 description: External SDK discrepancies and API measurement limitations that should guide future verification.
 ---
 
-Do not assume the public Node SDK source matches the protocol documentation or npm package. Inspect the current source before adoption, especially subscription operation/path, JSON heartbeat replies, unit inference and credential-bearing warnings.
+TICK STREAM へは Node 標準の WebSocket で直接接続する。公式 Node SDK は使わない（確定）。理由は docs/SPEC.md 第4節のとおり。
 
 **Why:** The public source inspected during Phase 0 differed from official subscription examples and had a warning path exposing part of a credential.
 
-**How to apply:** Revalidate against current provider sources. Do not install or select libraries without the user's required approval.
+**How to apply:** docs/SPEC.md 第4節に従い、Node 標準の WebSocket を使い、公式 Node SDK は採用しない。
 
 Seconds-based history pagination can repeat a page if a page is smaller than one second's rows; blindly incrementing a second can instead lose data. End-boundary seconds and repeated timestamps need investigation, not silent repair.
 
