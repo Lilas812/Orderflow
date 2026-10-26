@@ -1,0 +1,121 @@
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { ColumnAggregator } from "./aggregate/columns.ts";
+import { LocalStore } from "./store/local.ts";
+import { Metrics } from "./ingest/metrics.ts";
+import { HistoryClient } from "./history/client.ts";
+import { Backfill } from "./history/backfill.ts";
+import type { BookSnapshot, Trade } from "./types.ts";
+import type { Log } from "./logger.ts";
+
+export class Pipeline {
+  readonly store: LocalStore;
+  readonly historyMetrics: Metrics;
+  readonly client: HistoryClient;
+  readonly backfill: Backfill;
+  private aggregate: ColumnAggregator;
+  private log: Log;
+  private seam: number | null = null;
+  private lastColumn: number | null = null;
+  private gaps: { startSec: number; endSec: number; reason: string }[] = [];
+  private tradeBatch: Trade[] = [];
+  private stopped = false;
+  private timer: ReturnType<typeof setInterval> | null = null;
+  private expiry: ReturnType<typeof setTimeout> | null = null;
+  private pending = new Set<Promise<unknown>>();
+  private storageError: string | null = null;
+  private ticking = false;
+
+  constructor(apiKey: string, nextSeq: () => number, log: Log) {
+    this.log = log;
+    // Resolve independently of the workflow's cwd; never under server/data.
+    this.store = new LocalStore(fileURLToPath(new URL("../../data/", import.meta.url)));
+    this.historyMetrics = new Metrics(log);
+    this.client = new HistoryClient(apiKey, log);
+    this.backfill = new Backfill(this.client, this.store, this.historyMetrics, nextSeq, log);
+    this.aggregate = new ColumnAggregator(column => {
+      if (this.seam === null) {
+        this.seam = column.tsSec;
+        this.log("live_history_seam", { tsSec: this.seam });
+        this.backfill.start(this.seam); // Hold before enqueuing the first live write.
+        this.tradeBatch = this.tradeBatch.filter(t => t.tsUs >= this.seam! * 1_000_000);
+      }
+      if (this.lastColumn !== null && column.tsSec > this.lastColumn + 1) {
+        const gap = { startSec: this.lastColumn + 1, endSec: column.tsSec, reason: "no_accepted_live_book" };
+        this.gaps.push(gap); this.log("live_column_gap", gap);
+      }
+      this.lastColumn = column.tsSec;
+      this.track(this.store.addColumns([column]));
+    });
+  }
+  private track(promise: Promise<unknown>) {
+    const tracked = promise.catch(() => {
+      if (!this.storageError) {
+        this.storageError = "local_storage_failed";
+        this.log("storage_failed", { reason: this.storageError });
+      }
+    }).finally(() => this.pending.delete(tracked));
+    this.pending.add(tracked);
+  }
+  async initialize() {
+    await this.store.initialize();
+    this.timer = setInterval(() => { void this.tick(); }, 1000);
+  }
+  book(book: BookSnapshot) {
+    if (this.stopped) return;
+    this.aggregate.accept(book);
+    if (this.expiry) clearTimeout(this.expiry);
+    const second = this.aggregate.pendingSecond;
+    if (second !== null) this.expiry = setTimeout(() => {
+      this.expiry = null;
+      this.aggregate.expire(Date.now() * 1000);
+    }, Math.max(0, (second + 3) * 1000 - Date.now()));
+  }
+  trade(trade: Trade) {
+    if (!this.stopped && (this.seam === null || trade.tsUs >= this.seam * 1_000_000)) this.tradeBatch.push(trade);
+  }
+  private async tick() {
+    if (this.ticking || this.stopped) return;
+    this.ticking = true;
+    try {
+      if (this.seam !== null && this.tradeBatch.length) {
+        const batch = this.tradeBatch; this.tradeBatch = [];
+        await this.store.addTrades(batch);
+      }
+      await this.store.maintenance();
+    } catch {
+      this.storageError = "local_storage_failed";
+      this.log("storage_failed", { reason: this.storageError });
+    } finally { this.ticking = false; }
+  }
+  status() {
+    const gaps = this.gaps.slice();
+    if (this.lastColumn !== null) {
+      const end = Math.min(Math.floor(Date.now() / 1000) - 2, this.aggregate.pendingSecond ?? Infinity);
+      if (end > this.lastColumn + 1) gaps.push({
+        startSec: this.lastColumn + 1, endSec: end, reason: "no_accepted_live_book_ongoing",
+      });
+    }
+    return {
+      seamL: this.seam,
+      backfill: this.backfill.snapshot(), historyNetwork: { ...this.client.stats },
+      historyCounts: { ...this.historyMetrics.counts }, historyExamples: this.historyMetrics.examples,
+      storage: { ...this.store.stats }, storageError: this.storageError,
+      liveGaps: gaps, unconfirmedSecond: this.aggregate.pendingSecond,
+    };
+  }
+  async stop() {
+    this.stopped = true;
+    if (this.timer) clearInterval(this.timer);
+    if (this.expiry) clearTimeout(this.expiry);
+    await this.backfill.stop();
+    this.aggregate.expire(Date.now() * 1000);
+    if (this.seam !== null && this.tradeBatch.length) {
+      const batch = this.tradeBatch; this.tradeBatch = [];
+      this.track(this.store.addTrades(batch));
+    }
+    await Promise.all(this.pending);
+    await this.store.flush();
+    this.log("storage_stopped", { ...this.status(), root: path.relative(process.cwd(), this.store.root) });
+  }
+}

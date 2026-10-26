@@ -1,8 +1,9 @@
 import { BookState } from "../book/state.ts";
 import { RecentTrades } from "../trades/recent.ts";
 import { Metrics } from "./metrics.ts";
-import type { BookLevel, BookSnapshot, Trade } from "../types.ts";
+import type { BookSnapshot, Trade } from "../types.ts";
 import type { Log } from "../logger.ts";
+import { normalizeBook, normalizePrice, normalizeTime } from "./normalize.ts";
 
 function record(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -15,24 +16,24 @@ export class Receiver {
   private log: Log;
   private seq = 0;
   private lastTs: Partial<Record<"tick" | "book", number>> = {};
+  private observers: { book?: (book: BookSnapshot) => void; trade?: (trade: Trade) => void };
 
-  constructor(log: Log) {
+  constructor(log: Log, observers: { book?: (book: BookSnapshot) => void; trade?: (trade: Trade) => void } = {}) {
     this.log = log;
     this.metrics = new Metrics(log);
+    this.observers = observers;
   }
+
+  nextSequence() { return ++this.seq; }
 
   /** Sole boundary for external seconds -> microseconds. No unit guessing. */
   private time(ts: unknown): number | null {
-    if (typeof ts !== "number" || !Number.isSafeInteger(ts) || ts < 0) return null;
-    const tsUs = ts * 1_000_000;
-    return Number.isSafeInteger(tsUs) ? tsUs : null;
+    return normalizeTime(ts, "live");
   }
 
   /** Sole boundary for external price -> integer NQ ticks. No rounding. */
   private price(price: unknown): number | null {
-    if (typeof price !== "number" || !Number.isFinite(price)) return null;
-    const ticks = price / 0.25;
-    return Number.isSafeInteger(ticks) ? ticks : null;
+    return normalizePrice(price);
   }
 
   private rollback(type: "tick" | "book", tsUs: number): boolean {
@@ -118,72 +119,21 @@ export class Receiver {
     if (tsUs !== null && this.rollback("tick", tsUs)) invalid = true;
     if (invalid) { this.metrics.count("rejectedTrade"); return; }
     const trade: Trade = {
-      tsUs: tsUs!, recvUs, seq: ++this.seq, price: price!,
+      tsUs: tsUs!, recvUs, seq: this.nextSequence(), price: price!,
       size: message.size as number, side: message.side as Trade["side"],
     };
     this.lastTs.tick = trade.tsUs;
     this.trades.push(trade);
     this.metrics.count("acceptedTrade");
+    this.observers.trade?.(trade);
   }
 
   private snapshot(message: Record<string, unknown>, recvUs: number) {
-    const tsUs = this.time(message.ts);
-    let invalid = false;
-    if (tsUs === null || message.symbol !== "NQ") {
-      this.metrics.issue("invalidMessage", { type: "book", reason: "invalid_fields", recvUs });
-      invalid = true;
-    }
-    const side = (raw: unknown, name: "bids" | "asks"): BookLevel[] => {
-      if (!Array.isArray(raw)) {
-        this.metrics.issue("invalidMessage", { type: "book", side: name, recvUs });
-        invalid = true;
-        return [];
-      }
-      const levels: BookLevel[] = [];
-      const seen = new Set<number>();
-      for (const row of raw) {
-        if (!Array.isArray(row) || row.length !== 2
-          || typeof row[1] !== "number" || !Number.isFinite(row[1])) {
-          this.metrics.issue("invalidMessage", { type: "book", side: name, reason: "invalid_level", recvUs });
-          invalid = true;
-          continue;
-        }
-        // Even excluded levels may not hide an off-tick input price (SPEC 6).
-        const price = this.price(row[0]);
-        if (price === null) {
-          this.metrics.issue("offTick", { type: "book", side: name, price: row[0], recvUs });
-          invalid = true;
-        }
-        if (row[1] <= 0) {
-          this.metrics.issue("nonPositiveBookLevels", { side: name, price: row[0], size: row[1], recvUs });
-          continue;
-        }
-        if (price === null) continue;
-        if (seen.has(price)) {
-          this.metrics.issue("duplicatePrice", { side: name, price, recvUs });
-          invalid = true;
-        }
-        const previous = levels.at(-1)?.price;
-        if (previous !== undefined && (name === "bids" ? price > previous : price < previous)) {
-          this.metrics.issue("bookOrder", { side: name, previous, price, recvUs });
-          invalid = true;
-        }
-        seen.add(price);
-        levels.push({ price, size: row[1] });
-      }
-      return levels;
-    };
-    const bids = side(message.bids, "bids");
-    const asks = side(message.asks, "asks");
-    if (bids.length && asks.length && bids[0].price >= asks[0].price) {
-      this.metrics.issue("crossedBook", { bestBid: bids[0].price, bestAsk: asks[0].price, recvUs });
-      invalid = true;
-    }
-    if (tsUs !== null && this.rollback("book", tsUs)) invalid = true;
-    if (invalid) { this.metrics.count("rejectedBook"); return; }
-    const book: BookSnapshot = { tsUs: tsUs!, recvUs, source: "live", bids, asks };
+    const book = normalizeBook(message, recvUs, "live", this.metrics, (tsUs) => this.rollback("book", tsUs));
+    if (!book) return;
     this.lastTs.book = book.tsUs;
     this.book.replace(book);
     this.metrics.count("acceptedBook");
+    this.observers.book?.(book);
   }
 }

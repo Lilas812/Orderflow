@@ -3,13 +3,18 @@ import { createLogger } from "./logger.ts";
 import { Receiver } from "./ingest/receiver.ts";
 import { Upstream } from "./upstream/connection.ts";
 import { createStatusApp } from "./status/app.ts";
+import { Pipeline } from "./pipeline.ts";
 
 async function main() {
   const config = readConfig(process.env);
   const log = createLogger(config.apiKey);
-  const receiver = new Receiver(log);
+  const pipeline = new Pipeline(config.apiKey, () => receiver.nextSequence(), log);
+  const receiver = new Receiver(log, {
+    book: (book) => pipeline.book(book), trade: (trade) => pipeline.trade(trade),
+  });
+  await pipeline.initialize();
   const upstream = new Upstream({ apiKey: config.apiKey, receiver, log });
-  const app = createStatusApp(upstream, receiver, config.apiKey);
+  const app = createStatusApp(upstream, receiver, config.apiKey, () => pipeline.status());
   const http = app.listen(config.port, "0.0.0.0");
   let shuttingDown = false;
 
@@ -18,7 +23,7 @@ async function main() {
     shuttingDown = true;
     log("shutdown_requested", { signal });
     const httpClosed = new Promise<void>((resolve) => http.close(() => resolve()));
-    await upstream.stop();
+    await Promise.all([upstream.stop(), pipeline.stop()]);
     await httpClosed;
     log("server_stopped", { upstream: upstream.status.state, httpClosed: true });
   }
