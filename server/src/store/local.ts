@@ -46,6 +46,14 @@ export class LocalStore implements Store {
   private queue: Promise<void> = Promise.resolve();
   private failure: Error | null = null;
   private now: () => number;
+  private bounds: { fromSec: number; toSec: number } | null = null;
+  private includeSecond(sec: number) {
+    this.bounds = { fromSec: Math.min(this.bounds?.fromSec ?? sec, sec),
+      toSec: Math.max(this.bounds?.toSec ?? sec + 1, sec + 1) };
+  }
+  get savedRange() {
+    return this.bounds ? { ...this.bounds, fromSec: Math.max(this.bounds.fromSec, Math.floor(this.now() / 1000) - 7 * 86400) } : null;
+  }
   constructor(root: string, now: () => number = Date.now) { this.root = root; this.now = now; }
 
   private run(work: () => Promise<void>): Promise<void> {
@@ -99,6 +107,7 @@ export class LocalStore implements Store {
         let bytes = await fs.readFile(file);
         if (file.endsWith(".gz")) bytes = await gunzip(bytes);
         for (const c of decodeColumns(bytes)) {
+          this.includeSecond(c.tsSec);
           this.markCovered("book", c.tsSec, c.tsSec + 1);
           this.stats.latestColumnSec = Math.max(this.stats.latestColumnSec ?? 0, c.tsSec);
         }
@@ -107,6 +116,7 @@ export class LocalStore implements Store {
         for (const line of text.split("\n").filter(Boolean)) {
           const trade = JSON.parse(line) as Trade;
           const sec = Math.floor(trade.tsUs / 1_000_000);
+          this.includeSecond(sec);
           this.markCovered("tick", sec, sec + 1);
         }
       }
@@ -126,6 +136,7 @@ export class LocalStore implements Store {
     return this.run(async () => {
       const hours = new Set<number>();
       for (const c of columns) {
+        this.includeSecond(c.tsSec);
         const hour = hourOf(c.tsSec);
         const pending = this.columns.get(hour) ?? new Map<number, Column>();
         // Existing seconds always win. L separates historical and live ownership.
@@ -140,6 +151,7 @@ export class LocalStore implements Store {
     return this.run(async () => {
       const hours = new Set<number>();
       for (const t of trades) {
+        this.includeSecond(Math.floor(t.tsUs / 1_000_000));
         const hour = hourOf(Math.floor(t.tsUs / 1_000_000));
         const pending = this.trades.get(hour) ?? [];
         pending.push(t); this.trades.set(hour, pending); hours.add(hour);
@@ -244,6 +256,24 @@ export class LocalStore implements Store {
     for (let h = hourOf(start); h < end; h += 3600) rows.push(...await this.tradeRows(h));
     return rows.filter(t => t.tsUs >= start * 1_000_000 && t.tsUs < end * 1_000_000)
       .sort((a, b) => a.seq - b.seq);
+  }
+  /** Atomic delivery view: persisted data plus confirmed writes held for backfill.
+   * Existing disk columns win, just as in writeHour. No unconfirmed column or filled second.
+   * Serialized with writers so a moving pending batch cannot appear twice/disappear.
+   */
+  readView(start: number, end: number): Promise<{ columns: Column[]; trades: Trade[] }> {
+    let result: { columns: Column[]; trades: Trade[] };
+    return this.run(async () => {
+      const columns = new Map<number, Column>(), trades: Trade[] = [];
+      for (let h = hourOf(start); h < end; h += 3600) {
+        for (const c of decodeColumns(await this.columnBytes(h))) columns.set(c.tsSec, c);
+        for (const c of this.columns.get(h)?.values() ?? []) if (!columns.has(c.tsSec)) columns.set(c.tsSec, c);
+        trades.push(...await this.tradeRows(h), ...this.trades.get(h) ?? []);
+      }
+      result = { columns: [...columns.values()].filter(c => c.tsSec >= start && c.tsSec < end)
+        .sort((a, b) => a.tsSec - b.tsSec),
+      trades: trades.filter(t => t.tsUs >= start * 1e6 && t.tsUs < end * 1e6).sort((a, b) => a.seq - b.seq) };
+    }).then(() => result);
   }
   private async retention() {
     const cutoff = Math.floor(this.now() / 1000) - 7 * 86400;

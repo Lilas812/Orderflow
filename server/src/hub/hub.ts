@@ -1,0 +1,225 @@
+import type { Server } from "node:http";
+import { WebSocketServer } from "ws";
+import { boardColumn, encodeFrame, parseRange, replayParams } from "./frame.ts";
+import { Replay, realClock } from "./replay.ts";
+import type { ReplayClock } from "./replay.ts";
+import type { Column } from "../aggregate/columns.ts";
+import type { Trade, BookSnapshot } from "../types.ts";
+import type { Log } from "../logger.ts";
+
+export const WS_PATH = "/api/ws";
+export const BOARD_LIMIT = 4 * 1024 * 1024, CLOSE_LIMIT = 16 * 1024 * 1024;
+export interface Socket {
+  readyState: number; bufferedAmount: number;
+  send(data: string | Buffer, cb?: (error?: Error) => void): void;
+  close(code: number, reason: string): void;
+  terminate(): void;
+  on(event: string, listener: (...args: any[]) => void): unknown;
+}
+export interface View { columns: Column[]; trades: Trade[] }
+export interface Source {
+  savedRange(): { fromSec: number; toSec: number } | null;
+  read(from: number, to: number): Promise<View>;
+  status(): unknown;
+}
+interface Peer {
+  socket: Socket; mode: "live" | "replay"; initializing: boolean; closed: boolean;
+  columns: Column[]; trades: Trade[]; queuedBytes: number;
+  lastStatus: string; lastStatusAt: number; jobs: Promise<void>; replay?: Replay;
+  replayEnded?: boolean;
+}
+const tradeId = (t: Trade) => `${t.recvUs}:${t.seq}`;
+
+export class Hub {
+  readonly counts = { totalConnections: 0, rejectedConnections: 0, droppedBoards: 0,
+    slowClosed: 0, sendErrors: 0, invalidRequests: 0, rangeRequests: 0 };
+  private peers = new Set<Peer>();
+  private latestBook: BookSnapshot | null = null;
+  private clock: ReplayClock;
+  private source: Source;
+  private log: Log;
+  private timer: unknown;
+  private stopped = false;
+  constructor(source: Source, log: Log, clock: ReplayClock = realClock) {
+    this.source = source; this.log = log; this.clock = clock;
+    const poll = () => {
+      if (this.stopped) return;
+      this.flush();
+      this.timer = this.clock.later(poll, 250);
+    };
+    this.timer = this.clock.later(poll, 250);
+  }
+  snapshot() { return { path: WS_PATH, connected: this.peers.size, ...this.counts }; }
+  private close(p: Peer, code: number, reason: string) {
+    if (p.closed) return;
+    p.closed = true; p.replay?.stop(); p.columns = []; p.trades = []; p.queuedBytes = 0;
+    p.socket.close(code, reason);
+    // Do not keep a dead/slow peer alive indefinitely waiting for its close handshake.
+    const timer = this.clock.later(() => {
+      if (p.socket.readyState !== 3) p.socket.terminate();
+    }, 1000);
+    p.socket.on("close", () => this.clock.cancel(timer));
+  }
+  private healthy(p: Peer) {
+    if (p.closed || p.socket.readyState !== 1) return false;
+    if (p.socket.bufferedAmount + p.queuedBytes > CLOSE_LIMIT) {
+      this.counts.slowClosed++; this.log("hub_slow_close", { bufferedBytes: p.socket.bufferedAmount, queuedBytes: p.queuedBytes });
+      this.close(p, 1013, "slow_consumer"); return false;
+    }
+    return true;
+  }
+  private send(p: Peer, data: string | Buffer, board = false) {
+    if (!this.healthy(p)) return false;
+    if (board && p.socket.bufferedAmount > BOARD_LIMIT) { this.counts.droppedBoards++; return false; }
+    try {
+      p.socket.send(data, error => {
+        if (error) { this.counts.sendErrors++; this.log("hub_send_error", { reason: "send_failed" }); this.close(p, 1011, "send_failed"); }
+      });
+      return true;
+    } catch {
+      this.counts.sendErrors++; this.log("hub_send_error", { reason: "send_failed" }); this.close(p, 1011, "send_failed");
+      return false;
+    }
+  }
+  private json(p: Peer, value: unknown) { return this.send(p, JSON.stringify(value)); }
+  private status(p: Peer, force = false, replay?: unknown) {
+    if (p.closed || p.initializing) return;
+    const status = this.source.status();
+    const encoded = JSON.stringify({ status, ...(replay ? { replay } : {}) });
+    if (force || encoded !== p.lastStatus || this.clock.now() - p.lastStatusAt >= 10000) {
+      this.json(p, { type: "status", status, ...(replay ? { replay } : {}) });
+      p.lastStatus = encoded; p.lastStatusAt = this.clock.now();
+    }
+  }
+  async connect(socket: Socket, url: URL) {
+    if (this.stopped || this.peers.size >= 5) {
+      this.counts.rejectedConnections++;
+      this.log("hub_connection_rejected", { reason: this.stopped ? "stopped" : "connection_limit" });
+      socket.send(JSON.stringify({ type: "error", reqId: null, code: "connection_limit" }));
+      socket.close(1013, "connection_limit");
+      const t = this.clock.later(() => { if (socket.readyState !== 3) socket.terminate(); }, 1000);
+      socket.on("close", () => this.clock.cancel(t));
+      return;
+    }
+    const p: Peer = { socket, mode: "live", initializing: true, closed: false, columns: [], trades: [],
+      queuedBytes: 0, lastStatus: "", lastStatusAt: 0, jobs: Promise.resolve() };
+    this.peers.add(p); this.counts.totalConnections++;
+    socket.on("close", () => { p.closed = true; p.replay?.stop(); this.peers.delete(p); });
+    socket.on("error", () => { this.log("hub_socket_error", { reason: "socket_error" }); this.close(p, 1011, "socket_error"); });
+    socket.on("message", (bytes: Buffer, binary: boolean) => {
+      p.jobs = p.jobs.then(async () => {
+        if (p.closed) return;
+        let reqId: number | null = null;
+        try {
+          if (binary) throw Error("invalid_range");
+          const value: unknown = JSON.parse(bytes.toString());
+          if (typeof value === "object" && value !== null && Number.isInteger((value as any).reqId)) reqId = (value as any).reqId;
+          const range = parseRange(value); reqId = range.reqId;
+          this.counts.rangeRequests++;
+          await this.range(p, range.reqId, range.fromSec, range.toSec);
+        } catch (error) {
+          this.counts.invalidRequests++;
+          this.json(p, { type: "error", reqId, code: error instanceof SyntaxError || (error instanceof Error && error.message === "invalid_range")
+            ? "invalid_range" : "range_read_failed" });
+        }
+      });
+    });
+    const initial = (async () => {
+      try {
+        const saved = this.source.savedRange();
+        let params;
+        try { params = replayParams(url, saved); }
+        catch {
+          this.counts.invalidRequests++; this.json(p, { type: "error", reqId: null, code: "invalid_replay_parameters" });
+          this.close(p, 1008, "invalid_replay_parameters"); return;
+        }
+        p.mode = params ? "replay" : "live";
+        this.json(p, { type: "hello", symbol: "NQ", tickSize: 0.25, columnSeconds: 1,
+          serverTimeUs: this.clock.now() * 1000, mode: p.mode, savedRange: saved });
+        const to = params?.fromSec ?? Math.floor(this.clock.now() / 1000);
+        const view = await this.range(p, 0, Math.max(0, to - 1800), to);
+        if (p.closed) return;
+        if (params) {
+          // End is frozen at connection time; new live appends do not extend this replay.
+          const replay = await this.source.read(params.fromSec, params.toSec);
+          if (p.closed) return;
+          p.columns = []; p.trades = []; p.queuedBytes = 0; p.initializing = false;
+          p.replay = new Replay(replay.columns, replay.trades, params.fromSec, params.toSec, params.speed, {
+            column: c => { this.send(p, encodeFrame(1, 0, [c])); this.send(p, encodeFrame(3, 0, [c]), true); },
+            trades: trades => { this.json(p, { type: "trades", trades }); },
+            end: () => {
+              this.status(p, true, { state: "ended", ...params });
+              p.replayEnded = true;
+              this.log("replay_ended", params);
+            },
+          }, this.clock);
+          p.replay.start();
+        } else {
+          const seconds = new Set(view.columns.map(c => c.tsSec));
+          // Match only queued live event identities, never deduplicate by trade contents.
+          const trades = new Set(view.trades.map(tradeId));
+          p.trades = p.trades.filter(t => !trades.has(tradeId(t)));
+          p.initializing = false; p.queuedBytes = 0;
+          for (const c of p.columns) if (!seconds.has(c.tsSec)) this.send(p, encodeFrame(1, 0, [c]));
+          p.columns = [];
+        }
+        this.status(p, true);
+      } catch {
+        this.json(p, { type: "error", reqId: 0, code: "initial_read_failed" });
+        this.log("hub_initial_error", { reason: "initial_read_failed" });
+        this.close(p, 1011, "initial_read_failed");
+      }
+    })();
+    p.jobs = initial;
+    await initial;
+  }
+  private async range(p: Peer, reqId: number, from: number, to: number) {
+    const view = await this.source.read(from, to);
+    if (!p.closed) {
+      this.send(p, encodeFrame(2, reqId, view.columns));
+      this.json(p, { type: "rangeTrades", reqId, trades: view.trades });
+    }
+    return view;
+  }
+  book(book: BookSnapshot) { this.latestBook = book; }
+  column(column: Column) {
+    for (const p of this.peers) {
+      if (p.mode !== "live" || !this.healthy(p)) continue;
+      if (p.initializing) { p.columns.push(column); p.queuedBytes += encodeFrame(1, 0, [column]).length; this.healthy(p); }
+      else this.send(p, encodeFrame(1, 0, [column]));
+    }
+  }
+  trade(trade: Trade) {
+    for (const p of this.peers) if (p.mode === "live" && this.healthy(p)) {
+      p.trades.push(trade);
+      if (p.initializing) { p.queuedBytes += Buffer.byteLength(JSON.stringify(trade)); this.healthy(p); }
+    }
+  }
+  flush() {
+    for (const p of this.peers) {
+      if (!this.healthy(p) || p.initializing) continue;
+      if (p.mode === "live") {
+        if (this.latestBook) this.send(p, encodeFrame(3, 0, [boardColumn(this.latestBook)]), true);
+        if (p.trades.length) {
+          const trades = p.trades; p.trades = [];
+          this.json(p, { type: "trades", trades });
+        }
+      }
+      if (!p.replayEnded) this.status(p);
+    }
+  }
+  stop() {
+    this.stopped = true; this.clock.cancel(this.timer);
+    for (const p of this.peers) this.close(p, 1001, "shutdown");
+  }
+}
+
+export function attachHub(server: Server, hub: Hub) {
+  const wss = new WebSocketServer({ noServer: true, perMessageDeflate: false });
+  server.on("upgrade", (request, socket, head) => {
+    const url = new URL(request.url ?? "/", "http://localhost");
+    if (url.pathname !== WS_PATH) { socket.end("HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n"); return; }
+    wss.handleUpgrade(request, socket, head, ws => { void hub.connect(ws, url); });
+  });
+  return wss;
+}

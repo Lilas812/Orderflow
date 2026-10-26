@@ -72,7 +72,7 @@ test("ダミー：過去板を拒否し、約定の巻き戻りとは別件数",
 });
 
 test("ダミー：通信/5xxを合計3回失敗した窓は欠け、次の窓へ。60秒待ち2回", async () => {
-  const L = Math.floor(Date.now() / 1000); let now = L * 1000;
+  const L = Math.floor(Date.now() / 1000); let now = (L + 300) * 1000;
   const waits: number[] = [], calls: number[] = []; let failures = 0;
   await temporary(async store => {
     store.markCovered("book", L - 10800, L - 120);
@@ -101,7 +101,7 @@ test("ダミー：通信/5xxを合計3回失敗した窓は欠け、次の窓へ
 });
 for (const fillOnRetry of [1, 3, null]) {
   test(`ダミー：直近0行を後回し、2分間隔・再取得${fillOnRetry ?? "3回とも空"}・板約定は独立`, async () => {
-    const L = Math.floor(Date.now() / 1000); let now = L * 1000, latestBookCalls = 0, seq = 0;
+    const L = Math.floor(Date.now() / 1000); let now = (L + 300) * 1000, latestBookCalls = 0, seq = 0;
     const calls: { kind: string; start: number; at: number }[] = [];
     const waits: number[] = [];
     await temporary(async store => {
@@ -136,7 +136,7 @@ for (const fillOnRetry of [1, 3, null]) {
 }
 
 test("ダミー：その他4xxはバックフィル停止、欠けとして通過させない", async () => {
-  const L = Math.floor(Date.now() / 1000);
+  const L = Math.floor(Date.now() / 1000) - 301;
   await temporary(async store => {
     const client = new HistoryClient("dummy-key", () => {}, async () => new Response("", { status: 403 }));
     const backfill = new Backfill(client, store, metrics(), () => 1, () => {});

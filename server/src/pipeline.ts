@@ -1,6 +1,7 @@
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { ColumnAggregator } from "./aggregate/columns.ts";
+import type { Column } from "./aggregate/columns.ts";
 import { LocalStore } from "./store/local.ts";
 import { Metrics } from "./ingest/metrics.ts";
 import { HistoryClient } from "./history/client.ts";
@@ -25,9 +26,11 @@ export class Pipeline {
   private pending = new Set<Promise<unknown>>();
   private storageError: string | null = null;
   private ticking = false;
+  private onColumn: (column: Column) => void;
 
-  constructor(apiKey: string, nextSeq: () => number, log: Log) {
+  constructor(apiKey: string, nextSeq: () => number, log: Log, onColumn: (column: Column) => void = () => {}) {
     this.log = log;
+    this.onColumn = onColumn;
     // Resolve independently of the workflow's cwd; never under server/data.
     this.store = new LocalStore(fileURLToPath(new URL("../../data/", import.meta.url)));
     this.historyMetrics = new Metrics(log);
@@ -46,6 +49,7 @@ export class Pipeline {
       }
       this.lastColumn = column.tsSec;
       this.track(this.store.addColumns([column]));
+      this.onColumn(column);
     });
   }
   private track(promise: Promise<unknown>) {
@@ -103,6 +107,14 @@ export class Pipeline {
       storage: { ...this.store.stats }, storageError: this.storageError,
       liveGaps: gaps, unconfirmedSecond: this.aggregate.pendingSecond,
     };
+  }
+  readRange(start: number, end: number) {
+    // Capture before enqueuing the store view: the one-second flush may move this
+    // batch into the store later, but cannot interleave inside that view.
+    const buffered = this.tradeBatch.filter(t => t.tsUs >= start * 1e6 && t.tsUs < end * 1e6);
+    return this.store.readView(start, end).then(view => ({
+      columns: view.columns, trades: [...view.trades, ...buffered].sort((a, b) => a.seq - b.seq),
+    }));
   }
   async stop() {
     this.stopped = true;

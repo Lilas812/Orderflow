@@ -155,7 +155,7 @@ test("ダミー：保存済み秒を再取得せず、0行を記録、切詰め�
       assert.equal(active++, 0); calls.push([kind, a, b]); await Promise.resolve(); active--;
       return { rows: [], truncated: b - a > 1 };
     } };
-    let now = Date.now();
+    let now = (L + 300) * 1000;
     const clock = { now: () => now, wait: async (ms: number) => { now += ms; } };
     const backfill = new Backfill(source, store, newMetrics(), () => 1, () => {}, clock);
     backfill.start(L); await backfill.settled();
@@ -167,7 +167,7 @@ test("ダミー：保存済み秒を再取得せず、0行を記録、切詰め�
   });
 });
 test("ダミー：1秒窓でもtruncatedなら失敗し、不完全な窓を取得済みにしない", async () => {
-  const L = Math.floor(Date.now() / 1000);
+  const L = Math.floor(Date.now() / 1000) - 301;
   await temporary(async store => {
     store.markCovered("book", L - 10800, L - 1);
     const source = { get: async () => ({ rows: [], truncated: true }) };

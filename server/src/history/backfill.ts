@@ -40,6 +40,7 @@ export class Backfill {
     emptyRetries: 0, pendingEmpty: [] as DeferredEmpty[],
     noData: [] as (HistoryGap & { attempts: number })[],
     gaps: [] as HistoryGap[],
+    pendingMaturity: [] as { kind: Kind; startSec: number; endSec: number; readyAtUs: number }[],
   };
   private source: HistorySource;
   private store: Store;
@@ -64,10 +65,18 @@ export class Backfill {
   snapshot() {
     if (this.status.state === "running") this.status.elapsedMs = this.schedule.now() - this.status.startedAtUs! / 1000;
     return { ...this.status, pendingEmpty: this.status.pendingEmpty.map(p => ({ ...p })),
+      pendingMaturity: this.status.pendingMaturity.map(p => ({ ...p })),
       noData: this.status.noData.map(p => ({ ...p })), gaps: this.status.gaps.map(p => ({ ...p })) };
   }
   private async take(kind: Kind, start: number, end: number, retries = 0): Promise<void> {
     this.abort.signal.throwIfAborted();
+    const readyAtUs = (end + 300) * 1_000_000;
+    if (this.schedule.now() * 1000 < readyAtUs) {
+      const pending = { kind, startSec: start, endSec: end, readyAtUs };
+      this.status.pendingMaturity.push(pending);
+      this.log("history_maturity_deferred", pending);
+      return;
+    }
     let response;
     try { response = await this.source.get(kind, start, end, this.abort.signal); }
     catch (error) {
@@ -88,7 +97,7 @@ export class Backfill {
     if (empty) {
       this.status.emptyRequests++;
       const nowSec = this.schedule.now() / 1000;
-      if ((retries > 0 || (end >= nowSec - 300 && end <= nowSec)) && retries < 3) {
+      if ((retries > 0 || (end >= nowSec - 600 && end <= nowSec)) && retries < 3) {
         const deferred = { kind, startSec: start, endSec: end, retries, nextAttemptUs: (this.schedule.now() + 120000) * 1000 };
         this.status.pendingEmpty.push(deferred);
         this.log("history_empty_deferred", deferred);
@@ -109,6 +118,13 @@ export class Backfill {
     this.store.markCovered(kind, start, end);
   }
   private async retryReady() {
+    for (;;) {
+      const index = this.status.pendingMaturity.findIndex(p => p.readyAtUs <= this.schedule.now() * 1000);
+      if (index < 0) break;
+      const [pending] = this.status.pendingMaturity.splice(index, 1);
+      this.log("history_maturity_ready", pending);
+      await this.take(pending.kind, pending.startSec, pending.endSec);
+    }
     for (;;) {
       const index = this.status.pendingEmpty.findIndex(p => p.nextAttemptUs <= this.schedule.now() * 1000);
       if (index < 0) return;
@@ -133,16 +149,18 @@ export class Backfill {
         }
         this.status.completedWindows++;
         for (let h = hourOf(end - 1); h >= hourOf(start); h -= 3600) {
-          const waiting = this.status.pendingEmpty.some(p => p.startSec < h + 3600 && p.endSec > h);
+          const waiting = [...this.status.pendingEmpty, ...this.status.pendingMaturity]
+            .some(p => p.startSec < h + 3600 && p.endSec > h);
           if (a <= h && !released.has(h) && !waiting) { await this.store.releaseHour(h); released.add(h); }
         }
         this.log("history_window_complete", { startSec: a, endSec: b, completed: this.status.completedWindows });
         b = a;
       }
-      while (this.status.pendingEmpty.length) {
+      while (this.status.pendingEmpty.length || this.status.pendingMaturity.length) {
         await this.retryReady();
-        if (this.status.pendingEmpty.length) {
-          const next = Math.min(...this.status.pendingEmpty.map(p => p.nextAttemptUs / 1000));
+        if (this.status.pendingEmpty.length || this.status.pendingMaturity.length) {
+          const next = Math.min(...this.status.pendingEmpty.map(p => p.nextAttemptUs / 1000),
+            ...this.status.pendingMaturity.map(p => p.readyAtUs / 1000));
           await this.schedule.wait(Math.max(0, next - this.schedule.now()), this.abort.signal);
         }
       }

@@ -2,26 +2,35 @@ import { readConfig } from "./config.ts";
 import { createLogger } from "./logger.ts";
 import { Receiver } from "./ingest/receiver.ts";
 import { Upstream } from "./upstream/connection.ts";
-import { createStatusApp } from "./status/app.ts";
+import { createStatusApp, statusSnapshot } from "./status/app.ts";
 import { Pipeline } from "./pipeline.ts";
+import { Hub, attachHub } from "./hub/hub.ts";
 
 async function main() {
   const config = readConfig(process.env);
   const log = createLogger(config.apiKey);
-  const pipeline = new Pipeline(config.apiKey, () => receiver.nextSequence(), log);
+  const pipeline = new Pipeline(config.apiKey, () => receiver.nextSequence(), log, column => hub.column(column));
   const receiver = new Receiver(log, {
-    book: (book) => pipeline.book(book), trade: (trade) => pipeline.trade(trade),
+    book: (book) => { pipeline.book(book); hub.book(book); },
+    trade: (trade) => { pipeline.trade(trade); hub.trade(trade); },
   });
   await pipeline.initialize();
   const upstream = new Upstream({ apiKey: config.apiKey, receiver, log });
-  const app = createStatusApp(upstream, receiver, config.apiKey, () => pipeline.status());
+  const hub: Hub = new Hub({
+    savedRange: () => pipeline.store.savedRange,
+    read: (from, to) => pipeline.readRange(from, to),
+    status: () => statusSnapshot(upstream, receiver, config.apiKey, () => pipeline.status(), () => hub.snapshot()),
+  }, log);
+  const app = createStatusApp(upstream, receiver, config.apiKey, () => pipeline.status(), () => hub.snapshot());
   const http = app.listen(config.port, "0.0.0.0");
+  const wss = attachHub(http, hub);
   let shuttingDown = false;
 
   async function shutdown(signal: string) {
     if (shuttingDown) return;
     shuttingDown = true;
     log("shutdown_requested", { signal });
+    hub.stop(); wss.close();
     const httpClosed = new Promise<void>((resolve) => http.close(() => resolve()));
     await Promise.all([upstream.stop(), pipeline.stop()]);
     await httpClosed;
