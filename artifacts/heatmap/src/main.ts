@@ -5,6 +5,9 @@ import { US_PER_SECOND, clampViewport, type Viewport, bestMidpoint } from "./dom
 import { timeUsToX, xToTimeUs, zoomPriceAt, zoomTimeAt } from "./chart/coordinates.ts";
 import { HeatmapRenderer, type DrawMetrics } from "./chart/renderer.ts";
 import { formatAxisTicks, zoneFromSearch, type DisplayZone } from "./chart/timezone.ts";
+import { CurrentTradeState } from "./data/trade-aggregate.ts";
+import { TradeOverlayRenderer } from "./chart/trade-overlay.ts";
+import { parseBubbleMin } from "./chart/trade-geometry.ts";
 
 declare global {
   interface Window {
@@ -14,6 +17,12 @@ declare global {
 }
 
 export interface HeatmapDebugSnapshot {
+  overlay: TradeOverlayRenderer["metrics"];
+  bubbleMin: number;
+  bubbleMinInvalid: boolean;
+  currentPrice: number | null;
+  replayHeadUs: number | null;
+  depthDrawCount: number;
   traffic: RealtimeClient["traffic"];
   loadingRanges: number;
   drawBreakdown: DrawMetrics;
@@ -63,15 +72,18 @@ root.innerHTML = `
           <canvas class="heat-canvas" id="heatmap" aria-label="NQ order-book depth heatmap. Horizontal axis is time; vertical axis is price in quarter-point ticks.">
             Canvas 2D heatmap. Depth data will be visible when the browser supports Canvas.
           </canvas>
+          <canvas class="trade-overlay" id="trade-overlay" aria-label="Trade price line, volume bubbles and current price"></canvas>
           <div id="empty-state" class="state-message" role="status" aria-live="polite">Waiting for feed · no synthetic data</div>
           <div id="status-banner" class="status-banner" role="status" aria-live="polite"></div>
           <pre id="debug-panel" class="debug-panel" hidden></pre>
         </section>
         <section class="region book-region" aria-label="Current book frame">
           <span class="region-label">Current book</span><span class="region-hint">Phase 5 · empty frame</span>
+          <canvas class="trade-overlay" id="current-book-line" aria-hidden="true"></canvas>
         </section>
         <section class="region price-region" aria-label="Price axis">
           <canvas class="axis-price" id="price-axis" aria-label="Shared price axis in NQ quarter-point increments."></canvas>
+          <canvas class="trade-overlay" id="current-price-label" aria-hidden="true"></canvas>
         </section>
         <section class="region large-region" aria-label="Large orders frame">
           <span class="region-label">Large orders</span><span class="region-hint">Phase 6 · empty frame</span>
@@ -112,6 +124,17 @@ const debugPanel = required<HTMLPreElement>("debug-panel");
 const scaleValue = required<HTMLSpanElement>("scale-value");
 const renderer = new HeatmapRenderer(canvas, axisCanvas, () => scheduleDraw());
 const cache = new ColumnCache();
+const overlayRenderer = new TradeOverlayRenderer(
+  required<HTMLCanvasElement>("trade-overlay"), required<HTMLCanvasElement>("current-book-line"),
+  required<HTMLCanvasElement>("current-price-label"),
+);
+const bubbleMinimum = parseBubbleMin(window.location.search);
+const currentTrade = new CurrentTradeState();
+const initialQuote = new CurrentTradeState();
+let initialCutoffUs = 0;
+let replayHeadUs: number | null = null;
+let depthDrawCount = 0;
+let depthDirty = false;
 const displayZone: DisplayZone = zoneFromSearch(window.location.search);
 const debugMode = new URLSearchParams(window.location.search).get("debug") === "1";
 
@@ -152,6 +175,10 @@ const client = new RealtimeClient(cache, {
   },
   onHello: (message) => {
     hello = message;
+    currentTrade.reset(); initialQuote.reset();
+    initialCutoffUs = (message.mode === "replay" ? replayFromSec()! * US_PER_SECOND
+      : Math.floor(message.serverTimeUs / US_PER_SECOND) * US_PER_SECOND) - 1;
+    replayHeadUs = message.mode === "replay" ? initialCutoffUs + 1 : null;
     lastDataError = "";
     if (!hasHello || follow) {
       const replayFrom = replayFromSec();
@@ -176,6 +203,9 @@ const client = new RealtimeClient(cache, {
     updateStatus();
   },
   onColumns: (_columns, _kind) => {
+    if (_kind === 1 && replayHeadUs !== null) {
+      for (const c of _columns) replayHeadUs = Math.max(replayHeadUs, c.timeUs + US_PER_SECOND);
+    }
     receivedColumnRevision += 1;
     if (follow && !client.initialLoading && cache.latestTimeUs !== null) {
       alignFollowToPhysicalPixel();
@@ -195,13 +225,22 @@ const client = new RealtimeClient(cache, {
   },
   onRangeComplete: (reqId) => {
     if (reqId === 0) {
+      if (!currentTrade.trade && initialQuote.trade) currentTrade.accept([initialQuote.trade]);
       if (follow && cache.latestTimeUs !== null) alignFollowToPhysicalPixel();
       positionPriceFromData();
     }
     syncRetentionAndRequests(); updateStatus(); renderTimeAxis(); scheduleDraw(); updateDebugPanel();
   },
   onTrades: () => {
+    scheduleDraw(false);
     updateDebugPanel();
+  },
+  onTradeBatch: (trades, reqId) => {
+    if (reqId === 0) initialQuote.accept(trades, initialCutoffUs);
+    else if (reqId === null) {
+      currentTrade.accept(trades);
+      if (replayHeadUs !== null) for (const t of trades) replayHeadUs = Math.max(replayHeadUs, t.tsUs);
+    }
   },
   onError: (message) => {
     lastDataError = message;
@@ -288,21 +327,33 @@ function resetView(): void {
   updateStatus();
 }
 
-function scheduleDraw(): void {
+function scheduleDraw(redrawDepth = true): void {
+  depthDirty ||= redrawDepth;
   if (drawQueued) return;
   drawQueued = true;
   requestAnimationFrame(() => {
     const drawStart = performance.now();
     drawQueued = false;
-    const columns = cache.columns;
-    renderer.draw(columns, viewport, receivedColumnRevision, displayZone, columns.length > 0);
-    lastMetrics = { ...renderer.metrics, drawMs: performance.now() - drawStart };
+    const redrewDepth = depthDirty;
+    if (depthDirty) {
+      const columns = cache.columns;
+      renderer.draw(columns, viewport, receivedColumnRevision, displayZone, columns.length > 0);
+      depthDrawCount++;
+      depthDirty = false;
+    }
+    overlayRenderer.draw(cache.tradeAggregation, viewport, bubbleMinimum.value,
+      currentTrade.trade?.price ?? null, replayHeadUs ?? Infinity);
+    lastMetrics = { ...renderer.metrics,
+      ...(redrewDepth ? {} : { rasterRebuilt: false, aggregationMs: 0, scaleMs: 0, rasterMs: 0,
+        tileSyncMs: 0, colorMs: 0, uploadMs: 0, axisMs: 0, partialRaster: false, repaintPixels: 0,
+        rawLevelScans: 0, recomputedColumns: 0 }),
+      drawMs: performance.now() - drawStart };
     const now = performance.now();
     drawInstants.push(now);
     drawSamples.push({ at: now, ms: lastMetrics.drawMs });
     drawSamples = drawSamples.filter((sample) => now - sample.at < 30_000).slice(-120);
     drawInstants = drawInstants.filter((time) => now - time < 1_000);
-    scaleValue.textContent = columns.length ? `P99 ${lastMetrics.p99}` : "";
+    scaleValue.textContent = cache.size ? `P99 ${lastMetrics.p99}` : "";
     if (debugMode) updateDebugPanel();
   });
 }
@@ -381,13 +432,21 @@ function updateDebugPanel(): void {
 ${cache.size.toLocaleString()} columns · steady ${(bytesPerMinute / 1_024).toFixed(1)} KiB/min (expanded)
 initial ${(client.traffic.initialBytes / 1_024).toFixed(1)} KiB · ${client.traffic.initialElapsedMs ?? "loading"} ms
 range ${(client.traffic.rangeBytes / 1_024).toFixed(1)} KiB · ${client.traffic.extensions || "no compression"} · expanded bytes
-${connection.toUpperCase()} · ${follow ? "FOLLOW" : "BROWSE"} · ${requestCount} range`;
+${connection.toUpperCase()} · ${follow ? "FOLLOW" : "BROWSE"} · ${requestCount} range
+${overlayRenderer.metrics.bubbleCount} bubbles · min ${bubbleMinimum.value}${bubbleMinimum.invalid ? " · bubbleMin 無効" : ""}
+line ${overlayRenderer.metrics.lineMs.toFixed(2)} / bubble ${overlayRenderer.metrics.bubbleMs.toFixed(2)} ms`;
 }
 
 function debugSnapshot(): HeatmapDebugSnapshot {
   const now = performance.now();
   const sample = drawSamples.slice(-30).map((entry) => entry.ms);
   return Object.freeze({
+    overlay: { ...overlayRenderer.metrics },
+    bubbleMin: bubbleMinimum.value,
+    bubbleMinInvalid: bubbleMinimum.invalid,
+    currentPrice: currentTrade.trade?.price ?? null,
+    replayHeadUs,
+    depthDrawCount,
     traffic: client.traffic,
     loadingRanges: client.loadingRangeCount,
     drawBreakdown: lastMetrics,
@@ -397,7 +456,7 @@ function debugSnapshot(): HeatmapDebugSnapshot {
     rangeRequestCount: requestCount,
     latestTimeUs: cache.latestTimeUs,
     cachedColumns: cache.size,
-    cachedTrades: cache.trades.length,
+    cachedTrades: cache.tradeCount,
     drawFps: drawInstants.filter((time) => now - time < 1_000).length,
     drawMeanMs: sample.length ? sample.reduce((sum, value) => sum + value, 0) / sample.length : 0,
     drawMaxMs: sample.length ? Math.max(...sample) : 0,

@@ -1,5 +1,6 @@
 import type { HeatColumn, Trade } from "../domain.ts";
 import { MAX_CACHE_SECONDS, US_PER_SECOND } from "../domain.ts";
+import { TradeAggregator } from "./trade-aggregate.ts";
 
 export interface TimeRange {
   fromSec: number;
@@ -9,8 +10,7 @@ export interface TimeRange {
 export class ColumnCache {
   private readonly bySecond = new Map<number, HeatColumn>();
   private coverage: TimeRange[] = [];
-  private _trades: Trade[] = [];
-  private tradeIds = new Set<string>();
+  readonly tradeAggregation = new TradeAggregator();
   private anchorSec: number | null = null;
   private _latestTimeUs: number | null = null;
   private _latestBook: HeatColumn | null = null;
@@ -22,7 +22,8 @@ export class ColumnCache {
   get size(): number { return this.bySecond.size; }
   get latestTimeUs(): number | null { return this._latestTimeUs; }
   get latestBook(): HeatColumn | null { return this._latestBook; }
-  get trades(): readonly Trade[] { return this._trades; }
+  get trades(): readonly Trade[] { return this.tradeAggregation.trades; }
+  get tradeCount(): number { return this.tradeAggregation.size; }
 
   get columns(): HeatColumn[] {
     return [...this.bySecond.values()].sort((a, b) => a.timeUs - b.timeUs);
@@ -57,14 +58,7 @@ export class ColumnCache {
   }
 
   addTrades(trades: readonly Trade[]): void {
-    // Only transport identity is deduplicated. Equal time/price/size/side may be distinct executions.
-    // Iterate rather than push(...trades): an initial/range batch can exceed the JS argument limit.
-    for (const trade of trades) {
-      const id = `${trade.recvUs}:${trade.seq}`;
-      if (this.tradeIds.has(id)) continue;
-      this.tradeIds.add(id);
-      this._trades.push(trade);
-    }
+    this.tradeAggregation.appendLive(trades);
     this.trim();
   }
 
@@ -152,8 +146,7 @@ export class ColumnCache {
   reset(): void {
     this.bySecond.clear();
     this.coverage = [];
-    this._trades = [];
-    this.tradeIds.clear();
+    this.tradeAggregation.reset();
     this._latestTimeUs = null;
     this._latestBook = null;
     this.retentionFromSec = null;
@@ -182,11 +175,7 @@ export class ColumnCache {
     const from = this.retentionFromSec;
     const to = this.retentionToSec;
     for (const second of this.bySecond.keys()) if (second < from || second >= to) this.bySecond.delete(second);
-    this._trades = this._trades.filter((trade) => {
-      const retain = trade.tsUs >= from * US_PER_SECOND && trade.tsUs < to * US_PER_SECOND;
-      if (!retain) this.tradeIds.delete(`${trade.recvUs}:${trade.seq}`);
-      return retain;
-    });
+    this.tradeAggregation.retain(from * US_PER_SECOND, to * US_PER_SECOND);
     this.trimCoverage();
   }
 

@@ -117,12 +117,13 @@ test("receives initial kind 2/trades, holds kind 3, requests missing range seria
   socket.message(makeFrame(2, 1, [{ tsSec: 1_100, source: 1, asks: [[40_001, 11]] }]));
   assert.equal(cache.size, 2);
   assert.equal(JSON.parse(socket.sent[0]!).reqId, 1);
-  socket.message(JSON.stringify({ type: "rangeTrades", reqId: 1, trades: [trade] }));
+  const rangeTrade = { ...trade, tsUs: 1_100_000_000, seq: trade.seq + 2 };
+  socket.message(JSON.stringify({ type: "rangeTrades", reqId: 1, trades: [rangeTrade, rangeTrade] }));
   client.requestVisible(600, 700);
   assert.equal(socket.sent.length, 1, "the first pair does not finish a request");
-  socket.message(JSON.stringify({ type: "rangeDone", reqId: 1, fromSec: 1000, toSec: 1200, columns: 1, trades: 1, chunks: 1 }));
+  socket.message(JSON.stringify({ type: "rangeDone", reqId: 1, fromSec: 1000, toSec: 1200, columns: 1, trades: 2, chunks: 1 }));
   assert.equal(socket.sent.length, 2, "the next request starts only after rangeDone");
-  assert.equal(cache.trades.length, 2); // The same transport ID in a range response is not a new execution.
+  assert.equal(cache.trades.length, 3); // The repeated transport ID within this valid range counts only once.
   assert.equal(errors.length, 0);
   client.stop();
 });

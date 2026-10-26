@@ -6,3 +6,4 @@
 - [ヒートマップの幅と色基準](heatmap-rendering-decisions.md) — ユーザー指定は本体・デルタ・時間軸54%、99パーセンタイルは枚数1以上だけ。
 - [下流の圧縮状態](downstream-compression.md) — 250msごとの板の類似性から、サーバー→ブラウザは圧縮状態を引き継ぐ。
 - [検証時の設定副作用](verification-config-side-effects.md) — 補助ツールによるランタイムの自動追加を、設定変更禁止の作業で見落とさない。
+- [検証画像の保存](screenshot-evidence.md) — ブラウザの画像IDは保存済みPNGではない。会話内表示とワークスペース保存を区別する。

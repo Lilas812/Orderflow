@@ -1,4 +1,4 @@
-import type { HeatColumn } from "../domain.ts";
+import type { HeatColumn, Trade } from "../domain.ts";
 import { US_PER_SECOND } from "../domain.ts";
 import { ColumnCache, type TimeRange } from "./cache.ts";
 import { decodeFrame, decodeTrades } from "./protocol.ts";
@@ -55,6 +55,7 @@ export interface SocketListeners {
   onRangeComplete?(reqId: number): void;
   onLatestBook(column: HeatColumn): void;
   onTrades(count: number): void;
+  onTradeBatch?(trades: readonly Trade[], reqId: number | null): void;
   onError(message: string): void;
   onReplayEnded(): void;
   onBytesPerMinute(bytes: number): void;
@@ -255,6 +256,7 @@ export class RealtimeClient {
       this.cache.markCovered(endSec - 1_800, endSec);
       this.pending = { reqId: 0, fromSec: Math.max(0, endSec - 1800), toSec: endSec,
         columns: 0, trades: 0, chunks: 0, tradeChunks: 0 };
+      this.cache.tradeAggregation.beginRange(0, this.pending.fromSec * US_PER_SECOND, endSec * US_PER_SECOND);
       this.reconnectDelay = 1_000;
       this.listeners.onHello(hello);
       if (this.retryVisible) this.requestVisible(this.retryVisible.fromSec, this.retryVisible.toSec);
@@ -262,15 +264,19 @@ export class RealtimeClient {
     }
     if (message.type === "trades" || message.type === "rangeTrades") {
       const trades = decodeTrades(message.trades);
-      this.cache.addTrades(trades);
-      this.listeners.onTrades(trades.length);
       if (message.type === "rangeTrades") {
         const reqId = message.reqId;
         if (typeof reqId === "number" && this.pending?.reqId === reqId) {
+          this.cache.tradeAggregation.appendRangeChunk(reqId, trades);
+          this.listeners.onTradeBatch?.(trades, reqId);
           this.pending.trades += trades.length;
           this.pending.tradeChunks++;
         }
+      } else {
+        this.cache.addTrades(trades);
+        this.listeners.onTradeBatch?.(trades, null);
       }
+      this.listeners.onTrades(trades.length);
       return;
     }
     if (message.type === "rangeDone") {
@@ -283,6 +289,7 @@ export class RealtimeClient {
         throw new Error("invalid_range_done");
       }
       const reqId = pending.reqId;
+      this.cache.tradeAggregation.commitRange(reqId);
       this.pending = null;
       if (reqId === 0) this.initialElapsedMs = this.env.now() - this.initialStartedAt;
       this.listeners.onRangeComplete?.(reqId);
@@ -304,6 +311,7 @@ export class RealtimeClient {
       this.listeners.onError(code);
       if (typeof message.reqId === "number" && this.pending?.reqId === message.reqId) {
         this.cache.removeCoverage(this.pending.fromSec, this.pending.toSec);
+        this.cache.tradeAggregation.abortRange(this.pending.reqId);
         this.pending = null;
         this.pumpRangeQueue();
       }
@@ -323,18 +331,23 @@ export class RealtimeClient {
     this.reqId = this.reqId >= 0xffff_ffff ? 1 : this.reqId + 1;
     const pending: PendingRange = { ...range, reqId: this.reqId, columns: 0, trades: 0, chunks: 0, tradeChunks: 0 };
     this.pending = pending;
+    this.cache.tradeAggregation.beginRange(pending.reqId, pending.fromSec * US_PER_SECOND, pending.toSec * US_PER_SECOND);
     try {
       this.listeners.onRangeRequest(range);
       socket.send(JSON.stringify({ op: "range", reqId: pending.reqId, fromSec: pending.fromSec, toSec: pending.toSec }));
     } catch {
       this.cache.removeCoverage(pending.fromSec, pending.toSec);
+      this.cache.tradeAggregation.abortRange(pending.reqId);
       this.pending = null;
       this.queue.unshift(range);
     }
   }
 
   private clearPendingRanges(): void {
-    if (this.pending) this.cache.removeCoverage(this.pending.fromSec, this.pending.toSec);
+    if (this.pending) {
+      this.cache.removeCoverage(this.pending.fromSec, this.pending.toSec);
+      this.cache.tradeAggregation.abortRange(this.pending.reqId);
+    }
     for (const range of this.queue) this.cache.removeCoverage(range.fromSec, range.toSec);
     this.pending = null;
     this.queue = [];
