@@ -1,0 +1,44 @@
+uploads = []
+generated = []
+
+[[outputs]]
+id = "zZQwb86MHy5BDUIG5HxXf"
+uri = "file://data/phase3-checks/replay-1.jpg"
+type = "image"
+title = "リプレイ1倍"
+description = "Phase 3実データ・初期表示のスクリーンショット。debug表示あり。"
+logical_id = "19707ed3-ffb7-458a-a5bf-8ba7b6f79031"
+content_hash = "sha256:98458e9f94037b1c3b51f1b29a56589d04b94933699387844364c1651387f294"
+size = 141377
+mtime_ms = 1793037397313
+storage_uri = "gcs://replit-rams-assets-pike/rams/assets/repl:c326af06-2355-4bfb-a52e-f433587c4cd9/19707ed3-ffb7-458a-a5bf-8ba7b6f79031/8ace5322-71e1-453a-b7ac-d72df89a3708"
+storage_version_token = "1793038047168966"
+content_type = "image/jpeg"
+
+[[outputs]]
+id = "xjbw-4T8SOPoM_HC4Whig"
+uri = "file://data/phase3-checks/replay-10.jpg"
+type = "image"
+title = "リプレイ10倍"
+description = "Phase 3実データ・初期表示のスクリーンショット。進行速度の実測はPHASE3_REPORT.mdに記録。"
+logical_id = "c377f43f-3c55-42a9-aedd-c0ce974f769c"
+content_hash = "sha256:d244e51d35355af4ba4070a9e4a5487eddef3219a4fe428057771fcc95073723"
+size = 141417
+mtime_ms = 1793037399357
+storage_uri = "gcs://replit-rams-assets-pike/rams/assets/repl:c326af06-2355-4bfb-a52e-f433587c4cd9/c377f43f-3c55-42a9-aedd-c0ce974f769c/96fa9864-4b15-47fe-978a-00cf28264d95"
+storage_version_token = "1793038048409521"
+content_type = "image/jpeg"
+
+[[outputs]]
+id = "-nU_ZGBE9LrlGoPKwtj3M"
+uri = "file://data/phase3-checks/live-final.jpg"
+type = "image"
+title = "ライブ表示"
+description = "最終確認時の画面。確認後、指示どおり受信サーバーは停止済み。"
+logical_id = "22fb1068-c5b8-47c6-836b-0cf5581f849d"
+content_hash = "sha256:9feec75fd96edcca99accca4b6fb66f7237959ab1c74d9e6bbfafdfbe4c6c681"
+size = 110951
+mtime_ms = 1793037515633
+storage_uri = "gcs://replit-rams-assets-pike/rams/assets/repl:c326af06-2355-4bfb-a52e-f433587c4cd9/22fb1068-c5b8-47c6-836b-0cf5581f849d/99f79750-00f9-4ff5-855b-0b4efbbc553b"
+storage_version_token = "1793038049689958"
+content_type = "image/jpeg"

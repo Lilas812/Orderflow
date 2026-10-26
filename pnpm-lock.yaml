@@ -222,6 +222,18 @@ importers:
         specifier: 3.1.0
         version: 3.1.0
 
+  artifacts/heatmap:
+    devDependencies:
+      '@types/node':
+        specifier: 25.9.9
+        version: 25.9.9
+      typescript:
+        specifier: 5.9.3
+        version: 5.9.3
+      vite:
+        specifier: 7.3.7
+        version: 7.3.7(@types/node@25.9.9)(jiti@2.7.0)(lightningcss@1.32.0)(tsx@4.23.15)(yaml@2.9.1)
+
   artifacts/mockup-sandbox:
     devDependencies:
       '@hookform/resolvers':
@@ -4035,7 +4047,7 @@ snapshots:
 
   '@types/pg@8.23.1':
     dependencies:
-      '@types/node': 25.9.9
+      '@types/node': 24.19.2
       pg-protocol: 1.16.1
       pg-types: 2.2.0
 

@@ -1,0 +1,29 @@
+{
+  "description": "ダミー。既存 server/src/hub/frame.ts の encodeFrame で生成。サーバーのコード変更なし。",
+  "cases": [
+    {
+      "kind": 1,
+      "reqId": 0,
+      "hex": "0100000000010000008873df6a010200020085ffffffffffffff84ffffff010000000000000002000000ffffff7fff000000",
+      "columns": [{"tsSec":1793029000,"source":"history","bids":[{"price":-123,"size":4294967295},{"price":-124,"size":1}],"asks":[{"price":0,"size":2},{"price":2147483647,"size":255}]}]
+    },
+    {
+      "kind": 2,
+      "reqId": 4294967295,
+      "hex": "02ffffffff010000008873df6a010200020085ffffffffffffff84ffffff010000000000000002000000ffffff7fff000000",
+      "columns": [{"tsSec":1793029000,"source":"history","bids":[{"price":-123,"size":4294967295},{"price":-124,"size":1}],"asks":[{"price":0,"size":2},{"price":2147483647,"size":255}]}]
+    },
+    {
+      "kind": 2,
+      "reqId": 77,
+      "hex": "024d00000000000000",
+      "columns": []
+    },
+    {
+      "kind": 3,
+      "reqId": 0,
+      "hex": "0300000000010000008873df6a000200020085ffffffffffffff84ffffff010000000000000002000000ffffff7fff000000",
+      "columns": [{"tsSec":1793029000,"source":"live","bids":[{"price":-123,"size":4294967295},{"price":-124,"size":1}],"asks":[{"price":0,"size":2},{"price":2147483647,"size":255}]}]
+    }
+  ]
+}
