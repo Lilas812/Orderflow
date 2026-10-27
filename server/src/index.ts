@@ -62,12 +62,32 @@ async function main() {
     if (shuttingDown) return;
     shuttingDown = true;
     log("shutdown_requested", { signal });
+    // The whole process, not each individual upload, has one budget. Leave
+    // 0.5s before the user's 10s ceiling and 0.5s to finish logging/HTTP.
+    const started = performance.now();
+    const budget = new AbortController();
+    const abortTimer = setTimeout(() => budget.abort(), 9000);
+    if (pipeline.store instanceof AppStore) pipeline.store.beginShutdown(budget.signal);
+    const hardTimer = setTimeout(() => {
+      budget.abort();
+      log("shutdown_deadline", { elapsedMs: performance.now() - started,
+        storage: pipeline.store instanceof AppStore ? pipeline.store.shutdownSummary() : null });
+      process.exit(1);
+    }, 9500);
     hub.stop(); wss.close();
     const httpClosed = new Promise<void>((resolve) => http.close(() => resolve()));
-    await Promise.all([upstream.stop(), pipeline.stop()]);
+    // Close the upstream first; its existing close timeout is inside the same
+    // process-wide budget. Never open another upstream during shutdown.
+    await upstream.stop();
+    await pipeline.stop();
     await httpClosed;
     await memory.stop();
-    log("server_stopped", { upstream: upstream.status.state, httpClosed: true });
+    log("server_stopped", { upstream: upstream.status.state, httpClosed: true,
+      elapsedMs: performance.now() - started, uploadDeadlineReached: budget.signal.aborted });
+    clearTimeout(abortTimer);
+    // The SDK has no public cancellation option. Do not let its outstanding
+    // sockets or internal retries keep the process alive past the deadline.
+    process.stdout.write("", () => { clearTimeout(hardTimer); process.exit(0); });
   }
   process.on("SIGTERM", () => { void shutdown("SIGTERM"); });
   process.on("SIGINT", () => { void shutdown("SIGINT"); });

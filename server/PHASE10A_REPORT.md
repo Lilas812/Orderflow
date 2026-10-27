@@ -312,3 +312,147 @@ node server/tools/perf/phase10a-cpu-smoke.ts  # 停止待ち120秒タイムア�
 4. 測定中だけ測定用以外のWebSocketを拒否してよい。3台同時の測定ブラウザも測定用に含める。測定後は必ず解除し、解除の実接続確認を報告する。
 
 この4点はユーザーの承認・追加指定。正本の本文は事前の完全一致差し替え以外変更していない。
+
+## 8. 停止時アップロードの修正（2026-10-28）
+
+### 報告
+
+- 実施内容：停止時だけの1回試行・全体10秒以内の終了を実装した。確認済みキャッシュを再起動で再送しないようにした。RSSは変更していない。
+- 変更ファイル：`server/src/store/app.ts` の `initialize()`／`beginShutdown()`／`publish()`／`flush()`／`shutdownSummary()`、`server/src/store/objects.ts` の `uploadVerified()`、`server/src/index.ts` の `shutdown()`、`server/test/app-storage.test.ts`、検証専用 `server/tools/perf/phase10a-shutdown-check.ts`、本報告書、該当するAgentメモリ。依存・Run・デプロイ設定・正本は変更していない。
+- 確認手順：下の本番コマンドで起動し、`/api/status` の `memory.pid` にSIGTERMを送る。ログの `app_storage_shutdown_plan`／`app_storage_shutdown_summary`／`upstream_close`／`server_stopped` を確認する。今回の実記録は `data/phase10a/shutdown-real-proof.json` と `shutdown-real-{1,2}.log`。
+- 実行した確認：サーバー112/112試験・型検査成功。本番コマンドの2回の実停止は9,059.009ms／6,034.492msで、実上流close・プロセス消滅・HTTP閉鎖を確認した。
+- 仕様との差分：通常運転中の再試行は従来どおり。停止時は今回の指示による例外として待ち時間を延ばす再試行をしない。保存・配信の形式は変えていない。
+- 未解決・懸念：Replit公開先の強制終了までの猶予秒数は公式本文で確認できなかった。公開実機の停止試験はしていない。SDKに公開されたキャンセルAPIがないため、終了時には未決のSDK接続もプロセス終了で打ち切る。起動時の確認用ダウンロードが増える。
+- 次の候補：公開後、1GiB実機で実際のRSSと停止動作を確認する。ここでは公開・RSS最適化・Phase 10bを行わない。
+
+### 8.1 前回の停止で何が起きたか
+
+対象は `server-cpu-smoke.log` のPID6404。05:48:09.291 JSTにSIGTERMを受け、05:48:09.488に上流が閉じていた。**App Storageの認証失敗・通信失敗・`app_storage_retry`／`app_storage_publication_error` は記録されていない。**
+
+停止後、次の20オブジェクトは `app_storage_uploaded`／`sha256Verified:true` で順に成功していた。
+
+```text
+dev/columns/NQ/1s/2026-10-27/16.bin.gz
+dev/columns/NQ/1s/2026-10-27/17.bin.gz
+dev/columns/NQ/1s/2026-10-27/18.bin.gz
+dev/columns/NQ/1s/2026-10-27/19.bin.gz
+dev/trades/NQ/2026-10-27/00.jsonl.gz
+dev/trades/NQ/2026-10-27/01.jsonl.gz
+dev/trades/NQ/2026-10-27/02.jsonl.gz
+dev/trades/NQ/2026-10-27/03.jsonl.gz
+dev/trades/NQ/2026-10-27/04.jsonl.gz
+dev/trades/NQ/2026-10-27/05.jsonl.gz
+dev/trades/NQ/2026-10-27/06.jsonl.gz
+dev/trades/NQ/2026-10-27/07.jsonl.gz
+dev/trades/NQ/2026-10-27/08.jsonl.gz
+dev/trades/NQ/2026-10-27/09.jsonl.gz
+dev/trades/NQ/2026-10-27/10.jsonl.gz
+dev/trades/NQ/2026-10-27/11.jsonl.gz
+dev/trades/NQ/2026-10-27/12.jsonl.gz
+dev/trades/NQ/2026-10-27/13.jsonl.gz
+dev/trades/NQ/2026-10-27/14.jsonl.gz
+dev/trades/NQ/2026-10-27/15.jsonl.gz
+```
+
+最後の成功は05:50:03.996 JSTの15時約定。旧26キャッシュのうち、残る次の6件にはその実行での完了ログがない。
+
+```text
+dev/trades/NQ/2026-10-26/22.jsonl.gz
+dev/trades/NQ/2026-10-26/23.jsonl.gz
+dev/trades/NQ/2026-10-27/16.jsonl.gz
+dev/trades/NQ/2026-10-27/17.jsonl.gz
+dev/trades/NQ/2026-10-27/18.jsonl.gz
+dev/trades/NQ/2026-10-27/19.jsonl.gz
+```
+
+6件を「通信失敗」とは判定できない。未着手か進行中かも終了ログだけでは確定できない。SDK内部のHTTP再試行の有無まで、このアプリログからは分からない。
+
+原因は `AppStore.confirmed` がメモリ内だけのMapで、既存キャッシュを残して再起動すると空になること。`publish()` は確認記録のないローカルgzipを未確認と扱い、既にクラウドにあった26件を再送対象にした。さらに旧 `flush()` は既存のpublisherを待ち、もう一度 `pump()` し、待ち時間に上限がなかった。20件の成功を順に待つうちに検証器の120秒を超えた。したがって、**記録された失敗は検証器の停止待ちタイムアウトで、特定ファイルの認証・通信失敗ではない**。認証方式・接続先・資格情報の変更はしていない。
+
+### 8.2 修正した停止動作
+
+1. 起動時、既存のローカルgzipとクラウドの同名オブジェクトをSHA-256で照合し、該当時間のcoverageも同じ場合だけ確認済みに戻す。名前・サイズ・mtimeだけでは確認済みとしない。クラウドの保存形式やcoverage形式に確認用の項目は追加していない。
+2. SIGTERM受付時にUTC時間の境界を固定し、通常のpublisher新規起動を止める。上流を閉じてからローカル書込み・停止用アップロードを進める。時間境界を停止中に越えても、受付時の書きかけ時間は上げない。
+3. 完了時間の未確認ファイルだけを各1回試す。既に進行中だったファイルもその1回として数える。失敗時に通常の60秒等のバックオフを設定せず、次へ進む。
+4. 全体10秒を超えないため、受付から9秒でアップロード待ちを打ち切り、9.5秒で最終終了するガードを設けた。ファイルごとの10秒ではなく、上流close・ローカル保存・アップロード・HTTP終了を含む**プロセス全体**の予算である。
+5. データアップロード・再DL照合が完了してからだけクラウドcoverageを書き、期限切れ後には新しいcoverage更新を開始しない。期限に達してSDKの要求が未決なら、未確認としてローカルに残す。サーバー終了時にプロセスを明示終了し、SDK内部の未決ソケットや待機を残さない。
+6. `app_storage_shutdown_summary` に成功、残存、試行済み、進行中、受付時の時間境界を列挙する。期限超過ガードのログにも同じ一覧を出す。
+
+SDKの要求をサーバー側で取り消せたことまで保証する方式ではない。期限切れ直前に送信済みだったデータがクラウドに存在する可能性はあるが、未確認なら取得済みとして扱わない。coverageへは確認済みデータの範囲だけを記録する。
+
+### 8.3 同じ時間内に再起動した場合の前半
+
+旧実装でも、停止時に書きかけ時間をアップロードする条件にはなっていなかった。05:48の旧停止でアップロードされていたのはUTC19時以前だけで、当時のUTC20時の後半だけを同名クラウドオブジェクトへ上書きしたログはない。
+
+ローカルが残る再起動では、板は既存の同秒列を優先して新しい列を組み込み、約定は既存gzipへ追加する。前半のファイルを後半だけで置き換える処理ではない。ローカルが消えた再起動では、書きかけはクラウドcoverageにないため取得済みとはせず、起動時の取り込みで不足分を取り直す。履歴と後半を既存の合成・差込み処理でまとめ、時間が終わってからアップロードする。
+
+追加試験では次を確認した。
+
+- 前半を保存→停止→同じ時間に再起動→後半を追加→再停止しても、前半・後半の2列／2約定が残る。クラウドへのアップロードは0。
+- 作業ディスクを別の空ディスクに替えた場合、前半は取得済みにならない。後半を受けたあと、履歴で前半を補うと、UTC境界後に上げたオブジェクトの読戻しでも前半・後半が両方残る。
+- SIGTERM後にUTC境界が進んでも、受付時の書きかけは上げない。
+
+### 8.4 公式資料での終了猶予の確認
+
+公式検索をSIGTERM／SIGKILL／Reserved VM／graceful shutdown等で調べ、次の公式本文も取得した。
+
+- https://docs.replit.com/features/publishing/deployment-types
+- https://docs.replit.com/help/troubleshooting/deployments
+
+**取得した公式本文には、Reserved VMのSIGTERMからSIGKILLまでの猶予秒数が記載されていなかった。** 検索の生成回答には「30秒」という回答も出たが、引用先の公式本文にその記述がなく、裏付けられなかったため確定値として採用していない。「公開先は30秒待つ」「少なくとも10秒待つ」とは報告できない。10秒より短い公式値も確認できなかったため、今回はユーザー指定の10秒以内を実装上の上限とした。実装は9.5秒のガード付き。公開環境での猶予は未確認事項として残す。Publishして実機測定することはしていない。
+
+### 8.5 テストと本番起動での実測
+
+```text
+pnpm --filter @workspace/receiver test       112 / 112
+pnpm --filter @workspace/receiver typecheck 成功
+node server/tools/perf/phase10a-shutdown-check.ts 成功
+```
+
+今回追加した6試験は全て「ダミー」と明示。①アップロードが全件失敗しても各1回・再試行待ちなし、②無応答／遅延成功でも全体期限で戻りcoverageを追加しない、③既存キャッシュの再起動で再送しない／内容が異なれば確認済みにしない、④停止処理中のUTC境界、⑤通常publisherの途中で停止しても二重試行しない、⑥同じ時間内の再起動と空ディスクからの前半補完を確認した。
+
+実測は既存の検証専用 `data/phase10a/working/` と実 `dev/` を使用し、実データを追加の本番コマンドで保存した。新しいダミーデータを実クラウドに混ぜていない。アプリの通常ローカル保存先は使用していない。
+
+```text
+PORT=8080 HEATMAP_STORAGE=app-storage HEATMAP_STORAGE_DIR=<検証専用作業先>
+pnpm --filter @workspace/receiver run start
+```
+
+| 回 | PID | SIGTERM（JST） | 実上流close（JST） | server_stopped（JST） | SIGTERM→PID消滅 |
+|---|---:|---|---|---|---:|
+| 1 | 7406 | 06:21:21.513 | 06:21:21.799 | 06:21:30.545 | **9,059.009ms** |
+| 2 | 7455 | 06:22:28.928 | 06:22:29.192 | 06:22:34.936 | **6,034.492ms** |
+
+両回とも実close1006／`wasClean:false`／`reason:shutdown`、`upstream_stopped.socketClosed:true`、`server_stopped.httpClosed:true`。1000を要求したが実closeは1006であり、1000だったとはしない。PID消滅と8080ポートの閉鎖も確認。強制クリーンアップは使用していない。
+
+| 回 | 確認して上がったファイル | 上がり切らずローカルへ残したファイル | クラウドcoverage |
+|---|---|---|---|
+| 1 | `dev/columns/NQ/1s/2026-10-27/20.bin.gz` | `dev/trades/NQ/2026-10-27/20.jsonl.gz`（deadline、作業先の同じ相対パスに残存） | UTC20時の板だけ追加。約定はUTC20時を含まない |
+| 2 | `dev/trades/NQ/2026-10-27/20.jsonl.gz` | 未確認アップロードの残りなし | UTC20時の約定も確認後に追加 |
+
+1回目は9秒の待ち打切りが働き `uploadDeadlineReached:true`、2回目はfalse。1回目は26件、2回目は27件のキャッシュをクラウド比較で確認し、それらの不要な再アップロードは0。アプリ層のバックオフ再試行は両回とも0。1回目の約定の期限切れは、今回指定した全体期限の動作であり、認証・通信障害を示すエラーは記録されていない。1回目終了後のクラウドcoverageは独立してダウンロードし、UTC20時の約定が入っていないことを確認した。
+
+データ本体は成功分もキャッシュとして残すため、**第6.1節の26ファイル＋今回のUTC20時の板・約定の2ファイル、計28ファイルをローカルに保持している**。各実行直後の全28パスは `shutdown-real-proof.json` の各 `afterFiles` に一覧で保存した。元データを削除していない。実クラウドも28→30オブジェクトとなり、削除はしていない。
+
+`.upload/` のスナップショットも最終時点で次の3ファイルが残っていた。これらは元の板／約定の代わりにするファイルではなく、旧検証や期限終了時に残る作業用コピー。今回の範囲では削除していない。全パスの接頭辞は `data/phase10a/working/`。
+
+```text
+.upload/0d648f7c-bcca-4a7b-a405-5c56c37fa5b9        402846 bytes
+.upload/0d648f7c-bcca-4a7b-a405-5c56c37fa5b9.index      67 bytes
+.upload/3f6ee8e2-3452-4a67-ab16-a52331cd51dc        118204 bytes
+```
+
+実起動した時間は米中部時間16時台の休止中で、新たなライブ板・約定は両回とも0件。実測で確認したのは上流の接続／close、保存待ちの実ファイルの処理とプロセス終了であり、新しいライブ約定の受信試験ではない。書きかけ時間に実データを受け続けながらの再起動は、今回は実市場では試せず、上記単体試験で確認した。今回ブラウザは起動していない。コンテナ内に検証Chromium・受信Nodeプロセスは残っておらず、制限マーカーもない。
+
+証拠：
+
+```text
+data/phase10a/shutdown-tests.log
+data/phase10a/shutdown-types.log
+data/phase10a/shutdown-real-proof.json
+data/phase10a/shutdown-real-{1,2}.log
+data/phase10a/shutdown-cloud-index-{1,2}.json
+data/phase10a/shutdown-local-temporary-files.json
+```
+
+RSS・画面・依存・公開設定の最適化は行っていない。公開後の1GiB実機の値を見て判断するユーザー方針を維持し、ここで停止する。

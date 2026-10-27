@@ -38,13 +38,18 @@ export async function digest(file: string): Promise<string> {
   for await (const chunk of createReadStream(file)) hash.update(chunk);
   return hash.digest("hex");
 }
-export async function uploadVerified(objects: Objects, name: string, file: string): Promise<void> {
+export async function uploadVerified(objects: Objects, name: string, file: string, signal?: AbortSignal): Promise<void> {
   const check = file + "." + randomUUID() + ".verify";
   try {
+    signal?.throwIfAborted();
     const before = await digest(file);
+    signal?.throwIfAborted();
     await objects.upload(name, file);
+    signal?.throwIfAborted();
     await objects.download(name, check);
+    signal?.throwIfAborted();
     if (await digest(check) !== before) throw Error("object_verification_failed");
+    signal?.throwIfAborted();
   } finally { await fs.rm(check, { force: true }); }
 }
 export function storageMode(env: NodeJS.ProcessEnv) {
