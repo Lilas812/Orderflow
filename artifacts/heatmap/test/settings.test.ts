@@ -52,7 +52,8 @@ test("ダミー：設定ごとの層だけを要求、色更新は価格軸/約�
   s.request("heat"); queued!(); assert.deepEqual(seen, ["heat:false", "book"]); seen.length = 0;
   s.request("trades"); queued!(); assert.deepEqual(seen, ["trades"]); seen.length = 0;
   s.request("big"); queued!(); assert.deepEqual(seen, ["big"]);
-  for (const [key, expected] of [["heatTopPct", "heat"], ["bubbleMin", "bubbles"], ["bigTopPct", "big"], ["bigMinSec", "big"], ["timeZone", "time"]] as const) {
+  for (const [key, expected] of [["heatTopPct", "heat"], ["bubbleMin", "bubbles"], ["bubbleScale", "bubbles"],
+    ["bookBarPct", "book"], ["bookBarOpacity", "book"], ["bigTopPct", "big"], ["bigMinSec", "big"], ["timeZone", "time"]] as const) {
     const next = { ...DEFAULT_SETTINGS, [key]: key === "timeZone" ? "America/Chicago" : 3 };
     assert.deepEqual(Object.entries(settingsChanges(DEFAULT_SETTINGS, next as typeof DEFAULT_SETTINGS)).filter(([, v]) => v).map(([k]) => k), [expected]);
   }

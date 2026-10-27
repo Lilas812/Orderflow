@@ -13,8 +13,8 @@ const temp = () => fs.mkdtemp(path.join(os.tmpdir(), "dummy-settings-"));
 
 test("ダミー：設定5項目の境界、整数、0.1刻み、型、タイムゾーン、欠落と余分な項目", () => {
   for (const values of [
-    defaults, { heatTopPct: .1, bubbleMin: 1, bigTopPct: .1, bigMinSec: 1, timeZone: "America/Chicago" },
-    { heatTopPct: 10, bubbleMin: 1000, bigTopPct: 20, bigMinSec: 600, timeZone: "Asia/Tokyo" },
+    defaults, { ...defaults, heatTopPct: .1, bubbleMin: 1, bigTopPct: .1, bigMinSec: 1, timeZone: "America/Chicago" },
+    { ...defaults, heatTopPct: 10, bubbleMin: 1000, bigTopPct: 20, bigMinSec: 600, timeZone: "Asia/Tokyo" },
     { ...defaults, heatTopPct: 1.3, bigTopPct: 19.9 },
   ]) assert.equal(Object.keys(validateSettings(values)).length, 0);
   for (const [key, bad] of [
@@ -43,7 +43,7 @@ test("ダミー：GET未保存は初期値、PUT400は原本不変、成功と�
   const url = `http://127.0.0.1:${address.port}/api/settings`;
   try {
     const initial = await (await fetch(url)).json();
-    assert.deepEqual(initial, { version: 1, values: defaults, updatedAt: null });
+    assert.deepEqual(initial, { version: 2, values: defaults, updatedAt: null });
     await assert.rejects(fs.access(file));
     const put = (body: unknown) => fetch(url, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
     const saved = await (await put({ values: { ...defaults, bubbleMin: 123 } })).json();

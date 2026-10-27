@@ -182,3 +182,31 @@ mtime_ms = 1793124278980
 storage_uri = "gcs://replit-rams-assets-pike/rams/assets/repl:c326af06-2355-4bfb-a52e-f433587c4cd9/ed363cda-56d7-431b-b119-66fb279d56e3/bc3df779-e154-4ebb-ac40-f12ae485bae2"
 storage_version_token = "1793125152844501"
 content_type = "image/png"
+
+[[outputs]]
+id = "bLlYDdAzKDHMshaFn6vVD"
+uri = "file://data/phase9-revise/comparison.html"
+type = "html"
+title = "9改：初期値と変更後の比較"
+description = "実保存データの1倍リプレイ。棒10%・不透明度0.5・バブル1倍と、20%・1・2倍を左右に並べています。"
+logical_id = "d81c3f94-bef8-4349-8f16-ab5fe41522e1"
+content_hash = "sha256:34fd7bb0ce788038bbfa76d5964514d2710151e56118f12e80d3a8ce44f3aef6"
+size = 321349
+mtime_ms = 1793127586338
+storage_uri = "gcs://replit-rams-assets-pike/rams/assets/repl:c326af06-2355-4bfb-a52e-f433587c4cd9/d81c3f94-bef8-4349-8f16-ab5fe41522e1/8717f3ac-d508-486c-8f3f-1c70d0875773"
+storage_version_token = "1793127750694426"
+content_type = "text/html"
+
+[[outputs]]
+id = "rCIqxYsiwt_pcyXKr0TmA"
+uri = "file://data/phase9-revise/delta-scale-detail.png"
+type = "image"
+title = "デルタ目盛りの拡大"
+description = "12pxの数値と、同じ中央行に右寄せした11pxの秒数。"
+logical_id = "4f056a4e-907e-4cca-802d-1307f9688a41"
+content_hash = "sha256:412a192e10c76d9cab12d6fd0c1811020b2e75a164ce9a8223b71e72d7577ed5"
+size = 7739
+mtime_ms = 1793127396934
+storage_uri = "gcs://replit-rams-assets-pike/rams/assets/repl:c326af06-2355-4bfb-a52e-f433587c4cd9/4f056a4e-907e-4cca-802d-1307f9688a41/3d2d9097-b2ff-4bb8-af91-f7c476403dcb"
+storage_version_token = "1793127751982836"
+content_type = "image/png"

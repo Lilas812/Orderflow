@@ -134,12 +134,16 @@ test("ダミー：DPR2でもCSS寸法・白/紫・中央線・目盛り・空デ
     : Reflect.deleteProperty(globalThis, "window"));
   const fills: { color: string; x: number; y: number; width: number; height: number }[] = [];
   const labels: string[] = [], lines: number[][] = [];
+  const textCalls: { text: string; x: number; y: number; color: string; font: string; align: string; maxWidth: number }[] = [];
   const ctx = { fillStyle: "", strokeStyle: "", lineWidth: 0, font: "", textAlign: "", textBaseline: "",
     setTransform() {}, clearRect() { fills.length = 0; }, beginPath() {}, stroke() {},
     moveTo(x: number, y: number) { lines.push([x, y]); }, lineTo(x: number, y: number) { lines.push([x, y]); },
     fillRect(x: number, y: number, width: number, height: number) {
       fills.push({ color: this.fillStyle, x, y, width, height });
-    }, fillText(text: string) { labels.push(text); } };
+    }, measureText(text: string) { return { width: text.length * 7.2 }; },
+    fillText(text: string, x: number, y: number, maxWidth: number) {
+      labels.push(text); textCalls.push({ text, x, y, color: this.fillStyle, font: this.font, align: this.textAlign, maxWidth });
+    } };
   const canvas = { width: 0, height: 0, getContext: () => ctx,
     getBoundingClientRect: () => ({ width: 300, height: 100 }) };
   const scale = { ...canvas, getContext: () => ({ ...ctx, clearRect() {} }) };
@@ -153,6 +157,11 @@ test("ダミー：DPR2でもCSS寸法・白/紫・中央線・目盛り・空デ
   assert.deepEqual(lines, [[0, 50], [300, 50]]);
   assert.equal(ctx.strokeStyle, "#252431"); assert.equal(ctx.lineWidth, 1);
   assert.deepEqual(labels, ["+8", "0", "−8", "1s"]);
+  assert.ok(textCalls.slice(0, 3).every(c => c.color === "#d9d9d9" && c.font.startsWith("12px")));
+  const zeroLabel = textCalls[1]!, secondsLabel = textCalls[3]!;
+  assert.equal(secondsLabel.color, "#8a8a8a"); assert.ok(secondsLabel.font.startsWith("11px"));
+  assert.equal(zeroLabel.y, secondsLabel.y); assert.equal(secondsLabel.align, "right");
+  assert.ok(secondsLabel.x - secondsLabel.maxWidth + 1e-9 >= zeroLabel.x + 7.2);
   assert.equal(renderer.metrics.visibleCount, 2);
   const snapshot = renderer.snapshot(); snapshot[0]!.delta = 999;
   assert.equal(renderer.snapshot()[0]!.delta, 8);

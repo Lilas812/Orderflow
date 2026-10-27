@@ -202,3 +202,194 @@ API PID35303の消滅も確認。実closeは1006なので、正常終了1000と�
 ## replit.md Current Statusの更新内容
 
 Phase 9の承認待ちという記述を完了へ更新。設定API／5項目／原本退避／列共有、97＋101試験と型・ビルド、別プロファイル・再起動保持・初期値保存、メモリと性能の未達、全検証ブラウザ終了、最終SIGTERM・実close1006を記録。Protected Filesの指定節は変更していない。Phase 10未着手。
+
+## 9改（2026-10-28）
+
+### 報告
+
+- 実施内容：指定新版の正本2件へ差し替えた後、現在板の色の帯、設定可能な棒の長さ・不透明度／バブル倍率、デルタ目盛りの文字、8項目・version 2の設定を実装。初回設定GET失敗の警告が接続回復後も残る経路に、成功を確認してから適用する再取得を追加した。Phase 10には進まない。
+- 変更ファイル：下表。追加依存は**なし**。受信・列・約定の保存形式、WebSocket契約、板の取得・段数・列幅、App Storage、DB、デプロイ、Run設定、`scripts/src/`、スマホレイアウト、描画高速化は変更していない。設定だけ指定どおりversion 2。
+- 確認手順：既存API／画面workflowを起動し、`/?mode=replay&from=1793022000&speed=1&debug=1`を開く。読込後、最新確定列の右の色の帯と、その上の半透明の棒を確認。設定からbookBarPct=20・bookBarOpacity=1・bubbleScale=2を保存して比較。過去へpanすると帯が消える。下段目盛りは±最大／0が12px、秒数が0と同じ行の右寄せ11px。`/?debug=1`はライブ。作業終了時にはサーバーと検証ブラウザを止める。今回の確認後は停止済み。
+- 実行した確認：サーバー99/99・画面105/105、両型検査、画面の本番ビルド成功。追加したデルタ文字の配置検査も13/13成功。実API・実保存データの1倍リプレイ、実ライブ、v1読込／v2保存、設定復元、固定描画5場面、メモリ、終了を確認。
+- 仕様との差分：表示／設定の未実装差分なし。最初の設定GETが失敗した当時のHTTP応答が残っておらず、その失敗原因までは断定できない。今回の修正が確認できたのは「失敗後の接続回復時に未読込設定を再取得して適用し、成功後だけ警告を解除する」経路である。
+- 未解決・懸念：価格zoom最大37.70ms・平均10.50ms、時間zoom平均9.68msは平均8ms／最大33ms目安を一部満たさない。実機Safari・高DPR・公開2GiB環境・長時間は未確認。上流close1006は未解決。指示中の03:40頃のスクリーンショットは今回の添付一覧に存在せず、画像に基づく当時の診断はしていない。
+- 次の候補：当時の設定GET失敗のHTTP証拠が得られれば追加調査。描画の集約・色基準計算の高速化は、今回の測定を見たユーザーの別途判断後。どちらも今回は追加実装しない。
+
+### 0. 正本の差し替え
+
+| 元添付 | 配置先 |
+| --- | --- |
+| `attached_assets/SPEC_(16)_1793127004823.md` | `docs/SPEC.md` |
+| `attached_assets/UI_SPEC_HEATMAP_(10)_1793127003594.md` | `docs/UI_SPEC_HEATMAP.md` |
+
+添付のバイト列をそのままコピー。配置時およびコード変更後の照合結果：
+
+```text
+6238938ea2912d3b01c8041d3fe8511027e90816585677b5aafc9c2a229d3965  docs/SPEC.md
+0a3b5433944ad1b515660c224c82f93090fc424bd8a92f4e1ff5306bdc69fbb3  docs/UI_SPEC_HEATMAP.md
+28d8eb6a7a68ea51137a2e17f840ceedb6b7f5e58d807c5defa4b84e6fb2539c  docs/AGENT_RULES.md
+```
+
+AGENT_RULESは差し替えず検査のみ。削除した添付は上表の2ファイルだけ。画像は削除していない。差し替え後のSPEC 7.1・7.2・9設定・10、UI 3.3・3.4・3.9・3.10・4と、replit.md／AGENT_RULES／Phase 5・8・9報告を確認。古い添付仕様や`.local/`の同名コピーを仕様として読んでいない。
+
+### 1. 設定読込エラーの調査・修正
+
+**再現手順**：ページ起動時の最初の`GET /api/settings`だけを503にし、以後は実APIへ通す。旧`startWithSettings()`はcatchで「設定を読めませんでした」をセットしてからWebSocketを開始し、hello／接続回復では設定を読み直さなかった。そのためチャートの接続が戻っても未読込・警告状態が残る。
+
+**原因の仮説と根拠**：
+
+- 残っていたブラウザconsoleには2026-10-28 03:19:55.599 JSTの上記エラーが1件。コードは初回失敗の理由を記録しないため、HTTPコード、タイムアウト、JSON検査のどれかは不明。03:40頃の画像は未添付。
+- 調査時、共有プロキシ経由、開発ドメイン経由、8080直接はいずれもGET 200。保存値は正常なversion 1の5項目、`/api/status.settings`はsource=saved、readError=null、saveError=null、preservedFiles=[]だった。継続的なファイル破損を裏付ける証拠はない。
+- API起動時は`pipeline.initialize()`完了後にHTTPをlistenするため、画面より遅く準備ができる場合はある。ただし**これが当時の初回失敗原因だったという点は推測**で、断定しない。
+
+**修正方針**：事前にチャットで説明してから、`SettingsRecovery`を導入。初回失敗後、実WebSocketのhelloが来た時だけ再GETする。同時再GETは1本にまとめる。失敗中の警告を消さず、有効な応答を受け取って適用できた場合だけ解除する。周期ポーリングや無条件の警告非表示ではない。既存の10秒打切りを維持する。読み込み中に成功した保存を遅いGETで巻き戻さない世代検査も維持。
+
+**影響範囲**：ブラウザ設定読込のみ。RESTの形の変更は指定の8項目・version 2以外なし。サーバーの起動順序、HTTPルーティング、保存方法をこの不具合対応のためには変えていない。
+
+**回帰確認**：単体試験で初回失敗→接続時再取得→成功適用、成功まで警告保持、同時helloでもGET1本、成功後のhelloで不要な再取得なし。実ブラウザでも初回設定GETだけに「ダミー503」を注入（consoleに明記）。板・約定・以後の設定は実APIを使い、GET合計2回・適用8値一致・警告なしを確認した。この再現テストが当時の通信失敗原因を特定したという意味ではない。一時的な本番ログの追加なし。
+
+### 変更ファイルと役割
+
+`src/`・`test/`・`tools/`は、特記以外`artifacts/heatmap/`配下。
+
+| ファイル | 関数・役割 |
+| --- | --- |
+| `src/chart/current-book.ts` | `bookBandStart`／`CurrentBookRenderer.draw`。最新確定列の右端を物理画素へ丸め、kind 3の最大段行を既存`colorize`と共通P99で着色。その後に棒を指定%・不透明度で描く。過去閲覧では帯なし。 |
+| `src/chart/trade-geometry.ts` | `bubbleRadius`／`tradeGeometry`へ倍率を追加。半径と上限へ同じ倍率。 |
+| `src/chart/trade-overlay.ts` | `draw`から倍率を幾何計算へ渡す。価格ライン→バブル→点線の順序は維持。 |
+| `src/chart/delta.ts` | 数値12px・#d9d9d9、秒数11px・#8a8a8a。同じ中央行の左の0と右寄せの秒数が重ならない幅制限。 |
+| `src/data/settings.ts` | 8値・version 2、3項目の境界／刻み検査、`settingsChanges`のbubble／book差分。 |
+| `src/data/settings-recovery.ts` | 初回失敗後の接続回復時の再取得と重複防止。 |
+| `src/components/settings-form.ts` | 追加3項目、約定バブル／現在の板の見出し、範囲・初期値・0.05刻みの案内。既存`settings-ui.ts`のフォーム生成・保存へ接続。 |
+| `src/main.ts` | 最新列末端・3設定の配線、bookのみ／tradesのみの更新要求、hello時の設定回復。80%追尾は変更しない。 |
+| `server/src/settings/schema.ts` | version 2の検査、`readDocument`で厳密な旧5項目v1のみ補完。updatedAtは維持。 |
+| `server/src/settings/local.ts` | 読込時の互換変換・応答v2、次回保存v2。GETでは旧ファイルに書かず退避もしない。 |
+| `server/test/settings-v2.test.ts`、`server/test/settings.test.ts` | 3項目・v1のバイト不変と退避なし・次の保存v2、既存HTTP／原子的保存試験を新版へ対応。 |
+| `test/phase9-revise.test.ts` | 設定回復、8項目と刻み、倍率、色の帯の右端／非表示／既存ラスタ・LUT一致／範囲外非描画／帯→棒、棒%・不透明度。 |
+| `test/current-book.test.ts` | 指定された新初期値10%・0.5の期待値へ変更。 |
+| `test/delta.test.ts` | 文字色・12/11px・同じ行・右寄せ・非重複の検査。 |
+| `test/settings.test.ts`、`test/settings-form.test.ts` | 8項目の入力fixture、倍率と棒設定の独立層差分。 |
+| `tools/phase9-revise-check.ts` | 実API・1倍リプレイ／ライブ、撮影、1回のGET失敗注入、メモリ、初期値復元、ブラウザ終了の証拠。 |
+| `docs/SPEC.md`、`docs/UI_SPEC_HEATMAP.md` | 許可された完全コピー。コピー後の本文編集なし。 |
+| `.agents/memory/settings-decisions.md`、`MEMORY.md` | 正本に反映された破損退避・旧tz廃止の重複補足を整理。ユーザーが指定した最新列の参照共有条件は残す。 |
+| `PHASE9_REPORT.md`、`replit.md` | この追記とCurrent Statusのみ。 |
+
+`LayerScheduler`、ヒートマップのラスタ・集約・色基準の計算、共通LUT、CSSのCanvas積層、VP／デルタ集計は変更していない。現在板だけのdirty要求は既存の専用層を使う。描画順序は既存積層の「ヒートマップ→現在板Canvas→約定Canvas」と、現在板Canvas内部の「帯→棒」、約定Canvas内部の「価格ライン→バブル→点線」で保証する。単体試験でこれらの順序と他層に波及しないことを検査した。
+
+### テスト・型検査・ビルド
+
+| 実行コマンド | 結果 |
+| --- | --- |
+| `pnpm --filter @workspace/receiver test` | **99/99成功** |
+| `pnpm --filter @workspace/receiver typecheck` | 成功 |
+| `pnpm --filter @workspace/heatmap test` | **105/105成功** |
+| `pnpm --filter @workspace/heatmap typecheck` | 成功 |
+| `pnpm --filter @workspace/heatmap build` | 成功、34 modules |
+| `node --test artifacts/heatmap/test/delta.test.ts` | 最終追加の文字配置assertも**13/13成功** |
+| `node --check artifacts/heatmap/tools/phase9-revise-check.ts` | 成功 |
+| `node artifacts/heatmap/tools/phase9-revise-check.ts` | `PHASE9_REVISE_CHECK_PASSED` |
+| `node server/tools/perf/render-benchmark.ts phase9-revise-final artifacts/heatmap/dist/public 1793021400135557 data/phase7/benchmark-vp.json data/phase9-revise/benchmark-settings.json` | 5場面完了、ブラウザ終了 |
+
+初回の画面試験では旧5項目fixtureが追加3項目を持たず2試験失敗した。fixtureを初期値から補う形へ直して105/105成功。後から足した文字配置assertでは浮動小数の差し引きの誤差が出たため、検証の比較に1e-9 CSS pxの許容を入れて13/13成功。製品の描画を試験都合で変更していない。`git diff --check`は環境のindex.lock保護で完了できず、成功とは扱わない／保護を迂回していない。
+
+新3項目の両端・刻み違い・範囲外・数字でない型・NaN等、倍率0.5／3で半径1.5〜7／9〜42px、最大段による縮小、400段の外や価格の欠けは塗らないことを検査。厳密なv1ファイルのGET前後バイト一致・退避ファイルなし・readErrorなし・次のPUTでv2も検査した。既存の破損原本退避・置換前失敗・7日保持除外・URL優先の試験はすべて維持。
+
+### 実表示・設定復元
+
+撮影は1280×800 CSS・DPR1。画像／生結果は`data/phase9-revise/`。
+
+| ファイル | 内容・結果 |
+| --- | --- |
+| `replay-defaults.png` | 実保存1倍リプレイ・追尾。帯は物理x=641から本体右端へ、棒10%・alpha0.5・バブル1倍。 |
+| `replay-large.png` | 棒20%・alpha1・バブル2倍を設定UIから保存・反映。 |
+| `comparison.html` | 上2画像を左右に並べた自己完結HTML。再生が止まらないため撮影時刻は異なり、同一フレーム比較ではない。 |
+| `settings-eight-fields.png` | 8項目・各範囲／初期値・見出し・保存UI。 |
+| `delta-scale-detail.png` | 目盛り領域を3倍で撮影。+272／0／−272、0と同じ行の右に5s。文字の非重複を目視でも確認。 |
+| `replay-browse.png` | 過去へ実panし、最新列は表示右端より先、bandStart=null。現在板の棒は再生位置のまま。 |
+| `live-band.png` | 実ライブ・読込完了後。設定読込警告なし、帯と半透明の棒。 |
+| `app-preview.jpg` | 共有プレビューでも警告・console例外なし。ただし初期range読込中の画面であり、完成表示の証拠は上記の実CDP画像を使用。 |
+
+ライブを100ms間隔で60回観測。ヒートマップ回数不変で現在板回数だけが増えた隣接組を**16組**確認。板の同秒更新でも描画行数575→574の変化を観測。帯は同じ現在板Canvasでその都度作り直され、価格の段は最新kind 3を使用する。これは独立更新の証拠で、板の全受信ごとの画素差を照合した試験ではない。`browser-checks.json`に観測debugの全値を保存。Runtime例外0。
+
+実ファイルは確認開始時version 1だった。APIはv2の補完値を返し、GETだけでは原本v1のまま。設定UIで保存後v2。確認後は「初期値に戻す」→「保存」を行い、実APIとファイルで全8値の一致を確認した：
+
+```json
+{"version":2,"values":{"heatTopPct":1,"bubbleMin":10,"bubbleScale":1,"bookBarPct":10,"bookBarOpacity":0.5,"bigTopPct":2,"bigMinSec":5,"timeZone":"Asia/Tokyo"},"updatedAt":1793127410033000}
+```
+
+### メモリ
+
+各ブラウザ値はGC要求後の`performance.memory.usedJSHeapSize`。JS以外も含む全ブラウザRSSではない。APIはその時点の`/api/status.memory`。
+
+| 時点 | ブラウザused (B) | API RSS (B) | API heapUsed (B) |
+| --- | ---: | ---: | ---: |
+| リプレイ初期値 | 31,277,305 | 460,283,904 | 139,540,592 |
+| 3項目変更後 | 31,325,229 | 460,283,904 | 145,695,512 |
+| ライブ | 26,577,333 | 518,938,624 | 172,620,176 |
+| 停止直前 | ブラウザ終了済み | 521,871,360 | 31,714,784 |
+
+初期値→変更後は+47,924B。ただし受信列・描画状態も進んでおり、変更だけの純増とは断定しない。ライブとリプレイは別画面の状態。サーバーは履歴取込中で、長時間安定性や公開2GiB環境の保証ではない。生値・CDPヒープ内訳は`browser-checks.json`、停止直前は`status-before-stop.json`。
+
+### 描画時間と48.00msの内訳
+
+Phase 8／9と同じ固定実保存フィクスチャ（5,689列・71,245約定、VP756価格／出来高78,250）、1280×800 CSS・DPR1、時間600秒・中心117244.5tick／160tick、同じ操作列。受信サーバーと画面workflowを停止して実施。画面・consoleに**ダミー接続・実保存データの固定再生**と明示。今回の設定は実APIから保存した初期値v2。新仕様による帯・棒・倍率以外、可視範囲と操作条件を維持。左端差0.0903724px。
+
+全フレーム平均／最大ms：
+
+| 操作 | Phase 8報告値 | Phase 9 | 9改 | 9改frame数 |
+| --- | ---: | ---: | ---: | ---: |
+| 価格zoom | 10.18／33.50 | 10.53／32.90 | **10.50／37.70** | 63 |
+| 時間zoom | 9.21／32.80 | 11.95／48.00 | **9.68／24.70** | 87 |
+| pan | 6.64／13.40 | 7.72／36.90 | **7.23／23.10** | 121 |
+| 価格reset（参考） | 11.60／21.30 | 10.23／19.70 | 10.30／23.20 | 64 |
+
+steadyは前回0フレーム、今回は遅延VP更新1フレーム0.90msであり、通常の継続描画性能として比較しない。Phase 8は既存報告値を使用し再測定していない。Phase 9の生framesは今回参照できた。別時刻の単回測定なので、短縮・悪化を今回コードだけの因果効果と断定しない。**価格zoomの最大とズーム平均の目安は未達**。
+
+Phase 9の時間zoom最大フレーム48.00ms：
+
+| 内訳 | ms |
+| --- | ---: |
+| ヒートマップ | **43.00** |
+| └ 集約 | **23.30** |
+| └ 色基準（P99）計算 | **17.30** |
+| └ ラスタ | 1.70 |
+| 時間軸 | 1.60 |
+| 約定 | 1.20 |
+| 現在板 | 0.30 |
+| 大口板 | 0.10 |
+| VP | 0.70 |
+| デルタ | 1.10 |
+
+集約・色基準・ラスタはヒートマップの内数であり、二重に合計しない。このフレームで重い層はヒートマップ、特に集約と色基準計算と特定できた。ただしその計算が遅かった根本要因（GC、CPUスケジューリング等）まではこの計測から確定できない。今回最大の価格zoom37.70msもヒートマップ29.80ms（集約18.30ms／色基準8.30ms）が主体。**高速化は実装していない**。
+
+生フレーム・各場面画像・終了証拠は`data/perf-memory/phase9-revise-final/render-static/`、前回との内訳は`data/phase9-revise/performance-comparison.json`。
+
+### 仕様にない値
+
+新しい色・閾値・設定項目・保存形式を推測で追加していない。数値はすべて今回の正本指定。初回設定読込失敗後の再取得は上記の不具合対応方針として事前に報告したとおり、実接続のhello時のみ／失敗状態のみ／同時1本とし、既存10秒制限を維持する。新しい周期や試行回数は設定していない。
+
+### ブラウザ・上流の終了
+
+| 用途 | PID | 結果 |
+| --- | ---: | --- |
+| 実APIの設定・リプレイ・ライブ確認 | Chromium1824 | Browser.close後exited:true、9222閉鎖、該当確認終了後のAPI接続0・一覧[]。 |
+| 共有プレビュー撮影 | Chromium2050、crashpad2052／2055 | 撮影直後にSIGTERMし、3PID消滅を確認。 |
+| 固定描画比較 | Chromium2277 | Browser.close後exited:true、9223閉鎖。実API／実上流接続なし。 |
+
+最後の`/proc`走査で検証Chromium／Chrome／crashpadプロセス0。8080・9222・9223・19090・25028閉鎖。`screenshot-closed.json`、`browser-checks.json`、固定比較の`browser-closed.json`、`final-cleanup.json`へ記録。外部接続制限は今回追加していない。保存データの削除なし。
+
+API PID1674、2026-10-28 JST：
+
+```text
+03:58:08.231 shutdown_requested SIGTERM
+03:58:08.232 upstream_close_requested code=1000
+03:58:08.386 upstream_close code=1006 wasClean=false reason=shutdown
+03:58:08.386 upstream_stopped socketClosed=true
+03:58:08.715 server_stopped httpClosed=true
+```
+
+要求コード1000ではなく**実closeは1006**。ログで上流閉鎖とHTTP停止を確認し、PID消滅・8080接続不能も確認。停止前下流connected=0、connections=[]、slowClosed=0、sendErrors=0。`shutdown.jsonl`、`stop-request.json`、`status-before-stop.json`へ保存した。測定後も受信を再開せず終了する。
+
+### replit.md Current Statusの更新内容
+
+9改の完了、8項目／v1互換、帯・棒・倍率・デルタ文字、読込失敗後の回復と最初の失敗原因未確定、99＋105試験・型／ビルド、1倍リプレイ／ライブ／初期値保存、性能目安の未達、メモリ、全検証ブラウザ終了、03:58:08のSIGTERM／実close1006／PID消滅を追記。Protected Filesの指定節は変更しない。Phase 10未着手で停止。

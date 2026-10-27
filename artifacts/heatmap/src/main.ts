@@ -17,6 +17,7 @@ import { VpRenderer } from "./chart/vp.ts";
 import { DeltaRenderer } from "./chart/delta.ts";
 import { deltaBounds, deltaSeconds } from "./chart/delta-geometry.ts";
 import { defaultDocument, fetchSettings, putSettings, resolveSettings, settingsChanges } from "./data/settings.ts";
+import { SettingsRecovery } from "./data/settings-recovery.ts";
 import type { SettingsDocument } from "./data/settings.ts";
 import { mountSettingsUi } from "./components/settings-ui.ts";
 import { resetViewport } from "./chart/view-reset.ts";
@@ -217,6 +218,7 @@ const client = new RealtimeClient(cache, {
     updateDebugPanel();
   },
   onHello: (message) => {
+    void settingsRecovery.connected();
     hello = message;
     vpState.reset(); vpLoading.hidden = false;
     currentTrade.reset(); initialQuote.reset();
@@ -383,7 +385,9 @@ const drawScheduler = new LayerScheduler(draw => requestAnimationFrame(draw), {
       renderer.draw(columns, viewport, receivedColumnRevision, displayZone, columns.length > 0, redrawAxes);
       depthDrawCount++;
   },
-  book: () => bookRenderer.draw(cache.latestBook, viewport, renderer.metrics.p99),
+  book: () => bookRenderer.draw(cache.latestBook, viewport, renderer.metrics.p99,
+    cache.latestTimeUs === null ? null : cache.latestTimeUs + US_PER_SECOND,
+    activeSettings.values.bookBarPct, activeSettings.values.bookBarOpacity),
   big: () => bigRenderer.draw(bigFeed.tracker.snapshot(), viewport, bigOptions.minSec.value),
   vp: () => vpRenderer.draw(vpState, viewport),
   delta: () => deltaRenderer.draw(cache.tradeAggregation, viewport,
@@ -392,7 +396,7 @@ const drawScheduler = new LayerScheduler(draw => requestAnimationFrame(draw), {
   trades: () => {
     overlayRenderer.draw(cache.tradeAggregation, viewport, bubbleMinimum.value,
       currentTrade.trade?.price ?? null, replayHeadUs ?? Math.max(
-        (cache.latestTimeUs ?? 0) + US_PER_SECOND, currentTrade.trade?.tsUs ?? 0));
+        (cache.latestTimeUs ?? 0) + US_PER_SECOND, currentTrade.trade?.tsUs ?? 0), activeSettings.values.bubbleScale);
     overlayDrawCount++;
   },
   after: (redrewDepth, drawStart, redrewTrades) => {
@@ -772,19 +776,27 @@ function applySettings(doc: SettingsDocument): void {
   settingsWarning = "";
   if (change.heat) { renderer.setTopPercent(next.values.heatTopPct); if (settingsLoaded) drawScheduler.request("heat"); }
   if (change.bubbles && settingsLoaded) drawScheduler.request("trades");
+  if (change.book && settingsLoaded) drawScheduler.request("book");
   if (change.big) { bigFeed.reconfigure(next.values.bigTopPct); if (settingsLoaded) drawScheduler.request("big"); }
   if (change.time) renderTimeAxis();
   updateStatus(); updateDebugPanel();
 }
 
-async function startWithSettings() {
-  try { const doc = await fetchSettings(); if (settingsGeneration === 0) applySettings(doc); }
-  catch {
-    if (settingsGeneration === 0) {
-      settingsWarning = "設定を読めませんでした";
-      console.error("設定を読めませんでした");
-    }
+let readGeneration = 0;
+const settingsRecovery = new SettingsRecovery(async () => {
+  readGeneration = settingsGeneration;
+  return fetchSettings();
+}, doc => {
+  if (settingsGeneration === readGeneration) applySettings(doc);
+}, () => {
+  if (settingsGeneration === readGeneration) {
+    settingsWarning = "設定を読めませんでした";
+    console.error("設定を読めませんでした");
+    updateStatus(); updateDebugPanel();
   }
+});
+async function startWithSettings() {
+  await settingsRecovery.read();
   settingsLoaded = true;
   renderTimeAxis(); updateStatus(); scheduleDraw(); client.start();
 }

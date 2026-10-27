@@ -26,12 +26,13 @@ export class TradeOverlayRenderer {
     return { bubbles: this.geometry.bubbles.map(b => ({ ...b })),
       priceBins: this.geometry.priceBins.map(p => ({ ...p })), downsampled: this.geometry.downsampled };
   }
-  draw(aggregation: TradeAggregator, view: Viewport, minimum: number, currentPrice: number | null, cutoffUs = Infinity): void {
+  draw(aggregation: TradeAggregator, view: Viewport, minimum: number, currentPrice: number | null, cutoffUs = Infinity,
+    bubbleScale = 1): void {
     const start = performance.now(), dpr = window.devicePixelRatio || 1;
     const { context: ctx, width, height } = prepare(this.heat, dpr);
     const axis = prepare(this.axis, dpr);
     const geometryStart = performance.now();
-    const geometry = tradeGeometry(aggregation, view, width, height, dpr, minimum, cutoffUs);
+    const geometry = tradeGeometry(aggregation, view, width, height, dpr, minimum, cutoffUs, bubbleScale);
     this.geometry = geometry;
     const geometryMs = performance.now() - geometryStart, lineStart = performance.now();
     ctx.strokeStyle = "#b9a7ff"; ctx.lineWidth = 1.5; ctx.beginPath();

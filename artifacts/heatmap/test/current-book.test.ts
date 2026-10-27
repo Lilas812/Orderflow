@@ -45,7 +45,7 @@ class Canvas {
   getBoundingClientRect() { return { width: 100, height: 200 }; }
 }
 
-test("ダミー：右端20%・共通P99、売買色・半透明、帯なし、DPR、全量置換", () => {
+test("ダミー：右端10%・共通P99、売買色・半透明、DPR、全量置換", () => {
   const saved = Object.getOwnPropertyDescriptor(globalThis, "window");
   Object.defineProperty(globalThis, "window", { value: { devicePixelRatio: 2 }, configurable: true });
   try {
@@ -56,16 +56,16 @@ test("ダミー：右端20%・共通P99、売買色・半透明、帯なし、DP
     assert.deepEqual(canvas.context.events[0], ["clear", 0, 0, 200, 400]);
     assert.ok(canvas.context.events.every(e => e[1] !== "#808080"));
     const bars = canvas.context.events.filter(e => e[0] === "rect");
-    assert.ok(bars.some(e => e[1] === "#d9d9d9" && e[3] === 190 && e[5] === 10)); // bid 5
-    assert.ok(bars.some(e => e[1] === "#8a3cff" && e[3] === 180 && e[5] === 20)); // ask 10
-    assert.ok(bars.some(e => e[3] === 160 && e[5] === 40)); // capped at 20%
-    assert.ok(bars.every(e => e[2] === 0.7 && Number(e[3]) + Number(e[5]) === 200));
+    assert.ok(bars.some(e => e[1] === "#d9d9d9" && e[3] === 195 && e[5] === 5));
+    assert.ok(bars.some(e => e[1] === "#8a3cff" && e[3] === 190 && e[5] === 10));
+    assert.ok(bars.some(e => e[3] === 180 && e[5] === 20));
+    assert.ok(bars.every(e => e[2] === 0.5 && Number(e[3]) + Number(e[5]) === 200));
     assert.equal(canvas.context.globalAlpha, 1);
     assert.equal(r.metrics.p99, 20); assert.equal(r.metrics.timeUs, 10_000_000);
     canvas.context.events = [];
     r.draw(book([[99, 1]], []), { ...view, startUs: -1_000_000 }, 10);
     assert.ok(canvas.context.events.every(e => e[1] !== "#808080"));
-    assert.ok(canvas.context.events.filter(e => e[0] === "rect").every(e => e[5] === 4 && e[1] === "#d9d9d9"));
+    assert.ok(canvas.context.events.filter(e => e[0] === "rect").every(e => e[5] === 2 && e[1] === "#d9d9d9"));
     canvas.context.events = [];
     r.draw(null, view, 10);
     assert.deepEqual(canvas.context.events, [["clear", 0, 0, 200, 400]]);

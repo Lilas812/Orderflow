@@ -1,5 +1,13 @@
 import type { HeatColumn, Viewport } from "../domain.ts";
-import { BOOK_OVERLAY_FRACTION, priceTicksToY } from "./coordinates.ts";
+import { priceTicksToY, timeUsToX } from "./coordinates.ts";
+import { colorize } from "./renderer.ts";
+
+/** Confirmed column's right edge, not the timestamp of the provisional book. */
+export function bookBandStart(rightEdgeUs: number | null, view: Viewport, width: number): number | null {
+  if (rightEdgeUs === null) return null;
+  const x = Math.max(0, Math.ceil(timeUsToX(rightEdgeUs, view, width)));
+  return x < width ? x : null;
+}
 
 /** One value per physical row, with the same tick-cell coverage as the heatmap. */
 export function currentBookRows(book: HeatColumn | null, view: Viewport, height: number, sellRows?: Uint8Array): Uint32Array {
@@ -29,7 +37,8 @@ export class CurrentBookRenderer {
   private readonly canvas: HTMLCanvasElement;
   private readonly context: CanvasRenderingContext2D;
   private samples: number[] = [];
-  metrics = { drawMs: 0, meanMs: 0, maxMs: 0, drawCount: 0, paintedRows: 0, timeUs: null as number | null, p99: 1 };
+  metrics = { drawMs: 0, meanMs: 0, maxMs: 0, drawCount: 0, paintedRows: 0, timeUs: null as number | null, p99: 1,
+    bandStart: null as number | null };
 
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas;
@@ -38,7 +47,8 @@ export class CurrentBookRenderer {
     this.context = context;
   }
 
-  draw(book: HeatColumn | null, view: Viewport, p99: number): void {
+  draw(book: HeatColumn | null, view: Viewport, p99: number, rightEdgeUs: number | null = null,
+    barPct = 10, opacity = .5): void {
     const start = performance.now();
     const rect = this.canvas.getBoundingClientRect(), dpr = window.devicePixelRatio || 1;
     if (rect.width < 1 || rect.height < 1) return;
@@ -51,13 +61,25 @@ export class CurrentBookRenderer {
     ctx.clearRect(0, 0, width, height);
     const sellRows = new Uint8Array(height);
     const rows = currentBookRows(book, view, height, sellRows);
-    ctx.globalAlpha = 0.7;
+    const bandStart = book ? bookBandStart(rightEdgeUs, view, width) : null;
+    // Use the very same LUT, saturation and rounding as historical heatmap cells.
+    if (bandStart !== null) {
+      const colors = colorize(rows, p99);
+      ctx.globalAlpha = 1;
+      for (let y = 0; y < height; y++) {
+        if (rows[y]! < 1) continue;
+        const i = y * 4;
+        ctx.fillStyle = `rgb(${colors[i]},${colors[i + 1]},${colors[i + 2]})`;
+        ctx.fillRect(bandStart, y, width - bandStart, 1);
+      }
+    }
+    ctx.globalAlpha = opacity;
     let paintedRows = 0;
     for (let y = 0; y < height; y++) {
       const size = rows[y]!;
       if (size < 1) continue;
       ctx.fillStyle = sellRows[y] ? "#8a3cff" : "#d9d9d9";
-      const length = Math.min(size / p99, 1) * width * BOOK_OVERLAY_FRACTION;
+      const length = Math.min(size / p99, 1) * width * barPct / 100;
       ctx.fillRect(width - length, y, length, 1);
       paintedRows++;
     }
@@ -68,6 +90,6 @@ export class CurrentBookRenderer {
     this.samples = this.samples.slice(-30);
     this.metrics = { drawMs, meanMs: this.samples.reduce((a, b) => a + b, 0) / this.samples.length,
       maxMs: Math.max(...this.samples), drawCount: this.metrics.drawCount + 1, paintedRows,
-      timeUs: book?.timeUs ?? null, p99 };
+      timeUs: book?.timeUs ?? null, p99, bandStart };
   }
 }

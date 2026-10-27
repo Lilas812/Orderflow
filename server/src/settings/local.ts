@@ -1,7 +1,7 @@
 import * as fs from "node:fs/promises";
 import path from "node:path";
 import type { Log } from "../logger.ts";
-import { defaults, validDocument, validateSettings } from "./schema.ts";
+import { defaults, readDocument, validateSettings } from "./schema.ts";
 import type { SettingsDocument, SettingsValues } from "./schema.ts";
 
 export interface SettingsDiagnostics {
@@ -35,7 +35,7 @@ export class LocalSettings implements SettingsPersistence {
     return next;
   }
   private stamp(): number { return this.lastStamp = Math.max(this.now() * 1000, this.lastStamp + 1); }
-  private defaultDoc(): SettingsDocument { return { version: 1, values: { ...defaults }, updatedAt: null }; }
+  private defaultDoc(): SettingsDocument { return { version: 2, values: { ...defaults }, updatedAt: null }; }
   private async read() {
     try {
       const names = await fs.readdir(path.dirname(this.file));
@@ -50,8 +50,8 @@ export class LocalSettings implements SettingsPersistence {
       return { document: this.defaultDoc(), corrupt: null };
     }
     try {
-      const doc: unknown = JSON.parse(bytes.toString("utf8"));
-      if (!validDocument(doc)) throw Error("invalid_file");
+      const doc = readDocument(JSON.parse(bytes.toString("utf8")));
+      if (!doc) throw Error("invalid_file");
       this.diag.source = "saved"; this.diag.updatedAt = doc.updatedAt; this.diag.readError = null;
       return { document: doc, corrupt: null };
     } catch {
@@ -92,7 +92,7 @@ export class LocalSettings implements SettingsPersistence {
           this.diag.preservedFiles.push(name);
           this.log("settings_corrupt_preserved", { file: name, bytes: corrupt.length });
         }
-        const doc: SettingsDocument = { version: 1, values: input, updatedAt: this.stamp() };
+        const doc: SettingsDocument = { version: 2, values: input, updatedAt: this.stamp() };
         temporary = this.file + `.${doc.updatedAt}.tmp`;
         const handle = await fs.open(temporary, "wx", 0o600);
         try { await handle.writeFile(JSON.stringify(doc) + "\n"); await handle.sync(); } finally { await handle.close(); }

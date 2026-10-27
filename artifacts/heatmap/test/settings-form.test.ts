@@ -4,7 +4,7 @@ import { SettingsForm } from "../src/components/settings-form.ts";
 import { DEFAULT_SETTINGS } from "../src/data/settings.ts";
 import type { SettingsValues } from "../src/data/settings.ts";
 
-const saved: SettingsValues = { heatTopPct: 2.5, bubbleMin: 30, bigTopPct: 4, bigMinSec: 12, timeZone: "America/Chicago" };
+const saved: SettingsValues = { ...DEFAULT_SETTINGS, heatTopPct: 2.5, bubbleMin: 30, bigTopPct: 4, bigMinSec: 12, timeZone: "America/Chicago" };
 
 test("入力検査：範囲外・数字でない・刻み違いで保存不可", () => {
   const f = new SettingsForm(); f.loadOk(saved);

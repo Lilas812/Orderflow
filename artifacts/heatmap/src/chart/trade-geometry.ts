@@ -14,8 +14,8 @@ export function parseBubbleMin(search: string): { value: number; invalid: boolea
   const number = Number(raw);
   return Number.isInteger(number) && number >= 1 ? { value: number, invalid: false } : { value: 10, invalid: true };
 }
-export function bubbleRadius(total: number, minimum: number): number {
-  return Math.min(14, 3 * Math.sqrt(total / minimum));
+export function bubbleRadius(total: number, minimum: number, scale = 1): number {
+  return Math.min(14 * scale, 3 * scale * Math.sqrt(total / minimum));
 }
 export interface Bubble {
   x: number; y: number; price: number; buy: number; sell: number;
@@ -24,7 +24,7 @@ export interface Bubble {
 export interface PriceBin { x: number; first: number; last: number; min: number; max: number; }
 export function tradeGeometry(
   aggregation: TradeAggregator, view: Viewport, cssWidth: number, cssHeight: number,
-  dpr: number, minimum: number, cutoffUs = Infinity,
+  dpr: number, minimum: number, cutoffUs = Infinity, bubbleScale = 1,
 ): { bubbles: Bubble[]; priceBins: PriceBin[]; downsampled: boolean } {
   const physicalWidth = Math.max(1, Math.round(cssWidth * dpr));
   const downsampled = physicalWidth < view.durationSec;
@@ -51,7 +51,7 @@ export function tradeGeometry(
   const bubbles = [...merged.values()];
   for (const b of bubbles) {
     b.side = b.buy > b.sell ? "buy" : b.sell > b.buy ? "sell" : "tie";
-    b.radius = bubbleRadius(b.buy + b.sell, minimum);
+    b.radius = bubbleRadius(b.buy + b.sell, minimum, bubbleScale);
   }
   const bins = new Map<number, PriceBin>();
   for (const point of aggregation.lastPrices(from - US_PER_SECOND, to, cutoffUs)) {

@@ -4,40 +4,44 @@ import { parseBigOrderOptions } from "./big-orders.ts";
 export interface SettingsValues {
   heatTopPct: number; bubbleMin: number; bigTopPct: number; bigMinSec: number;
   timeZone: "Asia/Tokyo" | "America/Chicago";
+  bubbleScale: number; bookBarPct: number; bookBarOpacity: number;
 }
 export type SettingsKey = keyof SettingsValues;
 export type SettingsSource = "保存" | "初期値" | "URL";
-export interface SettingsDocument { version: 1; values: SettingsValues; updatedAt: number | null; }
+export interface SettingsDocument { version: 2; values: SettingsValues; updatedAt: number | null; }
 export const DEFAULT_SETTINGS: Readonly<SettingsValues> = Object.freeze({
   heatTopPct: 1, bubbleMin: 10, bigTopPct: 2, bigMinSec: 5, timeZone: "Asia/Tokyo",
+  bubbleScale: 1, bookBarPct: 10, bookBarOpacity: .5,
 });
 export const SETTINGS_KEYS = Object.keys(DEFAULT_SETTINGS) as SettingsKey[];
 
 export function validateSettings(values: unknown): Record<string, string> {
   const errors: Record<string, string> = Object.create(null);
-  if (!values || typeof values !== "object" || Array.isArray(values)) return { values: "5項目のオブジェクトが必要です" };
+  if (!values || typeof values !== "object" || Array.isArray(values)) return { values: "8項目のオブジェクトが必要です" };
   const v = values as Record<string, unknown>;
   for (const key of Object.keys(v)) if (!SETTINGS_KEYS.includes(key as SettingsKey)) errors[key] = "余分な項目です";
-  for (const [key, min, max, tenth] of [
-    ["heatTopPct", .1, 10, true], ["bubbleMin", 1, 1000, false],
-    ["bigTopPct", .1, 20, true], ["bigMinSec", 1, 600, false],
+  for (const [key, min, max, factor] of [
+    ["heatTopPct", .1, 10, 10], ["bubbleMin", 1, 1000, 1],
+    ["bigTopPct", .1, 20, 10], ["bigMinSec", 1, 600, 1],
+    ["bubbleScale", .5, 3, 10], ["bookBarPct", 5, 20, 1],
+    ["bookBarOpacity", .1, 1, 20],
   ] as const) {
-    const n = v[key], factor = tenth ? 10 : 1;
+    const n = v[key];
     if (typeof n !== "number" || !Number.isFinite(n)) errors[key] = "数字を入力してください";
     else if (n < min || n > max) errors[key] = `${min}〜${max}の範囲で入力してください`;
     else if (Math.abs(n * factor - Math.round(n * factor)) > Number.EPSILON * 256)
-      errors[key] = tenth ? "0.1刻みで入力してください" : "整数で入力してください";
+      errors[key] = factor === 1 ? "整数で入力してください" : `${1 / factor}刻みで入力してください`;
   }
   if (v.timeZone !== "Asia/Tokyo" && v.timeZone !== "America/Chicago") errors.timeZone = "時刻の表示を選んでください";
   return errors;
 }
 
 export function defaultDocument(): SettingsDocument {
-  return { version: 1, values: { ...DEFAULT_SETTINGS }, updatedAt: null };
+  return { version: 2, values: { ...DEFAULT_SETTINGS }, updatedAt: null };
 }
 export function validDocument(v: unknown): v is SettingsDocument {
   const d = v as SettingsDocument | null;
-  return !!d && d.version === 1 && Object.keys(validateSettings(d.values)).length === 0
+  return !!d && d.version === 2 && Object.keys(validateSettings(d.values)).length === 0
     && (d.updatedAt === null || (Number.isSafeInteger(d.updatedAt) && d.updatedAt >= 0));
 }
 
@@ -58,7 +62,8 @@ export function resolveSettings(doc: SettingsDocument, search: string) {
   return { values, sources, invalid, overridden };
 }
 export function settingsChanges(a: SettingsValues, b: SettingsValues) {
-  return { heat: a.heatTopPct !== b.heatTopPct, bubbles: a.bubbleMin !== b.bubbleMin,
+  return { heat: a.heatTopPct !== b.heatTopPct, bubbles: a.bubbleMin !== b.bubbleMin || a.bubbleScale !== b.bubbleScale,
+    book: a.bookBarPct !== b.bookBarPct || a.bookBarOpacity !== b.bookBarOpacity,
     big: a.bigTopPct !== b.bigTopPct || a.bigMinSec !== b.bigMinSec, time: a.timeZone !== b.timeZone };
 }
 

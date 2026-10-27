@@ -7,6 +7,9 @@ export interface FieldSpec { key: SettingsKey; group: string; label: string; kin
 export const FIELD_SPECS: readonly FieldSpec[] = [
   { key: "heatTopPct", group: "ヒートマップ", label: "色の基準（上位 %）", kind: "number", min: .1, max: 10, step: .1 },
   { key: "bubbleMin", group: "約定バブル", label: "閾値（枚）", kind: "integer", min: 1, max: 1000, step: 1 },
+  { key: "bubbleScale", group: "約定バブル", label: "大きさ（倍率）", kind: "number", min: .5, max: 3, step: .1 },
+  { key: "bookBarPct", group: "現在の板", label: "棒の最大の長さ（ヒートマップの幅の %）", kind: "integer", min: 5, max: 20, step: 1 },
+  { key: "bookBarOpacity", group: "現在の板", label: "棒の不透明度", kind: "number", min: .1, max: 1, step: .05 },
   { key: "bigTopPct", group: "大口板", label: "閾値（上位 %）", kind: "number", min: .1, max: 20, step: .1 },
   { key: "bigMinSec", group: "大口板", label: "継続時間（秒）", kind: "integer", min: 1, max: 600, step: 1 },
   { key: "timeZone", group: "時間軸", label: "時刻の表示", kind: "zone" },
@@ -16,7 +19,7 @@ export const ZONE_LABELS: Record<SettingsValues["timeZone"], string> = { "Asia/T
 export function rangeText(spec: FieldSpec): string {
   const def = DEFAULT_SETTINGS[spec.key];
   if (spec.kind === "zone") return `初期値 ${ZONE_LABELS[def as SettingsValues["timeZone"]]}`;
-  return `${spec.min}〜${spec.max}${spec.kind === "integer" ? "（整数）" : "（0.1刻み）"}・初期値 ${def}`;
+  return `${spec.min}〜${spec.max}${spec.kind === "integer" ? "（整数）" : `（${spec.step}刻み）`}・初期値 ${def}`;
 }
 
 export const toInputs = (v: SettingsValues): FormInputs =>

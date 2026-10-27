@@ -40,14 +40,18 @@ export class DeltaRenderer {
     ctx.strokeStyle = "#252431"; ctx.lineWidth = 1;
     ctx.beginPath(); ctx.moveTo(0, geometry.zeroY); ctx.lineTo(width, geometry.zeroY); ctx.stroke();
     const a = axis.context;
-    a.fillStyle = "#a09cab"; a.font = "9px ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace";
+    a.fillStyle = "#d9d9d9"; a.font = "12px ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace";
     a.textAlign = "center"; a.textBaseline = "top";
     const labelWidth = Math.max(1, axis.width - 2);
     a.fillText(`+${geometry.maximum}`, axis.width / 2, 2, labelWidth);
-    a.textBaseline = "middle"; a.fillText("0", axis.width / 2, axis.height / 2, labelWidth);
+    a.textAlign = "left";
+    a.textBaseline = "middle"; a.fillText("0", 2, axis.height / 2, labelWidth);
+    a.textAlign = "center";
     a.textBaseline = "bottom"; a.fillText(`−${geometry.maximum}`, axis.width / 2, axis.height - 2, labelWidth);
-    a.font = "9px ui-monospace, monospace";
-    a.fillText(`${geometry.seconds}s`, axis.width / 2, axis.height - 15, labelWidth);
+    const zeroWidth = a.measureText("0").width;
+    a.font = "11px ui-monospace, monospace"; a.fillStyle = "#8a8a8a";
+    a.textAlign = "right"; a.textBaseline = "middle";
+    a.fillText(`${geometry.seconds}s`, axis.width - 2, axis.height / 2, Math.max(1, labelWidth - zeroWidth - 2));
     const drawMs = performance.now() - started;
     this.samples.push(drawMs); this.samples = this.samples.slice(-30);
     this.metrics = { seconds: geometry.seconds, visibleCount: geometry.bars.length, maximum: geometry.maximum,
