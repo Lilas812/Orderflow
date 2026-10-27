@@ -90,8 +90,8 @@ export class VpHistory {
       this.state.noData.push({ startSec: start, endSec: end, attempts: retry + 1 });
     }
     const trades = historyTrades(response.rows, start, end, this.metrics, this.nextSeq);
-    // Replace only the previously uncovered interval. Partial old files must not
-    // cause duplicate rows after fetching that interval again.
+    // Insert only an uncovered interval, preserving every existing row and its
+    // order. Unexpected old rows inside a missing range fail visibly, not delete.
     await this.store.replaceTradeRange(start, end, trades);
     for (const trade of trades) this.profile.add(trade);
     this.state.importedTrades += trades.length; this.state.apiSeconds += end - start;

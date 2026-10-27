@@ -4,6 +4,7 @@ import * as fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { EventEmitter } from "node:events";
+import { gzipSync, gunzipSync } from "node:zlib";
 import { sessionStartSec, VolumeProfile } from "../src/vp/state.ts";
 import { VpHistory, coverageSegments } from "../src/vp/history.ts";
 import { LocalStore } from "../src/store/local.ts";
@@ -44,13 +45,85 @@ test("ダミー：被覆記録の半開区間をつなぎ、ファイルだけ�
     { start: 20, end: 25, covered: false }, { start: 25, end: 30, covered: true },
     { start: 30, end: 32, covered: false }]);
 });
-test("ダミー：ファイル/不足混在・900秒窓・truncated分割・L分離・部分ファイルを置換保存", async () => {
+test("ダミー：取得済み行の文字列・内容・逆行を含む順番を保持し、不足行だけ時刻位置へ差し込む", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "dummy-vp-insert-"));
+  const file = path.join(root, "trades/NQ/2026-10-26/22.jsonl.gz");
+  const index = path.join(root, "coverage.json");
+  const originals = [trade(start + 10, 1), trade(start + 9, 2), trade(start + 50, 3), trade(start + 49, 4)];
+  const oldLines = originals.map(t => " " + JSON.stringify(t) + " ");
+  const oldCoverage = JSON.stringify({ book: [], tick: [[start, start + 20], [start + 40, start + 60]] });
+  try {
+    await fs.mkdir(path.dirname(file), { recursive: true });
+    await fs.writeFile(file, gzipSync(oldLines.join("\n") + "\n")); await fs.writeFile(index, oldCoverage);
+    let renamed = false;
+    const store = new LocalStore(root, () => L * 1000, async (a, b) => {
+      assert.equal(await fs.readFile(index, "utf8"), oldCoverage, "index unchanged before data replacement");
+      await fs.rename(a, b); renamed = true;
+    });
+    await store.initialize();
+    const incoming = [trade(start + 35, 5), trade(start + 25, 6), trade(start + 25, 7)];
+    await store.replaceTradeRange(start + 20, start + 40, incoming);
+    assert.ok(renamed);
+    const lines = gunzipSync(await fs.readFile(file)).toString().slice(0, -1).split("\n");
+    assert.deepEqual([lines[0], lines[1], lines[5], lines[6]], oldLines);
+    assert.deepEqual(lines.map(l => JSON.parse(l).seq), [1, 2, 6, 7, 5, 3, 4]);
+    assert.deepEqual(lines.map(l => JSON.parse(l)).filter(t => t.seq <= 4), originals);
+    assert.deepEqual(await store.recordedTickCoverage(), [[start, start + 60]]);
+  } finally { await fs.rm(root, { recursive: true, force: true }); }
+});
+test("ダミー：置換直前の失敗でも元gzipとcoverageはバイト不変、作業用一時ファイルのみ除去", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "dummy-vp-rename-fail-"));
+  const file = path.join(root, "trades/NQ/2026-10-26/22.jsonl.gz"), index = path.join(root, "coverage.json");
+  try {
+    const writer = new LocalStore(root, () => L * 1000);
+    await writer.initialize(); await writer.addTrades([trade(start + 1), trade(start + 55, 2)]); await writer.flush();
+    const beforeFile = await fs.readFile(file), beforeIndex = await fs.readFile(index);
+    const store = new LocalStore(root, () => L * 1000, async () => { throw Error("dummy_before_rename"); });
+    await store.initialize();
+    await assert.rejects(store.replaceTradeRange(start + 20, start + 40, [trade(start + 25, 3)]), /dummy_before_rename/);
+    assert.deepEqual(await fs.readFile(file), beforeFile);
+    assert.deepEqual(await fs.readFile(index), beforeIndex);
+    await assert.rejects(fs.access(file + ".vp.tmp"), { code: "ENOENT" });
+  } finally { await fs.rm(root, { recursive: true, force: true }); }
+});
+test("ダミー：複数時間の一時書込中の失敗はどの元ファイルも置換せず、coverageも不変", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "dummy-vp-stage-fail-"));
+  const file = path.join(root, "trades/NQ/2026-10-26/22.jsonl.gz"), index = path.join(root, "coverage.json");
+  try {
+    const store = new LocalStore(root, () => L * 1000);
+    await store.initialize(); await store.addTrades([trade(start + 1)]); await store.flush();
+    const beforeFile = await fs.readFile(file), beforeIndex = await fs.readFile(index);
+    const invalid = { ...trade(start + 3605, 3), extra: 1n } as Trade;
+    await assert.rejects(store.replaceTradeRange(start + 3590, start + 3610,
+      [trade(start + 3595, 2), invalid]), /BigInt/);
+    assert.deepEqual(await fs.readFile(file), beforeFile);
+    assert.deepEqual(await fs.readFile(index), beforeIndex);
+    await assert.rejects(fs.access(file.replace("22.jsonl.gz", "23.jsonl.gz")), { code: "ENOENT" });
+    await assert.rejects(fs.access(file + ".vp.tmp"), { code: "ENOENT" });
+  } finally { await fs.rm(root, { recursive: true, force: true }); }
+});
+test("ダミー：不足区間内の既存行は削除も二重登録もせず明示エラーで停止", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "dummy-vp-old-partial-"));
+  const file = path.join(root, "trades/NQ/2026-10-26/22.jsonl.gz"), index = path.join(root, "coverage.json");
+  try {
+    const writer = new LocalStore(root, () => L * 1000);
+    await writer.initialize(); await writer.addTrades([trade(start + 25)]); await writer.flush();
+    await fs.writeFile(index, JSON.stringify({ book: [], tick: [] }));
+    const beforeFile = await fs.readFile(file), beforeIndex = await fs.readFile(index);
+    const store = new LocalStore(root, () => L * 1000); await store.initialize();
+    await assert.rejects(store.replaceTradeRange(start + 20, start + 40, [trade(start + 26, 2)]),
+      /vp_insert_existing_rows_in_missing_range/);
+    assert.deepEqual(await fs.readFile(file), beforeFile); assert.deepEqual(await fs.readFile(index), beforeIndex);
+  } finally { await fs.rm(root, { recursive: true, force: true }); }
+});
+test("ダミー：ファイル/不足混在・900秒窓・truncated分割・L分離・既存行を保って差し込み", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "dummy-vp-"));
   let store = new LocalStore(root, () => (L + 2000) * 1000);
   try {
     await store.initialize();
-    await store.addTrades([trade(start), trade(start + 900, 2, 999), trade(L, 3, 7)]);
-    // Deliberately keep a partial row on disk but remove its interval coverage.
+    await store.addTrades([trade(start), trade(L, 3, 7)]);
+    // The live file exists outside the persisted interval record. Startup file
+    // recovery must not silently promote it to proven VP history coverage.
     await fs.writeFile(path.join(root, "coverage.json"), JSON.stringify({ book: [], tick: [[start, start + 900]] }));
     store = new LocalStore(root, () => (L + 2000) * 1000);
     await store.initialize();
@@ -74,7 +147,7 @@ test("ダミー：ファイル/不足混在・900秒窓・truncated分割・L分
     assert.equal(job.state.splitRequests, 1);
     assert.equal(job.state.fileSeconds, 900);
     const read: Trade[] = []; await store.visitTrades(start, L + 1, t => read.push(t));
-    assert.ok(!read.some(t => t.size === 999)); // Old uncovered partial data was not appended twice.
+    assert.deepEqual(read.filter(t => t.seq === 1), [trade(start)]);
     assert.equal(read.reduce((n, t) => n + t.size, 0), vp.summary().total);
     assert.equal(read.filter(t => t.tsUs === L * 1e6).length, 1);
   } finally { await fs.rm(root, { recursive: true, force: true }); }

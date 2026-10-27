@@ -7,7 +7,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { gzip as gzipCallback, gunzip as gunzipCallback } from "node:zlib";
 import { encodeColumns, decodeColumns } from "./binary.ts";
-import { scanColumnFile, tradeFileRows, decodeColumnRange, mergeColumnRecords } from "./records.ts";
+import { scanColumnFile, tradeFileRows, tradeFileEntries, decodeColumnRange, mergeColumnRecords } from "./records.ts";
 import type { Column } from "../aggregate/columns.ts";
 import type { Trade } from "../types.ts";
 
@@ -56,6 +56,7 @@ export class LocalStore implements Store {
   private queue: Promise<void> = Promise.resolve();
   private failure: Error | null = null;
   private now: () => number;
+  private replaceVpFile: typeof fs.rename;
   private bounds: { fromSec: number; toSec: number } | null = null;
   private includeSecond(sec: number) {
     this.bounds = { fromSec: Math.min(this.bounds?.fromSec ?? sec, sec),
@@ -64,7 +65,10 @@ export class LocalStore implements Store {
   get savedRange() {
     return this.bounds ? { ...this.bounds, fromSec: Math.max(this.bounds.fromSec, Math.floor(this.now() / 1000) - 7 * 86400) } : null;
   }
-  constructor(root: string, now: () => number = Date.now) { this.root = root; this.now = now; }
+  constructor(root: string, now: () => number = Date.now,
+    replaceVpFile: typeof fs.rename = fs.rename) {
+    this.root = root; this.now = now; this.replaceVpFile = replaceVpFile;
+  }
 
   private run(work: () => Promise<void>): Promise<void> {
     const job = this.queue.then(async () => {
@@ -306,22 +310,37 @@ export class LocalStore implements Store {
   }
   replaceTradeRange(start: number, end: number, trades: Trade[]): Promise<void> {
     return this.run(async () => {
-      for (let h = hourOf(start); h < end; h += 3600) {
-        const file = this.file("tick", h), temporary = file + ".vp.tmp";
-        const exists = await this.exists(file);
-        await fs.mkdir(path.dirname(file), { recursive: true, mode: 0o700 });
-        async function* lines() {
-          if (exists) for await (const t of tradeFileRows(file)) {
-            if (t.tsUs < start * 1e6 || t.tsUs >= end * 1e6) yield JSON.stringify(t) + "\n";
+      if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start >= end
+        || trades.some(t => t.tsUs < start * 1e6 || t.tsUs >= end * 1e6)) throw Error("invalid_vp_insert_range");
+      if (this.recordedTicks.some(([a, b]) => a < end && start < b)) throw Error("vp_insert_overlaps_coverage");
+      const staged: { file: string; temporary: string }[] = [];
+      // Stage every affected hour before replacing any original. Never remove or
+      // reorder old rows, including when exchange timestamps arrive backwards.
+      try {
+        for (let h = hourOf(start); h < end; h += 3600) {
+          const file = this.file("tick", h), temporary = file + ".vp.tmp";
+          const exists = await this.exists(file);
+          const incoming = trades.filter(t => t.tsUs >= h * 1e6 && t.tsUs < (h + 3600) * 1e6)
+            .sort((a, b) => a.tsUs - b.tsUs);
+          await fs.mkdir(path.dirname(file), { recursive: true, mode: 0o700 });
+          staged.push({ file, temporary });
+          async function* lines() {
+            let inserted = false;
+            const fresh = function* () { for (const t of incoming) yield JSON.stringify(t) + "\n"; };
+            if (exists) for await (const { line, trade } of tradeFileEntries(file)) {
+              if (trade.tsUs >= start * 1e6 && trade.tsUs < end * 1e6)
+                throw Error("vp_insert_existing_rows_in_missing_range");
+              if (!inserted && trade.tsUs >= end * 1e6) { yield* fresh(); inserted = true; }
+              yield line + "\n";
+            }
+            if (!inserted) yield* fresh();
           }
-          for (const t of trades) if (t.tsUs >= h * 1e6 && t.tsUs < (h + 3600) * 1e6) yield JSON.stringify(t) + "\n";
-        }
-        try {
           await streamPipeline(Readable.from(lines()), createGzip(), createWriteStream(temporary, { mode: 0o600 }));
-          await fs.rename(temporary, file);
-        } finally { await fs.rm(temporary, { force: true }); }
-      }
-      this.markCovered("tick", start, end); await this.saveCoverage();
+        }
+        for (const { file, temporary } of staged) await this.replaceVpFile(temporary, file);
+        // Index replacement is strictly after all data-file replacements.
+        this.markCovered("tick", start, end); await this.saveCoverage();
+      } finally { for (const { temporary } of staged) await fs.rm(temporary, { force: true }); }
     });
   }
   /** Atomic delivery view: persisted data plus confirmed writes held for backfill.
