@@ -10,6 +10,6 @@
 - [公開環境のメモリ予算](performance-budget.md) — Reserved VMは2GiB予定。Workspaceでの成功だけで公開環境の動作を保証しない。
 - [負荷測定の画面数](performance-measurement-isolation.md) — 残存ブラウザの発生元を決めつけず、計測画面の実受信と測定中の接続数を両方確認する。
 - [CDP合成ページの通信制限](synthetic-document-network.md) — 合成ページからのloopback WSがChromiumに遮断される。実通信の確認には実HTTP配信を使う。
-- [VPの追加指定](vp-decisions.md) — 正本より優先すると承認された17時区切り・POC同数・不足窓と欠け・縮小行の全幅基準。
+- [VPの指定の経緯](vp-decisions.md) — 口頭指定は正本へ反映済み。書換禁止を撤回して既存行を保つ差し込みへ改めた経緯を残す。
 - [VPの照合締切](vp-verification-cutoff.md) — ライブと保存の独立比較では、巻き戻る約定時刻だけでなく受信締切を一致させる。
 - [デルタの追加指定](delta-decisions.md) — 区間全体がそろわない過去の棒は非描画、最新区間は受信分で更新。棒の隙間・中央線は承認済み。
