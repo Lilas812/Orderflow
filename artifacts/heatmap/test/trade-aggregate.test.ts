@@ -42,6 +42,24 @@ test("ダミー：rangeと同時に届いたliveを失わず、同一IDは二重
   a.beginRange(2, 10 * U, 11 * U); a.appendRangeChunk(2, [row(10, 900)]);
   a.abortRange(2); assert.equal(a.size, 2);
 });
+test("ダミー：初期L前後の巻き戻り約定をrangeとliveで重ねても、別IDは保持し同一IDは一度だけ", () => {
+  const a = new TradeAggregator(), L = 100;
+  const trades = [row(L + 0.2, 400, 3), row(L - 0.000001, 400, 7, "sell"),
+    row(L, 400, 2), row(L + 0.1, 400, 5, "sell"), row(L - 0.2, 400, 11),
+    row(L, 400, 13, "sell")];
+  a.beginRange(0, (L - 1) * U, (L + 1) * U);
+  a.appendLive(trades);
+  a.appendRangeChunk(0, trades);
+  a.commitRange(0);
+  assert.equal(a.size, 6);
+  assert.deepEqual(a.cells((L - 1) * U, (L + 1) * U), [
+    { secondUs: L * U, price: 400, buy: 5, sell: 18 },
+    { secondUs: (L - 1) * U, price: 400, buy: 11, sell: 7 },
+  ]);
+  a.beginRange(1, (L - 1) * U, (L + 1) * U);
+  a.appendRangeChunk(1, trades); a.commitRange(1);
+  assert.equal(a.size, 6, "a repeated range replacement cannot double the aggregate");
+});
 test("ダミー：列と同じ2h保持範囲・半開区間、範囲取り直しでも外へ戻さない", () => {
   const cache = new ColumnCache();
   cache.setRetentionAnchor(10_000 * U, 17_200 * U, false, null);

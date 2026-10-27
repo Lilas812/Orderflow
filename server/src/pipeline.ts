@@ -49,6 +49,11 @@ export class Pipeline {
         this.backfill.start(this.seam); // Hold before enqueuing the first live write.
         this.vpHistory.start(this.seam, this.backfill.settled());
         this.tradeBatch = this.tradeBatch.filter(t => t.tsUs >= this.seam! * 1_000_000);
+        // Trades received before the first finalized column were buffered but
+        // not yet counted. L belongs to live; only timestamps strictly below L
+        // are owned by history. This branch runs once, even across rollbacks.
+        this.vp.advance(Date.now() / 1000);
+        for (const trade of this.tradeBatch) this.vp.add(trade);
       }
       if (this.lastColumn !== null && column.tsSec > this.lastColumn + 1) {
         const gap = { startSec: this.lastColumn + 1, endSec: column.tsSec, reason: "no_accepted_live_book" };

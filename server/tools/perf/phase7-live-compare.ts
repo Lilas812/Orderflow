@@ -6,23 +6,25 @@ import path from "node:path";
 import assert from "node:assert/strict";
 import WebSocket from "ws";
 
-const output = "data/phase7/live-sequence-comparison.json";
+const output = process.env.PHASE7_COMPARISON_OUT ?? "data/phase7/live-sequence-comparison.json";
 const initial = await (await fetch("http://127.0.0.1:8080/api/status")).json();
 assert.equal(initial.phase2a.vp.profile.loading, false, "wait_for_vp_complete");
 const L = initial.phase2a.seamL, levels = new Map<number, [number, number]>();
-let liveSequence = -1, snapshot: any = null, updates = 0, closeCode: number | null = null;
+let liveSequence = -1, liveRecvUs = -1, snapshot: any = null, updates = 0, closeCode: number | null = null;
 const ws = new WebSocket("ws://127.0.0.1:8080/api/ws?mode=live", { headers: { "user-agent": "NQ-VP-sequence-check" } });
 ws.on("message", (bytes, binary) => {
   if (binary) return;
   const m = JSON.parse(bytes.toString());
   if (m.type === "trades" || m.type === "rangeTrades") {
-    for (const t of m.trades) if (t.tsUs >= L * 1e6) liveSequence = Math.max(liveSequence, t.seq);
+    for (const t of m.trades) if (t.tsUs >= L * 1e6 && t.seq > liveSequence) {
+      liveSequence = t.seq; liveRecvUs = t.recvUs;
+    }
   }
   if (m.type === "vp" || m.type === "vpUpdate") {
     if (m.type === "vp") levels.clear(); else updates++;
     for (const [p, b, s] of m.levels) levels.set(p, [b, s]);
     // hub.flush emits its live trade batch before VP, in the same event-loop turn.
-    snapshot = { ...m, type: "vp", lastLiveSequence: liveSequence,
+    snapshot = { ...m, type: "vp", lastLiveSequence: liveSequence, cutoffRecvUs: liveRecvUs,
       levels: [...levels].sort(([a], [b]) => a - b).map(([p, [b, s]]) => [p, b, s]) };
   }
 });
@@ -57,7 +59,10 @@ for (let h = Math.floor(snapshot.sessionStartSec / 3600) * 3600; h < snapshot.up
       const t = JSON.parse(line);
       if (t.tsUs < snapshot.sessionStartSec * 1e6) continue;
       if (gaps.some((g: any) => t.tsUs >= g.startSec * 1e6 && t.tsUs < g.endSec * 1e6)) continue;
-      if (t.tsUs >= L * 1e6 && t.seq > snapshot.lastLiveSequence) continue;
+      // Receive-time cutoff, with seq breaking ties within a millisecond. Using
+      // exchange-time upToSec alone would incorrectly exclude late/rolled-back rows.
+      if (t.tsUs >= L * 1e6 && (t.recvUs > snapshot.cutoffRecvUs
+        || (t.recvUs === snapshot.cutoffRecvUs && t.seq > snapshot.lastLiveSequence))) continue;
       const v = actual.get(t.price) ?? [0, 0]; v[t.side === "buy" ? 0 : 1] += t.size;
       actual.set(t.price, v); count++;
     }
