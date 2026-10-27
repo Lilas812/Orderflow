@@ -17,12 +17,14 @@ export interface Socket {
   on(event: string, listener: (...args: any[]) => void): unknown;
 }
 export interface View { columns: Column[]; trades: Trade[] }
+export interface ConnectionOrigin { userAgent?: string; origin?: string; remoteAddress?: string }
 export interface Source {
   savedRange(): { fromSec: number; toSec: number } | null;
   read(from: number, to: number): Promise<View>;
   status(): unknown;
 }
 interface Peer {
+  connectedAtUs: number; origin: ConnectionOrigin;
   id: number; range: { reqId: number; fromSec: number; toSec: number } | null; closeReason?: string;
   socket: Socket; mode: "live" | "replay"; initializing: boolean; closed: boolean;
   columns: Column[]; trades: Trade[]; queuedBytes: number;
@@ -51,6 +53,11 @@ export class Hub {
     this.timer = this.clock.later(poll, 250);
   }
   snapshot() { return { path: WS_PATH, connected: this.peers.size, ...this.counts }; }
+  /** HTTP diagnostics only; do not add this to the WebSocket status payload. */
+  connections() {
+    return [...this.peers].map(p => ({ connectedAtUs: p.connectedAtUs,
+      mode: p.mode, ...p.origin, readyState: p.socket.readyState, ...this.stage(p) }));
+  }
   private close(p: Peer, code: number, reason: string) {
     if (p.closed) return;
     p.closeReason = reason;
@@ -98,7 +105,7 @@ export class Hub {
       p.lastStatus = encoded; p.lastStatusAt = this.clock.now();
     }
   }
-  async connect(socket: Socket, url: URL) {
+  async connect(socket: Socket, url: URL, origin: ConnectionOrigin = {}) {
     if (this.stopped || this.peers.size >= 5) {
       this.counts.rejectedConnections++;
       this.log("hub_connection_rejected", { reason: this.stopped ? "stopped" : "connection_limit" });
@@ -108,12 +115,14 @@ export class Hub {
       socket.on("close", () => this.clock.cancel(t));
       return;
     }
-    const p: Peer = { id: this.counts.totalConnections + 1, range: null, socket, mode: "live", initializing: true, closed: false, columns: [], trades: [],
+    const p: Peer = { connectedAtUs: this.clock.now() * 1000, origin,
+      id: this.counts.totalConnections + 1, range: null, socket, mode: "live", initializing: true, closed: false, columns: [], trades: [],
       queuedBytes: 0, lastStatus: "", lastStatusAt: 0, jobs: Promise.resolve() };
     this.peers.add(p); this.counts.totalConnections++;
-    this.log("hub_connected", { ...this.stage(p) });
+    this.log("hub_connected", { ...this.stage(p), connectedAtUs: p.connectedAtUs, ...origin });
     socket.on("close", (code: number) => {
-      this.log("hub_closed", { ...this.stage(p), code: code ?? null, reason: p.closeReason ?? "remote" });
+      this.log("hub_closed", { ...this.stage(p), connectedAtUs: p.connectedAtUs,
+        closedAtUs: this.clock.now() * 1000, ...p.origin, code: code ?? null, reason: p.closeReason ?? "remote" });
       p.closed = true; p.replay?.stop(); this.peers.delete(p);
     });
     socket.on("error", () => { this.log("hub_socket_error", { ...this.stage(p), reason: "socket_error" }); this.close(p, 1011, "socket_error"); });
@@ -266,7 +275,14 @@ export function attachHub(server: Server, hub: Hub) {
   server.on("upgrade", (request, socket, head) => {
     const url = new URL(request.url ?? "/", "http://localhost");
     if (url.pathname !== WS_PATH) { socket.end("HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n"); return; }
-    wss.handleUpgrade(request, socket, head, ws => { void hub.connect(ws, url); });
+    let origin: string | undefined;
+    try { origin = request.headers.origin ? new URL(request.headers.origin).origin : undefined; } catch { /* invalid origin is not copied */ }
+    const metadata: ConnectionOrigin = {
+      userAgent: request.headers["user-agent"]?.replace(/[\r\n]/g, " ").slice(0, 512),
+      origin, remoteAddress: request.socket.remoteAddress,
+    };
+    // Never copy authorization, cookies, raw headers, or query strings.
+    wss.handleUpgrade(request, socket, head, ws => { void hub.connect(ws, url, metadata); });
   });
   return wss;
 }

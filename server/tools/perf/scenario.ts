@@ -12,7 +12,9 @@ await fs.mkdir(root, { recursive: true });
 const statusUrl = "http://127.0.0.1:8080/api/status";
 // Same path-routing proxy as the screenshot tool; avoid transient public
 // network failures while Chromium imports the app's ES modules.
-const appUrl = "http://127.0.0.1/";
+// Test-only static page on the API origin: native Chromium WebSocket connects
+// directly to the real service, without the shared preview upgrade proxy.
+const appUrl = "http://127.0.0.1:8080/";
 const startedAtUs = Date.now() * 1000;
 let stopped = false, guard = false, pid: number | null = null;
 let sampleBusy = false, previousCpu: { ticks: number; at: number } | null = null;
@@ -186,7 +188,10 @@ try {
   details.failure = error instanceof Error ? error.message : "scenario_failed";
   note("scenario_interrupted", { reason: details.failure });
 } finally {
-  if (chromium) await chromium.close();
+  if (chromium) {
+    details.browserClosed = await chromium.close();
+    note("browser_exit_confirmed", details.browserClosed as object);
+  }
   // Browser close handshakes can overlap one sample, especially under the old
   // server's blocking full-hour reads. Observe them, but allow a short grace.
   allowedClients = null;

@@ -59,4 +59,7 @@ try {
   });
   process.stdout.write(JSON.stringify({ event: "render_benchmark_complete", phase, output,
     counts: results.map((x: any) => ({ name: x.name, frames: x.frameCount })) }) + "\n");
-} finally { await chromium.close(); }
+} finally {
+  const closed = await chromium.close();
+  await fs.writeFile(path.join(output, "browser-closed.json"), JSON.stringify(closed, null, 2));
+}

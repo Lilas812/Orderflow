@@ -73,6 +73,8 @@ export async function browser(port = 9222) {
       const list = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json() as any[];
       const target = list.find(item => item.id === targetId);
       const cdp = await CDP.connect(target.webSocketDebuggerUrl);
+      const userAgent = await cdp.evaluate("navigator.userAgent");
+      await cdp.call("Network.setUserAgentOverride", { userAgent: `${userAgent} NQPerf/${process.pid}` });
       await cdp.call("Emulation.setDeviceMetricsOverride", { width: 1280, height: 800, deviceScaleFactor: 1, mobile: false });
       await cdp.call("Page.enable");
       if (staticRoot) {
@@ -92,7 +94,7 @@ export async function browser(port = 9222) {
               body: body.toString("base64") });
           })().catch(() => { void cdp.call("Fetch.failRequest", { requestId: request.requestId, errorReason: "Failed" }).catch(() => {}); });
         });
-        await cdp.call("Fetch.enable", { patterns: [{ urlPattern: "http://127.0.0.1/*", requestStage: "Request" }] });
+        await cdp.call("Fetch.enable", { patterns: [{ urlPattern: "http://127.0.0.1*/*", requestStage: "Request" }] });
       }
       await cdp.call("Page.navigate", { url });
       const page = { id: targetId, cdp }; pages.push(page); return page;
@@ -102,11 +104,22 @@ export async function browser(port = 9222) {
       const index = pages.indexOf(page); if (index >= 0) pages.splice(index, 1);
     },
     async close() {
+      const targetIds = pages.map(p => p.id);
       for (const page of [...pages]) {
         await root.call("Target.closeTarget", { targetId: page.id }).catch(() => {});
         page.cdp.close();
       }
-      root.close(); child.kill("SIGTERM");
+      await root.call("Browser.close").catch(() => {});
+      root.close();
+      for (let i = 0; i < 50 && child.exitCode === null && child.signalCode === null; i++) await delay(100);
+      if (child.exitCode === null && child.signalCode === null) child.kill("SIGTERM");
+      for (let i = 0; i < 50 && child.exitCode === null && child.signalCode === null; i++) await delay(100);
+      const exited = child.exitCode !== null || child.signalCode !== null;
+      let portClosed = false;
+      try { await fetch(`http://127.0.0.1:${port}/json/version`, { signal: AbortSignal.timeout(500) }); }
+      catch { portClosed = true; }
+      if (!exited || !portClosed) throw Error("browser_close_not_confirmed");
+      return { pid: child.pid, exited, portClosed, targetIds };
     },
   };
 }

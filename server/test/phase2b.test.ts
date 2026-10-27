@@ -84,6 +84,24 @@ test("ダミー：hello・初回範囲・ライブの順、最新の板と約定
   assert.equal(s.json().filter(j => j.type === "trades").length, 1);
   hub.stop();
 });
+test("ダミー：接続診断はHTTP用の一覧だけ、開始終了時刻と接続元をログに残す", async () => {
+  const clock = new Clock(), entries: {event:string; details:any}[] = [];
+  const hub = new Hub(source(), (event, details) => { entries.push({event, details}); }, clock);
+  const socket = new Socket();
+  const connectedAtUs = clock.now() * 1000;
+  await hub.connect(socket, url(), { userAgent: "dummy-browser", origin: "http://test.invalid", remoteAddress: "127.0.0.1" });
+  assert.equal(hub.snapshot().connected, 1);
+  assert.equal("connections" in hub.snapshot(), false);
+  assert.equal(hub.connections()[0].userAgent, "dummy-browser");
+  assert.equal(hub.connections()[0].connectedAtUs, connectedAtUs);
+  clock.advance(250); socket.emit("close", 1000);
+  assert.equal(hub.connections().length, 0);
+  const ended = entries.find(e => e.event === "hub_closed")!.details;
+  assert.equal(ended.connectedAtUs, connectedAtUs);
+  assert.equal(ended.closedAtUs, clock.now() * 1000);
+  assert.equal(ended.userAgent, "dummy-browser");
+  hub.stop();
+});
 test("ダミー：4MiB超は板だけ落とし、16MiB超で切断、他の接続は継続", async () => {
   const clock = new Clock(), hub = new Hub(source(), () => {}, clock), slow = new Socket(), fast = new Socket();
   await hub.connect(slow, url()); await hub.connect(fast, url()); slow.output = []; fast.output = [];

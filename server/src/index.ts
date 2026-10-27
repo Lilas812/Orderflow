@@ -26,7 +26,8 @@ async function main() {
     status: () => statusSnapshot(upstream, receiver, config.apiKey, () => pipeline.status(), () => hub.snapshot()),
   }, log);
   activity = () => ({ delivery: hub.snapshot(), backfill: pipeline.backfill.snapshot().state });
-  const app = createStatusApp(upstream, receiver, config.apiKey, () => pipeline.status(), () => hub.snapshot(),
+  const app = createStatusApp(upstream, receiver, config.apiKey, () => pipeline.status(),
+    () => ({ ...hub.snapshot(), connections: hub.connections() }),
     () => memory.snapshot());
   const http = app.listen(config.port, "0.0.0.0");
   const wss = attachHub(http, hub);
