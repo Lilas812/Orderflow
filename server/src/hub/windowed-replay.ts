@@ -4,7 +4,9 @@ import { realClock } from "./replay.ts";
 import type { ReplayClock } from "./replay.ts";
 
 export interface ReplayView { columns: Column[]; trades: Trade[] }
-interface Window extends ReplayView { end: number; columnIndex: number; tradeIndex: number }
+interface Window extends ReplayView {
+  end: number; columnIndex: number; tradeIndex: number; vpTrades: Trade[]; vpIndex: number;
+}
 
 /** Absolute virtual clock, with at most one 300-second window plus one read-ahead.
  * Neither the saved end nor the protocol changes as new live data arrives.
@@ -23,7 +25,8 @@ export class WindowedReplay {
   private readonly speed: number;
   private readonly read: (start: number, end: number) => Promise<ReplayView>;
   private readonly clock: ReplayClock;
-  private readonly emit: { column(c: Column): void; trades(t: Trade[]): void; end(): void; error(): void };
+  private readonly emit: { column(c: Column): void; trades(t: Trade[]): void; end(): void; error(): void;
+    cursor?(upToUs: number): void; vpTrades?(trades: Trade[]): void };
 
   constructor(first: ReplayView, from: number, to: number, speed: number,
     read: WindowedReplay["read"], emit: WindowedReplay["emit"], clock: ReplayClock = realClock) {
@@ -35,7 +38,8 @@ export class WindowedReplay {
   private window(view: ReplayView, end: number): Window {
     return { columns: view.columns, trades: view.trades.slice().sort((a, b) =>
       Math.floor(a.tsUs / 1e6) - Math.floor(b.tsUs / 1e6) || a.seq - b.seq),
-      end, columnIndex: 0, tradeIndex: 0 };
+      end, columnIndex: 0, tradeIndex: 0, vpIndex: 0,
+      vpTrades: this.emit.vpTrades ? view.trades.slice().sort((a, b) => a.tsUs - b.tsUs || a.seq - b.seq) : [] };
   }
 
   start(): void { this.started = this.clock.now(); this.prefetch(); this.advance(); }
@@ -91,6 +95,15 @@ export class WindowedReplay {
         this.bucketUs += 250000;
       }
       if (this.stopped) return;
+      if (this.emit.vpTrades) {
+        const batch: Trade[] = [];
+        while (window.vpIndex < window.vpTrades.length && window.vpTrades[window.vpIndex].tsUs < limit) {
+          const index = window.vpIndex++;
+          batch.push(window.vpTrades[index]); delete window.vpTrades[index];
+        }
+        if (batch.length) this.emit.vpTrades(batch);
+      }
+      this.emit.cursor?.(limit);
       if (cursor < window.end * 1e6) break;
       if (window.end >= this.to) {
         this.stop(); this.emit.end(); return;
@@ -109,6 +122,6 @@ export class WindowedReplay {
 
   stop(): void {
     this.stopped = true; this.clock.cancel(this.timer);
-    this.current.columns = []; this.current.trades = []; this.nextReady = null;
+    this.current.columns = []; this.current.trades = []; this.current.vpTrades = []; this.nextReady = null;
   }
 }

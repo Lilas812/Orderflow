@@ -30,6 +30,7 @@
           mode: "replay", serverTimeUs: data.metadata.toSec * 1e6,
           savedRange: { fromSec: data.metadata.fromSec, toSec: data.metadata.toSec } });
         await this.range(0, data.metadata.toSec - 1800, data.metadata.toSec);
+        if (window.__frozenVp) this.emit(window.__frozenVp);
         const last = data.columns.at(-1);
         if (last) this.frame(3, 0, [last]);
         window.__frozenFeedReady = true;

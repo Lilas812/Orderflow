@@ -7,12 +7,14 @@ const output = path.resolve("data/perf-memory", phase, "render-static");
 const staticRoot = path.resolve(process.argv[3] ?? "artifacts/heatmap/dist/public");
 await fs.mkdir(output, { recursive: true });
 const script = await fs.readFile(new URL("./frozen-feed.js", import.meta.url), "utf8");
+const vpFixture = process.argv[5] ? JSON.parse(await fs.readFile(process.argv[5], "utf8")) : null;
 const chromium = await browser(9223);
 const results: unknown[] = [];
 try {
   // Page injection must run before the module creates its WebSocket.
   const page = await chromium.page("about:blank", staticRoot);
-  await page.cdp.call("Page.addScriptToEvaluateOnNewDocument", { source: script + `
+  await page.cdp.call("Page.addScriptToEvaluateOnNewDocument", {
+    source: `window.__frozenVp=${JSON.stringify(vpFixture)};` + script + `
     addEventListener("DOMContentLoaded", () => {
       const badge = document.createElement("div");
       badge.textContent = "ダミー接続 · 実保存データの固定再生";
@@ -42,7 +44,7 @@ try {
     const shot = await page.cdp.call("Page.captureScreenshot", { format: "png" });
     await fs.writeFile(path.join(output, `${name}.png`), Buffer.from(shot.data, "base64"));
     results.push({ name, before, after: debug.viewport, p99: debug.p99,
-      orders: debug.bigOrders.orders, frameCount: frames.length, frames });
+       orders: debug.bigOrders.orders, vp: debug.vp, frameCount: frames.length, frames });
     await fs.writeFile(path.join(output, "frames.json"), JSON.stringify(results));
   }
   async function drag(x: number, y: number, dx: number, dy: number, steps: number) {

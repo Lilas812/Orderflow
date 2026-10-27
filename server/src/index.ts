@@ -27,7 +27,12 @@ async function main() {
   const hub: Hub = new Hub({
     savedRange: () => pipeline.store.savedRange,
     read: (from, to) => pipeline.readRange(from, to),
-    status: () => statusSnapshot(upstream, receiver, config.apiKey, () => pipeline.status(), () => hub.snapshot()),
+    vp: () => pipeline.vp,
+    replayVp: (from, alive) => pipeline.replayVp(from, alive),
+    // Keep the existing WS status shape; VP progress is an HTTP diagnostic.
+    status: () => statusSnapshot(upstream, receiver, config.apiKey, () => {
+      const { vp: _vp, ...existing } = pipeline.status(); return existing;
+    }, () => hub.snapshot()),
   }, log);
   activity = () => ({ delivery: hub.snapshot(), backfill: pipeline.backfill.snapshot().state });
   const app = createStatusApp(upstream, receiver, config.apiKey, () => pipeline.status(),

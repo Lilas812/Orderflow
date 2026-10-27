@@ -54,6 +54,22 @@ test("windowed replay is byte-content/order/timing equivalent to the existing vi
   assert.deepEqual(reads, [[100, 400], [400, 700], [700, 702]]);
   assert.equal((next as any).current.columns.length, 0);
 });
+test("ダミー：VPは逆行約定も仮想位置の半開区間まで、従来の約定配信順を変えない", async () => {
+  const clock = new Clock(), profileTrades: number[] = [], delivered: number[] = [];
+  const trades = [trade(1, 100900000), trade(2, 100100000), trade(3, 100250000)];
+  let head = 0;
+  const replay = new WindowedReplay({ columns: [], trades }, 100, 101, 1,
+    async () => ({ columns: [], trades: [] }), {
+      column: () => {}, trades: batch => delivered.push(...batch.map(t => t.seq)),
+      vpTrades: batch => profileTrades.push(...batch.map(t => t.seq)),
+      cursor: value => { head = value; }, end: () => {}, error: () => {},
+    }, clock);
+  replay.start(); await clock.advance(250);
+  assert.deepEqual(profileTrades, [2]); assert.deepEqual(delivered, []); assert.equal(head, 100250000);
+  await clock.advance(750);
+  assert.deepEqual(profileTrades, [2, 3, 1]); assert.deepEqual(delivered, [1, 2, 3]);
+  assert.equal(head, 101000000);
+});
 test("closing replay releases current/read-ahead arrays and ignores a late read", async () => {
   const clock = new Clock();
   let resolve!: (view: { columns: Column[]; trades: Trade[] }) => void;

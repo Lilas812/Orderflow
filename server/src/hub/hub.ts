@@ -7,6 +7,7 @@ import type { ReplayClock } from "./replay.ts";
 import type { Column } from "../aggregate/columns.ts";
 import type { Trade, BookSnapshot } from "../types.ts";
 import type { Log } from "../logger.ts";
+import { VolumeProfile } from "../vp/state.ts";
 
 export const WS_PATH = "/api/ws";
 export const BOARD_LIMIT = 4 * 1024 * 1024, CLOSE_LIMIT = 16 * 1024 * 1024;
@@ -23,6 +24,8 @@ export interface Source {
   savedRange(): { fromSec: number; toSec: number } | null;
   read(from: number, to: number): Promise<View>;
   status(): unknown;
+  vp?(): VolumeProfile;
+  replayVp?(from: number, alive: () => boolean): Promise<VolumeProfile>;
 }
 interface Peer {
   connectedAtUs: number; origin: ConnectionOrigin;
@@ -31,6 +34,7 @@ interface Peer {
   columns: Column[]; trades: Trade[]; queuedBytes: number;
   lastStatus: string; lastStatusAt: number; jobs: Promise<void>; replay?: WindowedReplay;
   replayEnded?: boolean;
+  vp?: VolumeProfile; vpRevision?: number; vpGeneration?: number; vpSentAt?: number;
 }
 const tradeId = (t: Trade) => `${t.recvUs}:${t.seq}`;
 
@@ -101,6 +105,16 @@ export class Hub {
     return { peerId: p.id, phase: p.initializing ? "initial" : p.range ? "range" : "steady", reqId: p.range?.reqId ?? null };
   }
   private json(p: Peer, value: unknown) { return this.send(p, JSON.stringify(value)); }
+  private sendVp(p: Peer, force = false) {
+    const vp = p.vp;
+    if (!vp || (!force && this.clock.now() - (p.vpSentAt ?? -Infinity) < 1000)) return;
+    const full = force || p.vpGeneration !== vp.generation;
+    const message = vp.message(full ? undefined : p.vpRevision);
+    if (!full && !message.levels.length) return;
+    if (this.json(p, message)) {
+      p.vpRevision = vp.revision; p.vpGeneration = vp.generation; p.vpSentAt = this.clock.now();
+    }
+  }
   private status(p: Peer, force = false, replay?: unknown) {
     if (p.closed || p.initializing) return;
     const status = this.source.status();
@@ -165,6 +179,12 @@ export class Hub {
         const view = await this.range(p, 0, Math.max(0, to - 1800), to);
         if (p.closed) return;
         if (params) {
+          if (this.source.replayVp) {
+            p.vp = new VolumeProfile(params.fromSec); this.sendVp(p, true);
+            p.vp = await this.source.replayVp(params.fromSec, () => !p.closed && !this.stopped);
+            if (p.closed) return;
+            this.sendVp(p, true);
+          }
           // End is frozen at connection time; new live appends do not extend this replay.
           const replay = await this.source.read(params.fromSec, Math.min(params.fromSec + 300, params.toSec));
           if (p.closed) return;
@@ -172,8 +192,15 @@ export class Hub {
           p.replay = new WindowedReplay(replay, params.fromSec, params.toSec, params.speed,
             (from, to) => this.source.read(from, to), {
             column: c => { this.send(p, encodeFrame(1, 0, [c])); this.send(p, encodeFrame(3, 0, [c]), true); },
-            trades: trades => { this.json(p, { type: "trades", trades }); },
+            trades: trades => {
+              this.json(p, { type: "trades", trades });
+            },
+            vpTrades: trades => {
+              if (p.vp) for (const t of trades) { p.vp.advance(t.tsUs / 1e6); p.vp.add(t); }
+            },
+            cursor: upToUs => { p.vp?.advance(upToUs / 1e6); },
             end: () => {
+              this.sendVp(p, true);
               this.status(p, true, { state: "ended", ...params });
               p.replayEnded = true;
               this.log("replay_ended", params);
@@ -186,6 +213,7 @@ export class Hub {
           }, this.clock);
           p.replay.start();
         } else {
+          p.vp = this.source.vp?.(); this.sendVp(p, true);
           const seconds = view.seconds;
           // Match only queued live event identities, never deduplicate by trade contents.
           const trades = view.trades;
@@ -266,6 +294,7 @@ export class Hub {
           this.json(p, { type: "trades", trades });
         }
       }
+      if (!p.replayEnded) this.sendVp(p);
       if (!p.replayEnded) this.status(p);
     }
   }

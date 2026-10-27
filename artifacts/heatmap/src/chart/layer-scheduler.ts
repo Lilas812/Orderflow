@@ -1,4 +1,4 @@
-export type DrawLayer = "all" | "trades" | "book" | "big";
+export type DrawLayer = "all" | "trades" | "book" | "big" | "vp";
 
 /** Coalesces updates without allowing a book-only update to touch other canvases. */
 export class LayerScheduler {
@@ -7,10 +7,12 @@ export class LayerScheduler {
   private trades = false;
   private book = false;
   private big = false;
+  private vp = false;
   private readonly enqueue: (draw: () => void) => void;
   private readonly callbacks: {
     depth: () => void; trades: () => void; book: () => void;
     big?: () => void;
+    vp?: () => void;
     after: (redrewDepth: boolean, start: number, redrewTrades: boolean) => void;
   };
 
@@ -23,17 +25,19 @@ export class LayerScheduler {
     this.trades ||= layer === "all" || layer === "trades";
     this.book ||= layer === "all" || layer === "book";
     this.big ||= layer === "all" || layer === "big";
+    this.vp ||= layer === "all" || layer === "vp";
     if (this.queued) return;
     this.queued = true;
     this.enqueue(() => {
       const start = performance.now();
-      const depth = this.depth, trades = this.trades, book = this.book, big = this.big;
-      this.queued = this.depth = this.trades = this.book = this.big = false;
+      const depth = this.depth, trades = this.trades, book = this.book, big = this.big, vp = this.vp;
+      this.queued = this.depth = this.trades = this.book = this.big = this.vp = false;
       // The book must consume the heatmap's updated P99, not calculate its own.
       if (depth) this.callbacks.depth();
       if (book) this.callbacks.book();
       if (trades) this.callbacks.trades();
       if (big) this.callbacks.big?.();
+      if (vp) this.callbacks.vp?.();
       this.callbacks.after(depth, start, trades);
     });
   }

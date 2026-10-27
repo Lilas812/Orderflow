@@ -1,4 +1,8 @@
 import * as fs from "node:fs/promises";
+import { createWriteStream } from "node:fs";
+import { createGzip } from "node:zlib";
+import { Readable } from "node:stream";
+import { pipeline as streamPipeline } from "node:stream/promises";
 import path from "node:path";
 import { promisify } from "node:util";
 import { gzip as gzipCallback, gunzip as gunzipCallback } from "node:zlib";
@@ -41,6 +45,10 @@ export class LocalStore implements Store {
   readonly root: string;
   readonly stats = { files: 0, bytes: 0, latestColumnSec: null as number | null, pendingColumns: 0, pendingTrades: 0 };
   private coverage: Coverage = { book: [], tick: [] };
+  // Keep VP's interval record separate from startup's best-effort file recovery.
+  // Finding a row in a partial old file is not proof of a complete tick second.
+  private recordedTicks: Range[] = [];
+  private recoveringFiles = false;
   private held = new Set<number>();
   private columns = new Map<number, Map<number, Buffer>>();
   private columnLastSeconds = new Map<number, number>();
@@ -101,9 +109,11 @@ export class LocalStore implements Store {
         || [...v.book, ...v.tick].some(r => !Array.isArray(r) || r.length !== 2
           || !r.every(Number.isSafeInteger) || r[0] >= r[1])) throw Error("invalid_coverage_index");
       this.coverage = v;
+      this.recordedTicks = v.tick.map(([a, b]) => [a, b]);
     }
     await this.retention();
     // Recover actually persisted seconds even if a crash preceded index replacement.
+    this.recoveringFiles = true;
     for (const file of await this.allFiles()) {
       if (file.endsWith(".bin") || file.endsWith(".bin.gz")) {
         const match = file.match(/(\d{4}-\d\d-\d\d)[/\\](\d\d)\./)!;
@@ -122,6 +132,7 @@ export class LocalStore implements Store {
         }
       }
     }
+    this.recoveringFiles = false;
     await this.refreshStats();
   }
   hold(start: number, end: number) {
@@ -132,6 +143,7 @@ export class LocalStore implements Store {
   }
   markCovered(kind: Kind, start: number, end: number) {
     this.coverage[kind] = ranges([...this.coverage[kind], [start, end]]);
+    if (kind === "tick" && !this.recoveringFiles) this.recordedTicks = ranges([...this.recordedTicks, [start, end]]);
   }
   addColumns(columns: Column[]) {
     return this.run(async () => {
@@ -239,7 +251,7 @@ export class LocalStore implements Store {
   private async saveCoverage() {
     const persisted: Coverage = { book: [], tick: [] };
     for (const kind of ["book", "tick"] as const) {
-      for (const [start, end] of this.coverage[kind]) {
+      for (const [start, end] of kind === "tick" ? this.recordedTicks : this.coverage[kind]) {
         for (let a = start; a < end;) {
           const b = Math.min(end, hourOf(a) + 3600);
           if (!this.held.has(hourOf(a))) persisted[kind].push([a, b]);
@@ -272,6 +284,45 @@ export class LocalStore implements Store {
       }
     }
     return rows.sort((a, b) => a.seq - b.seq);
+  }
+  /** VP uses the persisted Phase2a interval record, never file existence alone. */
+  async recordedTickCoverage(): Promise<[number, number][]> {
+    await this.queue;
+    if (this.failure) throw this.failure;
+    const file = path.join(this.root, "coverage.json");
+    if (!await this.exists(file)) return [];
+    return (JSON.parse(await fs.readFile(file, "utf8")) as Coverage).tick;
+  }
+  /** Bounded-memory, serialized walk of the unchanged gzip JSONL files. */
+  visitTrades(start: number, end: number, visit: (trade: Trade) => void): Promise<void> {
+    return this.run(async () => {
+      for (let h = hourOf(start); h < end; h += 3600) {
+        const file = this.file("tick", h);
+        if (await this.exists(file)) for await (const t of tradeFileRows(file)) {
+          if (t.tsUs >= start * 1e6 && t.tsUs < end * 1e6) visit(t);
+        }
+      }
+    });
+  }
+  replaceTradeRange(start: number, end: number, trades: Trade[]): Promise<void> {
+    return this.run(async () => {
+      for (let h = hourOf(start); h < end; h += 3600) {
+        const file = this.file("tick", h), temporary = file + ".vp.tmp";
+        const exists = await this.exists(file);
+        await fs.mkdir(path.dirname(file), { recursive: true, mode: 0o700 });
+        async function* lines() {
+          if (exists) for await (const t of tradeFileRows(file)) {
+            if (t.tsUs < start * 1e6 || t.tsUs >= end * 1e6) yield JSON.stringify(t) + "\n";
+          }
+          for (const t of trades) if (t.tsUs >= h * 1e6 && t.tsUs < (h + 3600) * 1e6) yield JSON.stringify(t) + "\n";
+        }
+        try {
+          await streamPipeline(Readable.from(lines()), createGzip(), createWriteStream(temporary, { mode: 0o600 }));
+          await fs.rename(temporary, file);
+        } finally { await fs.rm(temporary, { force: true }); }
+      }
+      this.markCovered("tick", start, end); await this.saveCoverage();
+    });
   }
   /** Atomic delivery view: persisted data plus confirmed writes held for backfill.
    * Existing disk columns win, just as in writeHour. No unconfirmed column or filled second.
@@ -308,6 +359,7 @@ export class LocalStore implements Store {
     for (const kind of ["book", "tick"] as const) {
       this.coverage[kind] = this.coverage[kind].filter(([, b]) => b > cutoff).map(([a, b]) => [Math.max(a, cutoff), b]);
     }
+    this.recordedTicks = this.recordedTicks.filter(([, b]) => b > cutoff).map(([a, b]) => [Math.max(a, cutoff), b]);
   }
   async refreshStats() {
     const files = await this.allFiles();

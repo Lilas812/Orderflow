@@ -58,6 +58,7 @@ export interface SocketListeners {
   onTradeBatch?(trades: readonly Trade[], reqId: number | null): void;
   onError(message: string): void;
   onReplayEnded(): void;
+  onVp?(message: Record<string, unknown>): void;
   onBytesPerMinute(bytes: number): void;
   onRangeRequest(range: TimeRange): void;
 }
@@ -242,6 +243,9 @@ export class RealtimeClient {
   }
 
   private handleJson(message: Record<string, unknown>): void {
+    if (message.type === "vp" || message.type === "vpUpdate") {
+      this.listeners.onVp?.(message); return;
+    }
     if (message.type === "hello") {
       const hello = message as unknown as HelloMessage;
       if (hello.symbol !== "NQ" || hello.tickSize !== 0.25 || hello.columnSeconds !== 1

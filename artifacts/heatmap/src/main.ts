@@ -13,6 +13,8 @@ import { LayerScheduler } from "./chart/layer-scheduler.ts";
 import { BigOrderFeed, parseBigOrderOptions } from "./data/big-orders.ts";
 import { BigOrderRenderer, visibleBigOrders } from "./chart/big-orders.ts";
 import { FrameProfile } from "./chart/frame-profile.ts";
+import { VpState } from "./data/vp.ts";
+import { VpRenderer } from "./chart/vp.ts";
 
 declare global {
   interface Window {
@@ -23,6 +25,7 @@ declare global {
 }
 
 export interface HeatmapDebugSnapshot {
+  vp: VpRenderer["metrics"];
   bigOrders: BigOrderRenderer["metrics"] & {
     threshold: number | null; tracking: BigOrderFeed["tracker"]["metrics"];
     top: number; minSec: number; topInvalid: boolean; minSecInvalid: boolean;
@@ -100,7 +103,8 @@ root.innerHTML = `
           <span class="region-label">Large orders</span>
         </section>
         <section class="region vp-region" aria-label="Volume profile frame">
-          <span class="region-label">Volume profile</span><span class="region-hint">Phase 7 · empty frame</span>
+          <canvas class="book-canvas" id="volume-profile" aria-label="Session volume profile, white POC and orange 70 percent value area"></canvas>
+          <span class="region-label">Volume profile</span><span id="vp-loading" class="region-hint" role="status">取り込み中</span>
         </section>
         <section class="region delta-region" aria-label="Delta histogram frame">
           <span class="region-label">Delta</span><span class="region-hint">Phase 8 · empty frame</span>
@@ -136,6 +140,10 @@ const bookRenderer = new CurrentBookRenderer(required<HTMLCanvasElement>("curren
 const bigOptions = parseBigOrderOptions(window.location.search);
 const bigFeed = new BigOrderFeed(bigOptions.top.value);
 const bigRenderer = new BigOrderRenderer(required<HTMLCanvasElement>("big-orders"));
+const vpState = new VpState();
+const vpRenderer = new VpRenderer(required<HTMLCanvasElement>("volume-profile"), () => drawScheduler.request("vp"));
+const vpLoading = required<HTMLElement>("vp-loading");
+let profiledVpDraws = 0;
 const overlayRenderer = new TradeOverlayRenderer(
   required<HTMLCanvasElement>("trade-overlay"),
   required<HTMLCanvasElement>("current-price-label"),
@@ -189,6 +197,7 @@ const client = new RealtimeClient(cache, {
   },
   onHello: (message) => {
     hello = message;
+    vpState.reset(); vpLoading.hidden = false;
     currentTrade.reset(); initialQuote.reset();
     initialCutoffUs = (message.mode === "replay" ? replayFromSec()! * US_PER_SECOND
       : Math.floor(message.serverTimeUs / US_PER_SECOND) * US_PER_SECOND) - 1;
@@ -253,6 +262,11 @@ const client = new RealtimeClient(cache, {
   onTrades: () => {
     scheduleDraw(false);
     updateDebugPanel();
+  },
+  onVp: (message) => {
+    vpState.accept(message);
+    vpLoading.hidden = !vpState.loading;
+    drawScheduler.request("vp");
   },
   onTradeBatch: (trades, reqId) => {
     if (reqId === 0) initialQuote.accept(trades, initialCutoffUs);
@@ -347,6 +361,7 @@ const drawScheduler = new LayerScheduler(draw => requestAnimationFrame(draw), {
   },
   book: () => bookRenderer.draw(cache.latestBook, viewport, renderer.metrics.p99),
   big: () => bigRenderer.draw(bigFeed.tracker.snapshot(), viewport, bigOptions.minSec.value),
+  vp: () => vpRenderer.draw(vpState, viewport),
   trades: () => {
     overlayRenderer.draw(cache.tradeAggregation, viewport, bubbleMinimum.value,
       currentTrade.trade?.price ?? null, replayHeadUs ?? Math.max(
@@ -363,6 +378,7 @@ const drawScheduler = new LayerScheduler(draw => requestAnimationFrame(draw), {
         tradesMs: redrewTrades ? overlayRenderer.metrics.overlayMs : 0,
         bookMs: bookRenderer.metrics.drawCount !== profiledBookDraws ? bookRenderer.metrics.drawMs : 0,
         bigMs: bigRenderer.metrics.drawCount !== profiledBigDraws ? bigRenderer.metrics.drawMs : 0,
+        vpMs: vpRenderer.metrics.drawCount !== profiledVpDraws ? vpRenderer.metrics.drawMs : 0,
         depth: redrewDepth, aggregationMs: redrewDepth ? depthMetrics.aggregationMs : 0,
         scaleMs: redrewDepth ? depthMetrics.scaleMs : 0,
         rasterMs: redrewDepth ? depthMetrics.rasterMs ?? 0 : 0,
@@ -370,6 +386,7 @@ const drawScheduler = new LayerScheduler(draw => requestAnimationFrame(draw), {
         uploadMs: redrewDepth ? depthMetrics.uploadMs ?? 0 : 0,
         tileSyncMs: redrewDepth ? depthMetrics.tileSyncMs ?? 0 : 0 });
       profiledBookDraws = bookRenderer.metrics.drawCount; profiledBigDraws = bigRenderer.metrics.drawCount;
+      profiledVpDraws = vpRenderer.metrics.drawCount;
       pendingTimeAxisMs = 0;
     }
     // Preserve the Phase 4 frame sample population; book-only frames have separate metrics.
@@ -475,6 +492,8 @@ ${overlayRenderer.metrics.bubbleCount} bubbles · min ${bubbleMinimum.value}${bu
 line ${overlayRenderer.metrics.lineMs.toFixed(2)} / bubble ${overlayRenderer.metrics.bubbleMs.toFixed(2)} ms
 book ${bookRenderer.metrics.meanMs.toFixed(2)} / ${bookRenderer.metrics.maxMs.toFixed(2)} ms (mean / max, last 30)
 book ${bookRenderer.metrics.drawCount} / depth ${depthDrawCount} / overlay ${overlayDrawCount} draws
+VP ${vpRenderer.metrics.prices} prices · POC ${vpRenderer.metrics.poc ?? "none"} · VA ${vpRenderer.metrics.low ?? "none"}–${vpRenderer.metrics.high ?? "none"}
+VP ${vpRenderer.metrics.meanMs.toFixed(2)} / ${vpRenderer.metrics.maxMs.toFixed(2)} ms · ${vpState.loading ? "取り込み中" : "ready"}
 big ${bigRenderer.metrics.visibleCount} · threshold ${bigFeed.tracker.snapshot().threshold ?? "none"} · top ${bigOptions.top.value}% · min ${bigOptions.minSec.value}s${bigOptions.top.invalid ? " · bigTop 無効" : ""}${bigOptions.minSec.invalid ? " · bigMinSec 無効" : ""}
 big decision ${bigFeed.tracker.metrics.decisionMs.toFixed(2)} ms · draw ${bigRenderer.metrics.meanMs.toFixed(2)} / ${bigRenderer.metrics.maxMs.toFixed(2)} ms
 big ${bigRenderer.metrics.drawCount} draws · longest ${bigRenderer.metrics.longestSec}s`;
@@ -484,6 +503,7 @@ function debugSnapshot(): HeatmapDebugSnapshot {
   const now = performance.now();
   const sample = drawSamples.slice(-30).map((entry) => entry.ms);
   return Object.freeze({
+    vp: vpRenderer.metrics,
     bigOrders: { ...bigRenderer.metrics, threshold: bigFeed.tracker.snapshot().threshold,
       tracking: { ...bigFeed.tracker.metrics }, top: bigOptions.top.value, minSec: bigOptions.minSec.value,
       topInvalid: bigOptions.top.invalid, minSecInvalid: bigOptions.minSec.invalid,

@@ -8,12 +8,16 @@ import { HistoryClient } from "./history/client.ts";
 import { Backfill } from "./history/backfill.ts";
 import type { BookSnapshot, Trade } from "./types.ts";
 import type { Log } from "./logger.ts";
+import { VolumeProfile } from "./vp/state.ts";
+import { VpHistory, coverageSegments } from "./vp/history.ts";
 
 export class Pipeline {
   readonly store: LocalStore;
   readonly historyMetrics: Metrics;
   readonly client: HistoryClient;
   readonly backfill: Backfill;
+  readonly vp: VolumeProfile;
+  readonly vpHistory: VpHistory;
   private aggregate: ColumnAggregator;
   private log: Log;
   private seam: number | null = null;
@@ -36,11 +40,14 @@ export class Pipeline {
     this.historyMetrics = new Metrics(log);
     this.client = new HistoryClient(apiKey, log);
     this.backfill = new Backfill(this.client, this.store, this.historyMetrics, nextSeq, log);
+    this.vp = new VolumeProfile(Date.now() / 1000);
+    this.vpHistory = new VpHistory(this.vp, this.client, this.store, this.historyMetrics, nextSeq, log);
     this.aggregate = new ColumnAggregator(column => {
       if (this.seam === null) {
         this.seam = column.tsSec;
         this.log("live_history_seam", { tsSec: this.seam });
         this.backfill.start(this.seam); // Hold before enqueuing the first live write.
+        this.vpHistory.start(this.seam, this.backfill.settled());
         this.tradeBatch = this.tradeBatch.filter(t => t.tsUs >= this.seam! * 1_000_000);
       }
       if (this.lastColumn !== null && column.tsSec > this.lastColumn + 1) {
@@ -76,12 +83,16 @@ export class Pipeline {
     }, Math.max(0, (second + 3) * 1000 - Date.now()));
   }
   trade(trade: Trade) {
-    if (!this.stopped && (this.seam === null || trade.tsUs >= this.seam * 1_000_000)) this.tradeBatch.push(trade);
+    if (!this.stopped && (this.seam === null || trade.tsUs >= this.seam * 1_000_000)) {
+      this.tradeBatch.push(trade);
+      if (this.seam !== null) { this.vp.advance(Date.now() / 1000); this.vp.add(trade); }
+    }
   }
   private async tick() {
     if (this.ticking || this.stopped) return;
     this.ticking = true;
     try {
+      this.vp.advance(Date.now() / 1000);
       if (this.seam !== null && this.tradeBatch.length) {
         const batch = this.tradeBatch; this.tradeBatch = [];
         await this.store.addTrades(batch);
@@ -102,6 +113,7 @@ export class Pipeline {
     }
     return {
       seamL: this.seam,
+      vp: { ...this.vpHistory.snapshot(), profile: this.vp.summary() },
       backfill: this.backfill.snapshot(), historyNetwork: { ...this.client.stats },
       historyCounts: { ...this.historyMetrics.counts }, historyExamples: this.historyMetrics.examples,
       storage: { ...this.store.stats }, storageError: this.storageError,
@@ -116,11 +128,27 @@ export class Pipeline {
       columns: view.columns, trades: [...view.trades, ...buffered].sort((a, b) => a.seq - b.seq),
     }));
   }
+  async replayVp(from: number, alive: () => boolean) {
+    const profile = new VolumeProfile(from);
+    const coverage = await this.store.recordedTickCoverage();
+    for (const segment of coverageSegments(coverage, profile.start, from)) {
+      if (!segment.covered) {
+        this.log("vp_replay_gap", { startSec: segment.start, endSec: segment.end }); continue;
+      }
+      for (let a = segment.start; a < segment.end; a += 900) {
+        if (!alive()) return profile;
+        await this.store.visitTrades(a, Math.min(a + 900, segment.end), t => profile.add(t));
+      }
+    }
+    profile.complete(profile.start);
+    return profile;
+  }
   async stop() {
     this.stopped = true;
     if (this.timer) clearInterval(this.timer);
     if (this.expiry) clearTimeout(this.expiry);
     await this.backfill.stop();
+    await this.vpHistory.stop();
     this.aggregate.expire(Date.now() * 1000);
     if (this.seam !== null && this.tradeBatch.length) {
       const batch = this.tradeBatch; this.tradeBatch = [];
