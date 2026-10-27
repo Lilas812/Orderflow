@@ -76,6 +76,24 @@ export async function scanColumnFile(file: string, visit: (second: number) => vo
   if (filled) throw Error("incomplete_column_header");
 }
 
+/** Read one record at a time; never inflate an old hour into a single buffer. */
+export async function* columnFileRange(file: string, start: number, end: number): AsyncGenerator<Column> {
+  let bytes = Buffer.alloc(0), previous = -1;
+  for await (const chunk of input(file)) {
+    bytes = Buffer.concat([bytes, chunk as Buffer]);
+    while (bytes.length >= 9) {
+      const length = 9 + 8 * (bytes.readUInt16LE(5) + bytes.readUInt16LE(7));
+      if (bytes.length < length) break;
+      const second = bytes.readUInt32LE(0);
+      if (second <= previous) throw Error("invalid_column_record");
+      previous = second;
+      if (second >= start && second < end) yield decodeColumns(bytes.subarray(0, length))[0];
+      bytes = bytes.subarray(length);
+    }
+  }
+  if (bytes.length) throw Error("incomplete_column_record");
+}
+
 export async function* tradeFileEntries(file: string): AsyncGenerator<{ line: string; trade: Trade }> {
   const stream = input(file);
   const lines = createInterface({ input: stream, crlfDelay: Infinity });

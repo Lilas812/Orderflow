@@ -5,10 +5,13 @@
   "type": "module",
   "scripts": {
     "dev": "node src/index.ts",
+    "build": "pnpm --filter @workspace/heatmap run build",
+    "start": "HEATMAP_SERVE_FRONTEND=1 NODE_ENV=production node src/index.ts",
     "test": "node --test test/*.test.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@replit/object-storage": "^1.0.0",
     "express": "5.3.0",
     "ws": "8.22.0"
   },

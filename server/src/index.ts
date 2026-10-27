@@ -9,19 +9,29 @@ import { MemoryMonitor } from "./diagnostics/memory.ts";
 import { measurementLogWriter } from "./diagnostics/measurement-log.ts";
 import { MeasurementIsolation, isolationMarker } from "./diagnostics/isolation.ts";
 import { LocalSettings } from "./settings/local.ts";
+import { AppSettings } from "./settings/app.ts";
+import { AppStore } from "./store/app.ts";
+import { ReplitObjects, storageMode } from "./store/objects.ts";
 import { fileURLToPath } from "node:url";
+import path from "node:path";
 
 async function main() {
   const config = readConfig(process.env);
   const log = createLogger(config.apiKey, measurementLogWriter());
-  const settings = new LocalSettings(fileURLToPath(new URL("../../data/settings.json", import.meta.url)), log);
+  const mode = storageMode(process.env);
+  const root = mode.app ? path.resolve(process.env.HEATMAP_STORAGE_DIR
+    ?? fileURLToPath(new URL("../../data/app-storage-working/", import.meta.url))) : null;
+  const objects = mode.app ? new ReplitObjects() : null;
+  const settings = objects ? new AppSettings(path.join(root!, "settings.json"), objects, mode.prefix, log)
+    : new LocalSettings(fileURLToPath(new URL("../../data/settings.json", import.meta.url)), log);
   await settings.get();
   const isolation = new MeasurementIsolation(isolationMarker, log);
   isolation.snapshot();
   let activity: () => unknown = () => ({ phase: "initializing" });
   const memory = new MemoryMonitor(log, () => activity());
   memory.start();
-  const pipeline = new Pipeline(config.apiKey, () => receiver.nextSequence(), log, column => hub.column(column));
+  const pipeline = new Pipeline(config.apiKey, () => receiver.nextSequence(), log, column => hub.column(column),
+    objects ? new AppStore(root!, objects, mode.prefix, log) : undefined);
   const receiver = new Receiver(log, {
     book: (book) => { pipeline.book(book); hub.book(book); },
     trade: (trade) => { pipeline.trade(trade); hub.trade(trade); },
@@ -41,7 +51,9 @@ async function main() {
   activity = () => ({ delivery: hub.snapshot(), backfill: pipeline.backfill.snapshot().state });
   const app = createStatusApp(upstream, receiver, config.apiKey, () => pipeline.status(),
     () => ({ ...hub.snapshot(), connections: hub.connections() }),
-    () => memory.snapshot(), () => isolation.snapshot(), settings);
+    () => memory.snapshot(), () => isolation.snapshot(), settings,
+    process.env.HEATMAP_SERVE_FRONTEND === "1"
+      ? fileURLToPath(new URL("../../artifacts/heatmap/dist/public/", import.meta.url)) : undefined);
   const http = app.listen(config.port, "0.0.0.0");
   const wss = attachHub(http, hub, origin => isolation.allows(origin));
   let shuttingDown = false;

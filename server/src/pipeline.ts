@@ -32,11 +32,12 @@ export class Pipeline {
   private ticking = false;
   private onColumn: (column: Column) => void;
 
-  constructor(apiKey: string, nextSeq: () => number, log: Log, onColumn: (column: Column) => void = () => {}) {
+  constructor(apiKey: string, nextSeq: () => number, log: Log, onColumn: (column: Column) => void = () => {},
+    store?: LocalStore) {
     this.log = log;
     this.onColumn = onColumn;
     // Resolve independently of the workflow's cwd; never under server/data.
-    this.store = new LocalStore(fileURLToPath(new URL("../../data/", import.meta.url)));
+    this.store = store ?? new LocalStore(fileURLToPath(new URL("../../data/", import.meta.url)));
     this.historyMetrics = new Metrics(log);
     this.client = new HistoryClient(apiKey, log);
     this.backfill = new Backfill(this.client, this.store, this.historyMetrics, nextSeq, log);
@@ -121,7 +122,8 @@ export class Pipeline {
       vp: { ...this.vpHistory.snapshot(), profile: this.vp.summary() },
       backfill: this.backfill.snapshot(), historyNetwork: { ...this.client.stats },
       historyCounts: { ...this.historyMetrics.counts }, historyExamples: this.historyMetrics.examples,
-      storage: { ...this.store.stats }, storageError: this.storageError,
+      storage: { ...this.store.stats,
+        ...("cloudStatus" in this.store ? { appStorage: this.store.cloudStatus } : {}) }, storageError: this.storageError,
       liveGaps: gaps, unconfirmedSecond: this.aggregate.pendingSecond,
     };
   }

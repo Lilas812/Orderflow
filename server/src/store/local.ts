@@ -14,8 +14,8 @@ import type { Trade } from "../types.ts";
 const gzip = promisify(gzipCallback);
 const gunzip = promisify(gunzipCallback);
 export type Kind = "book" | "tick";
-type Range = [number, number];
-type Coverage = Record<Kind, Range[]>;
+export type Range = [number, number];
+export type Coverage = Record<Kind, Range[]>;
 export interface Store {
   initialize(): Promise<void>;
   hold(start: number, end: number): void;
@@ -29,7 +29,7 @@ export interface Store {
   flush(): Promise<void>;
 }
 
-function ranges(input: Range[]): Range[] {
+export function ranges(input: Range[]): Range[] {
   const result: Range[] = [];
   for (const [a, b] of input.sort((a, b) => a[0] - b[0])) {
     const last = result.at(-1);
@@ -49,7 +49,7 @@ export class LocalStore implements Store {
   // Finding a row in a partial old file is not proof of a complete tick second.
   private recordedTicks: Range[] = [];
   private recoveringFiles = false;
-  private held = new Set<number>();
+  protected held = new Set<number>();
   private columns = new Map<number, Map<number, Buffer>>();
   private columnLastSeconds = new Map<number, number>();
   private trades = new Map<number, Trade[]>();
@@ -57,7 +57,7 @@ export class LocalStore implements Store {
   private failure: Error | null = null;
   private now: () => number;
   private replaceVpFile: typeof fs.rename;
-  private bounds: { fromSec: number; toSec: number } | null = null;
+  protected bounds: { fromSec: number; toSec: number } | null = null;
   private includeSecond(sec: number) {
     this.bounds = { fromSec: Math.min(this.bounds?.fromSec ?? sec, sec),
       toSec: Math.max(this.bounds?.toSec ?? sec + 1, sec + 1) };
@@ -70,7 +70,7 @@ export class LocalStore implements Store {
     this.root = root; this.now = now; this.replaceVpFile = replaceVpFile;
   }
 
-  private run(work: () => Promise<void>): Promise<void> {
+  protected run(work: () => Promise<void>): Promise<void> {
     const job = this.queue.then(async () => {
       if (this.failure) throw this.failure;
       await work();
@@ -78,12 +78,12 @@ export class LocalStore implements Store {
     this.queue = job.catch((e: unknown) => { this.failure = e instanceof Error ? e : Error("store_failed"); });
     return job;
   }
-  private file(kind: Kind, hour: number) {
+  protected file(kind: Kind, hour: number) {
     const date = new Date(hour * 1000).toISOString();
     return path.join(this.root, kind === "book" ? "columns/NQ/1s" : "trades/NQ", date.slice(0, 10),
       date.slice(11, 13) + (kind === "book" ? ".bin" : ".jsonl.gz"));
   }
-  private async exists(file: string) {
+  protected async exists(file: string) {
     try { await fs.access(file); return true; }
     catch (e) { if ((e as NodeJS.ErrnoException).code === "ENOENT") return false; throw e; }
   }
@@ -92,7 +92,7 @@ export class LocalStore implements Store {
     await fs.writeFile(file + ".tmp", bytes, { mode: 0o600 });
     await fs.rename(file + ".tmp", file);
   }
-  private async allFiles(): Promise<string[]> {
+  protected async allFiles(): Promise<string[]> {
     const result: string[] = [];
     for (const dir of ["columns/NQ/1s", "trades/NQ"]) {
       const base = path.join(this.root, dir);
@@ -274,7 +274,7 @@ export class LocalStore implements Store {
     await this.queue;
     if (this.failure) throw this.failure;
     const rows: Column[] = [];
-    for (let h = hourOf(start); h < end; h += 3600) rows.push(...decodeColumnRange(await this.columnBytes(h), start, end));
+    for (let h = hourOf(start); h < end; h += 3600) rows.push(...await this.readColumnRange(h, start, end));
     return rows.sort((a, b) => a.tsSec - b.tsSec);
   }
   async readTrades(start: number, end: number): Promise<Trade[]> {
@@ -282,12 +282,16 @@ export class LocalStore implements Store {
     if (this.failure) throw this.failure;
     const rows: Trade[] = [];
     for (let h = hourOf(start); h < end; h += 3600) {
-      const file = this.file("tick", h);
+      const file = this.tradeInputPath(h);
       if (await this.exists(file)) for await (const t of tradeFileRows(file)) {
         if (t.tsUs >= start * 1e6 && t.tsUs < end * 1e6) rows.push(t);
       }
     }
     return rows.sort((a, b) => a.seq - b.seq);
+  }
+  protected tradeInputPath(hour: number) { return this.file("tick", hour); }
+  protected readColumnRange(hour: number, start: number, end: number): Promise<Column[]> {
+    return this.columnBytes(hour).then(bytes => decodeColumnRange(bytes, start, end));
   }
   /** VP uses the persisted Phase2a interval record, never file existence alone. */
   async recordedTickCoverage(): Promise<[number, number][]> {
@@ -301,7 +305,7 @@ export class LocalStore implements Store {
   visitTrades(start: number, end: number, visit: (trade: Trade) => void): Promise<void> {
     return this.run(async () => {
       for (let h = hourOf(start); h < end; h += 3600) {
-        const file = this.file("tick", h);
+        const file = this.tradeInputPath(h);
         if (await this.exists(file)) for await (const t of tradeFileRows(file)) {
           if (t.tsUs >= start * 1e6 && t.tsUs < end * 1e6) visit(t);
         }
@@ -352,11 +356,11 @@ export class LocalStore implements Store {
     return this.run(async () => {
       const columns = new Map<number, Column>(), trades: Trade[] = [];
       for (let h = hourOf(start); h < end; h += 3600) {
-        for (const c of decodeColumnRange(await this.columnBytes(h), start, end)) columns.set(c.tsSec, c);
+        for (const c of await this.readColumnRange(h, start, end)) columns.set(c.tsSec, c);
         for (const [second, bytes] of this.columns.get(h) ?? []) {
           if (second >= start && second < end && !columns.has(second)) columns.set(second, decodeColumns(bytes)[0]);
         }
-        const file = this.file("tick", h);
+        const file = this.tradeInputPath(h);
         if (await this.exists(file)) for await (const t of tradeFileRows(file)) {
           if (t.tsUs >= start * 1e6 && t.tsUs < end * 1e6) trades.push(t);
         }
@@ -367,7 +371,7 @@ export class LocalStore implements Store {
       trades: trades.filter(t => t.tsUs >= start * 1e6 && t.tsUs < end * 1e6).sort((a, b) => a.seq - b.seq) };
     }).then(() => result);
   }
-  private async retention() {
+  protected async retention() {
     const cutoff = Math.floor(this.now() / 1000) - 7 * 86400;
     for (const hour of this.columnLastSeconds.keys()) if (hour + 3600 <= cutoff) this.columnLastSeconds.delete(hour);
     for (const file of await this.allFiles()) {

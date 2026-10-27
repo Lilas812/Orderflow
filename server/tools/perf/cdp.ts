@@ -57,7 +57,7 @@ export async function browser(port = 9222) {
     "--headless", "--no-sandbox", "--disable-dev-shm-usage", "--no-first-run",
     "--disable-background-timer-throttling", "--disable-renderer-backgrounding",
     "--disable-backgrounding-occluded-windows", `--remote-debugging-port=${port}`,
-    `--user-data-dir=/tmp/heatmap-perf-browser-${process.pid}`, "about:blank",
+    `--user-data-dir=/tmp/heatmap-perf-browser-${process.pid}-${port}`, "about:blank",
   ], { stdio: "ignore" });
   let info: any;
   for (let i = 0; i < 100; i++) {

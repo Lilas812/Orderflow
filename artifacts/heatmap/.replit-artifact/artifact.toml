@@ -1,27 +1,25 @@
 kind = "web"
 previewPath = "/"
 title = "NQ Heatmap"
-description = "NQ先物の板を時系列のCanvasヒートマップで表示する個人用画面。Phase 3：ライブ・リプレイ、価格軸と時間軸、直接操作。"
+description = "NQ先物のヒートマップ。公開先は画面とAPIを1つの受信プロセスで配信する。"
 version = "1.0.0"
 id = "artifacts/heatmap"
 router = "path"
 
 [[services]]
 name = "web"
-paths = [ "/" ]
+paths = ["/"]
 localPort = 25028
 
 [services.development]
 run = "pnpm --filter @workspace/heatmap run dev"
 
 [services.production]
-build = [ "pnpm", "--filter", "@workspace/heatmap", "run", "build" ]
-serve = "static"
-publicDir = "artifacts/heatmap/dist/public"
+build = ["pnpm", "--filter", "@workspace/receiver", "run", "build"]
+run = ["pnpm", "--filter", "@workspace/receiver", "run", "start"]
 
-[[services.production.rewrites]]
-from = "/*"
-to = "/index.html"
+[services.production.health.startup]
+path = "/api/healthz"
 
 [services.env]
 PORT = "25028"

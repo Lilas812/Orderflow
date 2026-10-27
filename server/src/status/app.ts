@@ -4,6 +4,7 @@ import type { Upstream } from "../upstream/connection.ts";
 import { makeSanitizer } from "../logger.ts";
 import type { SettingsPersistence } from "../settings/local.ts";
 import { settingsRouter } from "../settings/routes.ts";
+import path from "node:path";
 
 export function statusSnapshot(upstream: Upstream, receiver: Receiver, apiKey: string, extra?: () => unknown, delivery?: () => unknown) {
   return makeSanitizer(apiKey)({
@@ -22,7 +23,7 @@ export function statusSnapshot(upstream: Upstream, receiver: Receiver, apiKey: s
 }
 
 export function createStatusApp(upstream: Upstream, receiver: Receiver, apiKey: string, extra?: () => unknown, delivery?: () => unknown,
-  memory?: () => unknown, isolation?: () => unknown, settings?: SettingsPersistence) {
+  memory?: () => unknown, isolation?: () => unknown, settings?: SettingsPersistence, staticDirectory?: string) {
   const app = express();
   app.disable("x-powered-by");
   // The public proxy already routes /api; /status remains the canonical handler.
@@ -33,6 +34,14 @@ export function createStatusApp(upstream: Upstream, receiver: Receiver, apiKey: 
       ...(settings ? { settings: settings.snapshot() } : {}) });
   });
   if (settings) app.use("/api/settings", settingsRouter(settings));
+  app.get("/api/healthz", (_req, res) => { res.json({ status: "ok" }); });
+  if (staticDirectory) {
+    app.use(express.static(staticDirectory));
+    app.get("/{*path}", (req, res, next) => {
+      if (req.path.startsWith("/api/")) { next(); return; }
+      res.sendFile(path.join(staticDirectory, "index.html"));
+    });
+  }
   app.use((_req, res) => { res.status(404).json({ error: "not_found" }); });
   return app;
 }
