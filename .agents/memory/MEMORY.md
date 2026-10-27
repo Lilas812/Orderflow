@@ -15,3 +15,4 @@
 - [デルタの追加指定](delta-decisions.md) — 区間全体がそろわない過去の棒は非描画、最新区間は受信分で更新。棒の隙間・中央線は承認済み。
 - [設定変更時の列の共有](settings-decisions.md) — 再構築用の最新列と表示列を重複保持しないユーザー指定。
 - [App Storageの運用指定](app-storage-decisions.md) — 再試行・再DL照合、古い範囲のディスク一時保存、破損設定の退避を維持する。
+- [artifactの経路検証](artifact-routing-cautions.md) — TOML検証成功だけでは環境別pathsのサポートや実際の転送を確認できない。
