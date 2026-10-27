@@ -1,0 +1,78 @@
+import * as inspector from "node:inspector";
+import * as fs from "node:fs/promises";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import type { Log } from "../logger.ts";
+
+/** Numeric diagnostics only: allocation profiles contain stacks/sizes, not object
+ * contents. Never write an unrestricted heap snapshot containing credentials.
+ */
+export class MemoryMonitor {
+  private readonly log: Log;
+  private readonly state: () => unknown;
+  private readonly session = new inspector.Session();
+  private timer: ReturnType<typeof setInterval> | null = null;
+  private profiling = false;
+  private writing = false;
+  private stopped = false;
+  private samples = 0;
+  private readonly directory = fileURLToPath(new URL("../../../data/perf-memory/profiles/", import.meta.url));
+
+  constructor(log: Log, state: () => unknown = () => ({})) {
+    this.log = log; this.state = state;
+  }
+
+  snapshot() {
+    return { sampledAtUs: Date.now() * 1000, pid: process.pid, ...process.memoryUsage() };
+  }
+
+  start(): void {
+    this.session.connect();
+    this.session.post("HeapProfiler.startSampling", { samplingInterval: 524288 }, error => {
+      if (error) this.log("memory_profile_error", { operation: "start_sampling" });
+      else this.profiling = true;
+    });
+    this.sample();
+    this.timer = setInterval(() => this.sample(), 5000);
+    this.timer.unref();
+  }
+
+  private sample(): void {
+    if (this.stopped) return;
+    this.log("process_memory", { ...this.snapshot(), activity: this.state() });
+    this.samples++;
+    if (this.samples % 6 === 0) void this.saveProfile();
+  }
+
+  private async saveProfile(): Promise<void> {
+    if (!this.profiling || this.writing) return;
+    this.writing = true;
+    try {
+      const profile = await new Promise<unknown>((resolve, reject) => {
+        this.session.post("HeapProfiler.getSamplingProfile", (error, result) => {
+          if (error) reject(error); else resolve(result.profile);
+        });
+      });
+      await fs.mkdir(this.directory, { recursive: true, mode: 0o700 });
+      const body = JSON.stringify({ sampledAtUs: Date.now() * 1000, pid: process.pid, profile });
+      const file = path.join(this.directory, `${process.pid}-latest.heapprofile.json`);
+      await fs.writeFile(file, body, { mode: 0o600 });
+      // Keep one early and one latest sample per process, not an unbounded history.
+      await fs.writeFile(path.join(this.directory, `${process.pid}-first.heapprofile.json`), body, { flag: "wx", mode: 0o600 })
+        .catch((error: NodeJS.ErrnoException) => { if (error.code !== "EEXIST") throw error; });
+    } catch {
+      this.log("memory_profile_error", { operation: "save_sampling_profile" });
+    } finally { this.writing = false; }
+  }
+
+  async stop(): Promise<void> {
+    if (this.timer) clearInterval(this.timer);
+    this.timer = null;
+    this.sample(); this.stopped = true;
+    await this.saveProfile();
+    if (this.profiling) {
+      await new Promise<void>(resolve => this.session.post("HeapProfiler.stopSampling", () => resolve()));
+    }
+    this.session.disconnect();
+  }
+}

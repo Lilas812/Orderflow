@@ -8,3 +8,4 @@
 - [検証時の設定副作用](verification-config-side-effects.md) — 補助ツールによるランタイムの自動追加を、設定変更禁止の作業で見落とさない。
 - [検証画像の保存](screenshot-evidence.md) — ブラウザの画像IDは保存済みPNGではない。会話内表示とワークスペース保存を区別する。
 - [公開環境のメモリ予算](performance-budget.md) — Reserved VMは2GiB予定。Workspaceでの成功だけで公開環境の動作を保証しない。
+- [負荷測定の画面数](performance-measurement-isolation.md) — 開いたプレビューも自動再接続する。計測用ブラウザ以外の接続を除いて条件を確認する。

@@ -12,11 +12,13 @@ import { CurrentBookRenderer } from "./chart/current-book.ts";
 import { LayerScheduler } from "./chart/layer-scheduler.ts";
 import { BigOrderFeed, parseBigOrderOptions } from "./data/big-orders.ts";
 import { BigOrderRenderer, visibleBigOrders } from "./chart/big-orders.ts";
+import { FrameProfile } from "./chart/frame-profile.ts";
 
 declare global {
   interface Window {
     readonly __heatmapDebug?: Readonly<HeatmapDebugSnapshot>;
     readonly __heatmapColumnDelivery?: ReturnType<typeof columnDeliverySnapshot>;
+    readonly __heatmapFrameStats?: ReturnType<FrameProfile["snapshot"]>;
   }
 }
 
@@ -175,6 +177,9 @@ let bytesPerMinute = 0;
 let drawSamples: { at: number; ms: number }[] = [];
 let drawInstants: number[] = [];
 let lastMetrics: DrawMetrics = renderer.metrics;
+const frameProfile = new FrameProfile();
+let pendingTimeAxisMs = 0;
+let profiledBookDraws = 0, profiledBigDraws = 0;
 let pointerPoints = new Map<number, Point>();
 let pointerStart: { id: number; x: number; y: number; view: Viewport } | null = null;
 let pinchStart: { distance: number; midpointX: number; anchorUs: number; view: Viewport } | null = null;
@@ -362,6 +367,24 @@ const drawScheduler = new LayerScheduler(draw => requestAnimationFrame(draw), {
     overlayDrawCount++;
   },
   after: (redrewDepth, drawStart, redrewTrades) => {
+    if (debugMode) {
+      const depthMetrics = renderer.metrics;
+      const frameMs = performance.now() - drawStart;
+      frameProfile.record({ at: performance.now(), totalMs: frameMs + pendingTimeAxisMs,
+        heatmapMs: redrewDepth ? Math.max(0, depthMetrics.drawMs - (depthMetrics.axisMs ?? 0)) : 0,
+        priceAxisMs: redrewDepth ? depthMetrics.axisMs ?? 0 : 0, timeAxisMs: pendingTimeAxisMs,
+        tradesMs: redrewTrades ? overlayRenderer.metrics.overlayMs : 0,
+        bookMs: bookRenderer.metrics.drawCount !== profiledBookDraws ? bookRenderer.metrics.drawMs : 0,
+        bigMs: bigRenderer.metrics.drawCount !== profiledBigDraws ? bigRenderer.metrics.drawMs : 0,
+        depth: redrewDepth, aggregationMs: redrewDepth ? depthMetrics.aggregationMs : 0,
+        scaleMs: redrewDepth ? depthMetrics.scaleMs : 0,
+        rasterMs: redrewDepth ? depthMetrics.rasterMs ?? 0 : 0,
+        colorMs: redrewDepth ? depthMetrics.colorMs ?? 0 : 0,
+        uploadMs: redrewDepth ? depthMetrics.uploadMs ?? 0 : 0,
+        tileSyncMs: redrewDepth ? depthMetrics.tileSyncMs ?? 0 : 0 });
+      profiledBookDraws = bookRenderer.metrics.drawCount; profiledBigDraws = bigRenderer.metrics.drawCount;
+      pendingTimeAxisMs = 0;
+    }
     // Preserve the Phase 4 frame sample population; book-only frames have separate metrics.
     if (redrewDepth || redrewTrades) {
     lastMetrics = { ...renderer.metrics,
@@ -385,10 +408,11 @@ function scheduleDraw(redrawDepth = true): void {
 }
 
 function renderTimeAxis(): void {
+  const started = performance.now();
   const rect = heatRegion.getBoundingClientRect();
   const ticks = formatAxisTicks(viewport.startUs, viewport.durationSec, rect.width, displayZone);
   timeAxis.replaceChildren();
-  if (ticks.length === 0) return;
+  if (ticks.length === 0) { pendingTimeAxisMs += performance.now() - started; return; }
   const width = Math.max(1, rect.width);
   for (const tick of ticks) {
     const label = document.createElement("span");
@@ -400,6 +424,7 @@ function renderTimeAxis(): void {
         ? "translateX(-100%)" : "translateX(-50%)";
     timeAxis.append(label);
   }
+  pendingTimeAxisMs += performance.now() - started;
 }
 
 function updateStatus(): void {
@@ -513,6 +538,7 @@ function debugSnapshot(): HeatmapDebugSnapshot {
 
 function columnDeliverySnapshot() { return client.columnDeliveries; }
 if (debugMode) {
+  Object.defineProperty(window, "__heatmapFrameStats", { get: () => frameProfile.snapshot() });
   Object.defineProperty(window, "__heatmapColumnDelivery", { get: columnDeliverySnapshot });
   Object.defineProperty(window, "__heatmapDebug", {
     configurable: false,

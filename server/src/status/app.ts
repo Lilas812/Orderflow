@@ -19,13 +19,15 @@ export function statusSnapshot(upstream: Upstream, receiver: Receiver, apiKey: s
   });
 }
 
-export function createStatusApp(upstream: Upstream, receiver: Receiver, apiKey: string, extra?: () => unknown, delivery?: () => unknown) {
+export function createStatusApp(upstream: Upstream, receiver: Receiver, apiKey: string, extra?: () => unknown, delivery?: () => unknown,
+  memory?: () => unknown) {
   const app = express();
   app.disable("x-powered-by");
   // The public proxy already routes /api; /status remains the canonical handler.
   app.get(["/status", "/api/status"], (_req, res) => {
     res.set("Cache-Control", "no-store");
-    res.json(statusSnapshot(upstream, receiver, apiKey, extra, delivery));
+    res.json({ ...(statusSnapshot(upstream, receiver, apiKey, extra, delivery) as Record<string, unknown>),
+      ...(memory ? { memory: memory() } : {}) });
   });
   app.use((_req, res) => { res.status(404).json({ error: "not_found" }); });
   return app;

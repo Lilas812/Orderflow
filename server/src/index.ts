@@ -5,10 +5,14 @@ import { Upstream } from "./upstream/connection.ts";
 import { createStatusApp, statusSnapshot } from "./status/app.ts";
 import { Pipeline } from "./pipeline.ts";
 import { Hub, attachHub } from "./hub/hub.ts";
+import { MemoryMonitor } from "./diagnostics/memory.ts";
 
 async function main() {
   const config = readConfig(process.env);
   const log = createLogger(config.apiKey);
+  let activity: () => unknown = () => ({ phase: "initializing" });
+  const memory = new MemoryMonitor(log, () => activity());
+  memory.start();
   const pipeline = new Pipeline(config.apiKey, () => receiver.nextSequence(), log, column => hub.column(column));
   const receiver = new Receiver(log, {
     book: (book) => { pipeline.book(book); hub.book(book); },
@@ -21,7 +25,9 @@ async function main() {
     read: (from, to) => pipeline.readRange(from, to),
     status: () => statusSnapshot(upstream, receiver, config.apiKey, () => pipeline.status(), () => hub.snapshot()),
   }, log);
-  const app = createStatusApp(upstream, receiver, config.apiKey, () => pipeline.status(), () => hub.snapshot());
+  activity = () => ({ delivery: hub.snapshot(), backfill: pipeline.backfill.snapshot().state });
+  const app = createStatusApp(upstream, receiver, config.apiKey, () => pipeline.status(), () => hub.snapshot(),
+    () => memory.snapshot());
   const http = app.listen(config.port, "0.0.0.0");
   const wss = attachHub(http, hub);
   let shuttingDown = false;
@@ -34,6 +40,7 @@ async function main() {
     const httpClosed = new Promise<void>((resolve) => http.close(() => resolve()));
     await Promise.all([upstream.stop(), pipeline.stop()]);
     await httpClosed;
+    await memory.stop();
     log("server_stopped", { upstream: upstream.status.state, httpClosed: true });
   }
   process.on("SIGTERM", () => { void shutdown("SIGTERM"); });
