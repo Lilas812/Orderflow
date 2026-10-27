@@ -9,8 +9,8 @@ class Context {
   setTransform(...args: number[]) { this.events.push(["transform", ...args]); }
   clearRect() { this.events.push(["clear"]); }
   beginPath() {}
-  moveTo() {}
-  lineTo() {}
+  moveTo(...args: number[]) { this.events.push(["move", ...args]); }
+  lineTo(...args: number[]) { this.events.push(["line", ...args]); }
   arc(x: number, y: number, radius: number) { this.events.push(["arc", x, y, radius]); }
   fill() { this.events.push(["fill", this.fillStyle, this.globalAlpha]); }
   stroke() { this.events.push(["stroke", this.strokeStyle, this.lineWidth]); }
@@ -27,9 +27,9 @@ test("ダミー：独立overlayの描画順、CSSの太さ/半径/点線、白�
   const saved = Object.getOwnPropertyDescriptor(globalThis, "window");
   Object.defineProperty(globalThis, "window", { value: { devicePixelRatio: 2 }, configurable: true });
   try {
-    const heat = new Canvas(), book = new Canvas(), axis = new Canvas();
+    const heat = new Canvas(), axis = new Canvas();
     const renderer = new TradeOverlayRenderer(
-      heat as unknown as HTMLCanvasElement, book as unknown as HTMLCanvasElement, axis as unknown as HTMLCanvasElement,
+      heat as unknown as HTMLCanvasElement, axis as unknown as HTMLCanvasElement,
     );
     const a = new TradeAggregator();
     a.appendLive([{ tsUs: 10_100_000, recvUs: 11_000_000, seq: 1, price: 100, size: 10, side: "buy" }]);
@@ -42,7 +42,8 @@ test("ダミー：独立overlayの描画順、CSSの太さ/半径/点線、白�
     assert.deepEqual(events.find(e => e[0] === "fill"), ["fill", "#3ddc84", 0.8]);
     assert.deepEqual(events.find(e => e[0] === "arc"), ["arc", 5, 100, 3]);
     assert.deepEqual(events.find(e => e[0] === "dash"), ["dash", 4, 4]);
-    assert.deepEqual(book.context.events.filter(e => e[0] === "stroke"), [["stroke", "#ffffff", 1]]);
+    assert.deepEqual(events.filter(e => e[0] === "line").at(-1), ["line", 100, 100],
+      "current-price dotted line spans the complete heatmap, including book overlay");
     assert.deepEqual(axis.context.events.filter(e => e[0] === "rect" || e[0] === "label"),
       [["rect", "#ffffff"], ["label", "25.00", "#000000"]]);
     assert.equal(heat.width, 200);

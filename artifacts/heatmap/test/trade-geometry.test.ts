@@ -4,6 +4,18 @@ import { TradeAggregator } from "../src/data/trade-aggregate.ts";
 import { tradeGeometry, parseBubbleMin, bubbleRadius, BUBBLE_COLORS } from "../src/chart/trade-geometry.ts";
 import type { Trade, Viewport } from "../src/domain.ts";
 const U = 1_000_000;
+
+test("known last price extends only to the data head, never through the future book margin", () => {
+  const a = new TradeAggregator();
+  a.appendLive([{ tsUs: 2 * U, recvUs: 3 * U, seq: 1, price: 100, size: 10, side: "buy" }]);
+  const v = { startUs: 0, durationSec: 10, centerPriceTicks: 100, priceSpanTicks: 20 };
+  const g = tradeGeometry(a, v, 100, 200, 1, 10, 8 * U);
+  assert.equal(g.priceBins.at(-1)!.x, 80);
+  assert.equal(g.priceBins.at(-1)!.last, 100);
+  assert.ok(g.priceBins.every(p => p.x <= 80));
+  assert.ok(g.bubbles.every(b => b.x < 80));
+  assert.ok(g.priceBins[0]!.x > 0, "no line before first known price");
+});
 let seq = 10_000;
 const row = (seconds: number, price: number, size: number, side: "buy" | "sell" = "buy"): Trade =>
   ({ tsUs: Math.round(seconds * U), recvUs: 1_000_000_000 + seq, seq: seq++, price, size, side });

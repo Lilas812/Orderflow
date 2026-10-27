@@ -54,6 +54,24 @@ try {
     }
     await page.cdp.call("Input.dispatchMouseEvent", { type: "mouseReleased", x: x + dx, y: y + dy, button: "left", clickCount: 1 });
   }
+  // Optional comparison setup only: match a prior run's left edge despite a changed follow anchor.
+  // This is an actual pan (browsing), not a production debug setter or a data modification.
+  const matchStartUs = process.argv[4] === undefined ? null : Number(process.argv[4]);
+  if (matchStartUs !== null) {
+    if (!Number.isSafeInteger(matchStartUs)) throw Error("invalid_match_start_us");
+    const v = await page.cdp.evaluate("window.__heatmapDebug.viewport");
+    const dx = (v.startUs - matchStartUs) / (v.durationSec * 1e6) * heat.width;
+    await drag(heat.x + heat.width * 0.3, heat.y + heat.height * 0.45, dx, 0, 20);
+    for (let i = 0; i < 120; i++) {
+      if ((await page.cdp.evaluate("window.__heatmapDebug.loadingRanges")) === 0) break;
+      await delay(100);
+    }
+    await delay(500);
+    const actual = await page.cdp.evaluate("window.__heatmapDebug.viewport");
+    const differencePixels = (actual.startUs - matchStartUs) / (actual.durationSec * 1e6) * heat.width;
+    await fs.writeFile(path.join(output, "viewport-match.json"), JSON.stringify({ matchStartUs, actual, differencePixels }));
+    if (Math.abs(differencePixels) > 1) throw Error("comparison_viewport_mismatch");
+  }
   await capture("steady", () => delay(2200));
   await capture("price-zoom", () => drag(axis.x + axis.width / 2, axis.y + axis.height * 0.60, 0, -160, 60));
   await capture("price-reset", () => drag(axis.x + axis.width / 2, axis.y + axis.height * 0.60, 0, 160, 60));

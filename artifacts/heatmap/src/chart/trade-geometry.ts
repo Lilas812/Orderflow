@@ -55,7 +55,7 @@ export function tradeGeometry(
   }
   const bins = new Map<number, PriceBin>();
   for (const point of aggregation.lastPrices(from - US_PER_SECOND, to, cutoffUs)) {
-    const x = timeUsToX(point.secondUs + US_PER_SECOND / 2, view, cssWidth);
+    const x = timeUsToX(Math.min(point.secondUs + US_PER_SECOND / 2, cutoffUs), view, cssWidth);
     const physicalX = Math.floor(x * physicalWidth / cssWidth);
     const key = downsampled ? physicalX : point.secondUs;
     // Keep one neighbour outside the viewport so the carried line reaches its edges.
@@ -71,6 +71,7 @@ export function tradeGeometry(
   const priceBins = [...bins.values()];
   // Only extend already-known prices; never invent a leading price.
   const last = priceBins.at(-1);
-  if (last && to <= cutoffUs && last.x < cssWidth) priceBins.push({ ...last, x: cssWidth, min: last.last, max: last.last });
+  const lineEndX = timeUsToX(Math.min(to, cutoffUs), view, cssWidth);
+  if (last && last.x < lineEndX) priceBins.push({ ...last, x: lineEndX, min: last.last, max: last.last });
   return { bubbles, priceBins, downsampled };
 }

@@ -2,7 +2,7 @@ import "./index.css";
 import { ColumnCache } from "./data/cache.ts";
 import { RealtimeClient, type ConnectionState, type HelloMessage, type SocketStatus } from "./data/socket.ts";
 import { US_PER_SECOND, clampViewport, type Viewport, bestMidpoint } from "./domain.ts";
-import { timeUsToX, xToTimeUs, zoomPriceAt, zoomTimeAt } from "./chart/coordinates.ts";
+import { BOOK_OVERLAY_FRACTION, followStartUs, timeUsToX, xToTimeUs, zoomPriceAt, zoomTimeAt } from "./chart/coordinates.ts";
 import { HeatmapRenderer, type DrawMetrics } from "./chart/renderer.ts";
 import { formatAxisTicks, zoneFromSearch, type DisplayZone } from "./chart/timezone.ts";
 import { CurrentTradeState } from "./data/trade-aggregate.ts";
@@ -85,15 +85,11 @@ root.innerHTML = `
           <canvas class="heat-canvas" id="heatmap" aria-label="NQ order-book depth heatmap. Horizontal axis is time; vertical axis is price in quarter-point ticks.">
             Canvas 2D heatmap. Depth data will be visible when the browser supports Canvas.
           </canvas>
+          <canvas class="book-canvas current-book-overlay" id="current-book" aria-label="Current buy and sell quantities overlaid on the rightmost 20%"></canvas>
           <canvas class="trade-overlay" id="trade-overlay" aria-label="Trade price line, volume bubbles and current price"></canvas>
           <div id="empty-state" class="state-message" role="status" aria-live="polite">Waiting for feed · no synthetic data</div>
           <div id="status-banner" class="status-banner" role="status" aria-live="polite"></div>
           <pre id="debug-panel" class="debug-panel" hidden></pre>
-        </section>
-        <section class="region book-region" aria-label="Current book frame">
-          <canvas class="book-canvas" id="current-book" aria-label="Current order quantities by price, extending left from the right edge"></canvas>
-          <span class="region-label">Current book</span>
-          <canvas class="trade-overlay" id="current-book-line" aria-hidden="true"></canvas>
         </section>
         <section class="region price-region" aria-label="Price axis">
           <canvas class="axis-price" id="price-axis" aria-label="Shared price axis in NQ quarter-point increments."></canvas>
@@ -108,9 +104,6 @@ root.innerHTML = `
         </section>
         <section class="region delta-region" aria-label="Delta histogram frame">
           <span class="region-label">Delta</span><span class="region-hint">Phase 8 · empty frame</span>
-        </section>
-        <section class="region book-lower-region" aria-label="Lower current book frame">
-          <span class="region-label">Book</span>
         </section>
         <section class="region delta-scale-region" aria-label="Delta scale frame">
           <span class="region-label">Delta scale</span>
@@ -144,7 +137,7 @@ const bigOptions = parseBigOrderOptions(window.location.search);
 const bigFeed = new BigOrderFeed(bigOptions.top.value);
 const bigRenderer = new BigOrderRenderer(required<HTMLCanvasElement>("big-orders"));
 const overlayRenderer = new TradeOverlayRenderer(
-  required<HTMLCanvasElement>("trade-overlay"), required<HTMLCanvasElement>("current-book-line"),
+  required<HTMLCanvasElement>("trade-overlay"),
   required<HTMLCanvasElement>("current-price-label"),
 );
 const bubbleMinimum = parseBubbleMin(window.location.search);
@@ -207,7 +200,7 @@ const client = new RealtimeClient(cache, {
       const endUs = message.mode === "replay" && replayFrom !== null
         ? replayFrom * US_PER_SECOND
         : message.serverTimeUs;
-      viewport = { ...viewport, startUs: endUs - viewport.durationSec * US_PER_SECOND };
+      viewport = { ...viewport, startUs: endUs - (1 - BOOK_OVERLAY_FRACTION) * viewport.durationSec * US_PER_SECOND };
       hasHello = true;
     }
     positionPriceFromData();
@@ -317,19 +310,12 @@ function syncRetentionAndRequests(): void {
 function alignFollowToPhysicalPixel(): void {
   if (cache.latestTimeUs === null) return;
   const width = Math.max(1, Math.round(canvas.clientWidth * (window.devicePixelRatio || 1)));
-  const usPerPixel = viewport.durationSec * US_PER_SECOND / width;
-  // Align scrolling to physical pixels. Any future margin is less than one pixel;
-  // the newest confirmed second still intersects the rightmost pixel.
-  const rightUs = Math.ceil((cache.latestTimeUs + US_PER_SECOND) / usPerPixel) * usPerPixel;
-  viewport.startUs = Math.round(rightUs - viewport.durationSec * US_PER_SECOND);
+  viewport.startUs = followStartUs(cache.latestTimeUs, viewport.durationSec, width);
 }
 function setViewport(next: Viewport, pan = false): void {
   viewport = clampViewport(next);
   if (pan) follow = false;
-  const latest = cache.latestTimeUs;
-  if (latest !== null && viewport.startUs + viewport.durationSec * US_PER_SECOND < latest + US_PER_SECOND - 1_000) {
-    follow = false;
-  }
+  if (follow) alignFollowToPhysicalPixel();
   syncRetentionAndRequests();
   renderTimeAxis();
   scheduleDraw();
@@ -345,7 +331,7 @@ function resetView(): void {
     centeredOnData = true;
   }
   follow = true;
-  viewport = { ...viewport, startUs: reference - 600 * US_PER_SECOND, durationSec: 600, priceSpanTicks: 160 };
+  viewport = { ...viewport, startUs: reference - (1 - BOOK_OVERLAY_FRACTION) * 600 * US_PER_SECOND, durationSec: 600, priceSpanTicks: 160 };
   alignFollowToPhysicalPixel();
   refreshVisibleRange();
   renderTimeAxis();
@@ -363,7 +349,8 @@ const drawScheduler = new LayerScheduler(draw => requestAnimationFrame(draw), {
   big: () => bigRenderer.draw(bigFeed.tracker.snapshot(), viewport, bigOptions.minSec.value),
   trades: () => {
     overlayRenderer.draw(cache.tradeAggregation, viewport, bubbleMinimum.value,
-      currentTrade.trade?.price ?? null, replayHeadUs ?? Infinity);
+      currentTrade.trade?.price ?? null, replayHeadUs ?? Math.max(
+        (cache.latestTimeUs ?? 0) + US_PER_SECOND, currentTrade.trade?.tsUs ?? 0));
     overlayDrawCount++;
   },
   after: (redrewDepth, drawStart, redrewTrades) => {
@@ -590,7 +577,9 @@ function pointerMove(event: PointerEvent): void {
     const zoomed = zoomTimeAt(pinchStart.view, pinchStart.anchorUs, factor);
     const midpointShift = (midpointX - pinchStart.midpointX) / Math.max(1, canvas.clientWidth)
       * zoomed.durationSec * US_PER_SECOND;
-    setViewport({ ...zoomed, startUs: zoomed.startUs - midpointShift }, true);
+    // In follow mode, a pinch zoom keeps the latest column at its fixed anchor.
+    // Browsing retains the normal midpoint translation; one-pointer pan exits follow.
+    setViewport({ ...zoomed, startUs: zoomed.startUs - midpointShift });
     return;
   }
   if (!pointerStart || pointerStart.id !== event.pointerId) return;
@@ -673,10 +662,12 @@ axisCanvas.addEventListener("pointermove", pricePointerMove);
 axisCanvas.addEventListener("pointerup", pricePointerUp);
 axisCanvas.addEventListener("pointercancel", pricePointerUp);
 window.addEventListener("resize", () => {
+  if (follow) alignFollowToPhysicalPixel();
   renderTimeAxis();
   scheduleDraw();
 });
 const resizeObserver = new ResizeObserver(() => {
+  if (follow) alignFollowToPhysicalPixel();
   renderTimeAxis();
   scheduleDraw();
 });

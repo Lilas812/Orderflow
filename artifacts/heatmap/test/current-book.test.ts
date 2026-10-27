@@ -45,7 +45,7 @@ class Canvas {
   getBoundingClientRect() { return { width: 100, height: 200 }; }
 }
 
-test("ダミー：右端基点・共通P99で頭打ち、帯→棒、不透明色、DPR、全量置換", () => {
+test("ダミー：右端20%・共通P99、売買色・半透明、帯なし、DPR、全量置換", () => {
   const saved = Object.getOwnPropertyDescriptor(globalThis, "window");
   Object.defineProperty(globalThis, "window", { value: { devicePixelRatio: 2 }, configurable: true });
   try {
@@ -54,18 +54,18 @@ test("ダミー：右端基点・共通P99で頭打ち、帯→棒、不透明�
     r.draw(book(), view, 20);
     assert.equal(canvas.width, 200); assert.equal(canvas.height, 400);
     assert.deepEqual(canvas.context.events[0], ["clear", 0, 0, 200, 400]);
-    assert.deepEqual(canvas.context.events[1]!.slice(0, 6), ["rect", "#808080", 0.2, 0, 170, 200]);
-    assert.ok(Math.abs(Number(canvas.context.events[1]![6]) - 60) < 1e-9);
-    const bars = canvas.context.events.filter(e => e[1] === "#8a3cff");
-    assert.ok(bars.some(e => e[3] === 150 && e[5] === 50)); // size 5
-    assert.ok(bars.some(e => e[3] === 100 && e[5] === 100)); // size 10
-    assert.ok(bars.some(e => e[3] === 0 && e[5] === 200)); // size >=20
-    assert.ok(bars.every(e => e[2] === 1 && Number(e[3]) + Number(e[5]) === 200));
+    assert.ok(canvas.context.events.every(e => e[1] !== "#808080"));
+    const bars = canvas.context.events.filter(e => e[0] === "rect");
+    assert.ok(bars.some(e => e[1] === "#d9d9d9" && e[3] === 190 && e[5] === 10)); // bid 5
+    assert.ok(bars.some(e => e[1] === "#8a3cff" && e[3] === 180 && e[5] === 20)); // ask 10
+    assert.ok(bars.some(e => e[3] === 160 && e[5] === 40)); // capped at 20%
+    assert.ok(bars.every(e => e[2] === 0.7 && Number(e[3]) + Number(e[5]) === 200));
+    assert.equal(canvas.context.globalAlpha, 1);
     assert.equal(r.metrics.p99, 20); assert.equal(r.metrics.timeUs, 10_000_000);
     canvas.context.events = [];
     r.draw(book([[99, 1]], []), { ...view, startUs: -1_000_000 }, 10);
     assert.ok(canvas.context.events.every(e => e[1] !== "#808080"));
-    assert.ok(canvas.context.events.filter(e => e[0] === "rect").every(e => e[5] === 20));
+    assert.ok(canvas.context.events.filter(e => e[0] === "rect").every(e => e[5] === 4 && e[1] === "#d9d9d9"));
     canvas.context.events = [];
     r.draw(null, view, 10);
     assert.deepEqual(canvas.context.events, [["clear", 0, 0, 200, 400]]);
@@ -76,6 +76,19 @@ test("ダミー：右端基点・共通P99で頭打ち、帯→棒、不透明�
   } finally {
     if (saved) Object.defineProperty(globalThis, "window", saved);
     else Reflect.deleteProperty(globalThis, "window");
+  }
+});
+
+test("ダミー：同一画素行は最大の段の側、同数は売り、合算しない", () => {
+  for (const [bids, asks, size, sell] of [
+    [[[99, 30], [98, 20]], [[101, 25]], 30, 0],
+    [[[99, 10]], [[101, 25], [102, 20]], 25, 1],
+    [[[99, 25]], [[101, 25]], 25, 1],
+  ] as const) {
+    const sides = new Uint8Array(1);
+    const input = book(bids.map(l => [...l]), asks.map(l => [...l]));
+    assert.deepEqual([...currentBookRows(input, view, 1, sides)], [size]);
+    assert.deepEqual([...sides], [sell]);
   }
 });
 

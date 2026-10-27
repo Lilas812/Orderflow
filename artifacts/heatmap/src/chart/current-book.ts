@@ -1,9 +1,10 @@
 import type { HeatColumn, Viewport } from "../domain.ts";
-import { priceTicksToY } from "./coordinates.ts";
+import { BOOK_OVERLAY_FRACTION, priceTicksToY } from "./coordinates.ts";
 
 /** One value per physical row, with the same tick-cell coverage as the heatmap. */
-export function currentBookRows(book: HeatColumn | null, view: Viewport, height: number): Uint32Array {
+export function currentBookRows(book: HeatColumn | null, view: Viewport, height: number, sellRows?: Uint8Array): Uint32Array {
   const rows = new Uint32Array(height);
+  sellRows?.fill(0);
   if (!book) return rows;
   for (const side of [book.bids, book.asks]) {
     for (let i = 0; i < side.prices.length; i++) {
@@ -12,7 +13,13 @@ export function currentBookRows(book: HeatColumn | null, view: Viewport, height:
       const bottom = priceTicksToY(price - 0.5, view, height);
       const first = Math.max(0, Math.floor(top));
       const last = Math.min(height - 1, Math.ceil(bottom) - 1);
-      for (let y = first; y <= last; y++) rows[y] = Math.max(rows[y]!, size);
+      for (let y = first; y <= last; y++) {
+        // User decision: greatest individual level, with ask winning a tie.
+        if (size > rows[y]! || (side === book.asks && size > 0 && size === rows[y]!)) {
+          rows[y] = size;
+          if (sellRows) sellRows[y] = side === book.asks ? 1 : 0;
+        }
+      }
     }
   }
   return rows;
@@ -42,23 +49,19 @@ export class CurrentBookRenderer {
     }
     const ctx = this.context;
     ctx.clearRect(0, 0, width, height);
-    if (book && book.bids.prices.length && book.asks.prices.length) {
-      const top = Math.max(0, priceTicksToY(book.asks.prices[0]! + 0.5, view, height));
-      const bottom = Math.min(height, priceTicksToY(book.bids.prices[0]! - 0.5, view, height));
-      ctx.fillStyle = "#808080"; ctx.globalAlpha = 0.2;
-      if (bottom > top) ctx.fillRect(0, top, width, bottom - top);
-      ctx.globalAlpha = 1;
-    }
-    const rows = currentBookRows(book, view, height);
-    ctx.fillStyle = "#8a3cff";
+    const sellRows = new Uint8Array(height);
+    const rows = currentBookRows(book, view, height, sellRows);
+    ctx.globalAlpha = 0.7;
     let paintedRows = 0;
     for (let y = 0; y < height; y++) {
       const size = rows[y]!;
       if (size < 1) continue;
-      const length = Math.min(size / p99, 1) * width;
+      ctx.fillStyle = sellRows[y] ? "#8a3cff" : "#d9d9d9";
+      const length = Math.min(size / p99, 1) * width * BOOK_OVERLAY_FRACTION;
       ctx.fillRect(width - length, y, length, 1);
       paintedRows++;
     }
+    ctx.globalAlpha = 1;
     const drawMs = performance.now() - start;
     // Same last-30-draw window as the existing frame debug metrics.
     this.samples.push(drawMs);

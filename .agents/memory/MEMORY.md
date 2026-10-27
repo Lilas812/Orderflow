@@ -3,7 +3,7 @@
 - [仕様の正本](phase-scope.md) — 仕様の正本は replit.md と docs/ の4ファイル（AGENT_RULES.md、SPEC.md、UI_SPEC_HEATMAP.md、PHASE0_REPORT.md）だけ。attached_assets/ や .local/ にある同名のコピーは読まない。
 - [再取得回数の数え方](retry-semantics.md) — 直近0行は初回＋再取得3回。通信失敗は初回を含む3回で区切る。
 - [リプレイの時間基準](replay-time-semantics.md) — 約定の250ms区切りは仮想時間とする解釈をユーザーが承認。
-- [ヒートマップの幅と色基準](heatmap-rendering-decisions.md) — ユーザー指定は本体・デルタ・時間軸54%、99パーセンタイルは枚数1以上だけ。
+- [ヒートマップ描画の指定](heatmap-rendering-decisions.md) — 旧54%固定は廃止。正のセルP99・独立層・縮小時の売買混在行に関するユーザー指定。
 - [下流の圧縮状態](downstream-compression.md) — 250msごとの板の類似性から、サーバー→ブラウザは圧縮状態を引き継ぐ。
 - [検証時の設定副作用](verification-config-side-effects.md) — 補助ツールによるランタイムの自動追加を、設定変更禁止の作業で見落とさない。
 - [検証画像と終了の証拠](screenshot-evidence.md) — 画像IDと保存ファイル、撮影完了・WS切断とブラウザ本体終了を区別する。

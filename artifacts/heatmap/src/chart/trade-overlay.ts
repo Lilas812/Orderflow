@@ -15,16 +15,15 @@ function prepare(canvas: HTMLCanvasElement, dpr: number) {
 }
 export class TradeOverlayRenderer {
   private readonly heat: HTMLCanvasElement;
-  private readonly book: HTMLCanvasElement;
   private readonly axis: HTMLCanvasElement;
   metrics = { bubbleCount: 0, geometryMs: 0, lineMs: 0, bubbleMs: 0, overlayMs: 0, downsampled: false, priceBinCount: 0 };
-  constructor(heat: HTMLCanvasElement, book: HTMLCanvasElement, axis: HTMLCanvasElement) {
-    this.heat = heat; this.book = book; this.axis = axis;
+  constructor(heat: HTMLCanvasElement, axis: HTMLCanvasElement) {
+    this.heat = heat; this.axis = axis;
   }
   draw(aggregation: TradeAggregator, view: Viewport, minimum: number, currentPrice: number | null, cutoffUs = Infinity): void {
     const start = performance.now(), dpr = window.devicePixelRatio || 1;
     const { context: ctx, width, height } = prepare(this.heat, dpr);
-    const book = prepare(this.book, dpr), axis = prepare(this.axis, dpr);
+    const axis = prepare(this.axis, dpr);
     const geometryStart = performance.now();
     const geometry = tradeGeometry(aggregation, view, width, height, dpr, minimum, cutoffUs);
     const geometryMs = performance.now() - geometryStart, lineStart = performance.now();
@@ -50,7 +49,7 @@ export class TradeOverlayRenderer {
     const bubbleMs = performance.now() - bubbleStart;
     if (currentPrice !== null) {
       const y = priceTicksToY(currentPrice, view, height);
-      for (const layer of [{ context: ctx, width, height }, book]) {
+      for (const layer of [{ context: ctx, width, height }]) {
         const lineY = priceTicksToY(currentPrice, view, layer.height);
         layer.context.strokeStyle = "#ffffff"; layer.context.lineWidth = 1;
         layer.context.setLineDash([4, 4]); layer.context.beginPath();
