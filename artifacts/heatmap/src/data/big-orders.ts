@@ -1,5 +1,5 @@
 import type { HeatColumn } from "../domain.ts";
-import { US_PER_SECOND } from "../domain.ts";
+import { MAX_CACHE_SECONDS, US_PER_SECOND } from "../domain.ts";
 
 export interface BigOrder {
   price: number;
@@ -45,7 +45,7 @@ type TrackedOrder = Omit<BigOrder, "durationSec">;
  * The state is not owned by the viewport's two-hour cache.
  */
 export class BigOrderTracker {
-  private readonly topPercent: number;
+  private topPercent: number;
   private readonly tracked = new Map<number, TrackedOrder>();
   private last: HeatColumn | null = null;
   private threshold: number | null = null;
@@ -55,6 +55,7 @@ export class BigOrderTracker {
   constructor(topPercent = 2) {
     this.topPercent = topPercent;
   }
+  setTopPercent(value: number): void { this.topPercent = value; }
 
   append(column: HeatColumn): void {
     if (this.last && column.timeUs <= this.last.timeUs) return;
@@ -139,18 +140,58 @@ export class BigOrderFeed {
   private initial: HeatColumn[] | null = null;
   private buffered: HeatColumn[] = [];
   private cutoffUs = Infinity;
+  private recent = new Map<number, HeatColumn>();
+  private newestUs = -Infinity;
 
   constructor(topPercent = 2) { this.tracker = new BigOrderTracker(topPercent); }
 
   beginInitial(cutoffUs: number): void {
     this.initial = []; this.buffered = []; this.cutoffUs = cutoffUs;
+    this.recent.clear(); this.newestUs = -Infinity;
+  }
+
+  /** Intern repeated deliveries; cache and tracker own references, not copied arrays. */
+  shareColumn(column: HeatColumn): HeatColumn {
+    const existing = this.recent.get(column.timeUs);
+    if (!existing || existing.source !== column.source) return column;
+    for (const side of ["bids", "asks"] as const) {
+      const a = existing[side], b = column[side];
+      if (a.prices.length !== b.prices.length) return column;
+      for (let i = 0; i < a.prices.length; i++)
+        if (a.prices[i] !== b.prices[i] || a.sizes[i] !== b.sizes[i]) return column;
+    }
+    return existing;
+  }
+  get retainedColumns(): readonly HeatColumn[] { return [...this.recent.values()].sort((a, b) => a.timeUs - b.timeUs); }
+  sharing(columns: readonly HeatColumn[]) {
+    let overlap = 0, shared = 0;
+    for (const c of columns) if (this.recent.has(c.timeUs)) {
+      overlap++; if (this.recent.get(c.timeUs) === c) shared++;
+    }
+    return { retained: this.recent.size, overlap, shared };
+  }
+  reconfigure(topPercent: number): void {
+    this.tracker.setTopPercent(topPercent);
+    // Only confirmed playback/live columns, never a historical viewport cache.
+    this.tracker.rebuild(this.retainedColumns);
+  }
+  private remember(column: HeatColumn): void {
+    this.newestUs = Math.max(this.newestUs, column.timeUs);
+    if (column.timeUs > this.newestUs - MAX_CACHE_SECONDS * US_PER_SECOND) this.recent.set(column.timeUs, column);
+    for (const t of this.recent.keys()) {
+      if (t <= this.newestUs - MAX_CACHE_SECONDS * US_PER_SECOND) this.recent.delete(t);
+      else break; // Confirmed columns arrive in ascending order.
+    }
   }
 
   accept(columns: readonly HeatColumn[], kind: 1 | 2, reqId: number): void {
     if (kind === 2) {
-      if (reqId === 0 && this.initial) this.initial.push(...columns.filter(c => c.timeUs <= this.cutoffUs));
+      if (reqId === 0 && this.initial) for (const c of columns) if (c.timeUs <= this.cutoffUs) {
+        this.initial.push(c); this.remember(c);
+      }
       return;
     }
+    for (const c of columns) this.remember(c);
     if (this.initial) this.buffered.push(...columns);
     else for (const c of columns) this.tracker.append(c);
   }

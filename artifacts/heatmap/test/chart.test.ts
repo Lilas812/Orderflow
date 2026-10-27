@@ -13,7 +13,7 @@ import { computePixelMax } from "../src/chart/aggregate.ts";
 import { priceTicksToY, timeUsToX, xToTimeUs, yToPriceTicks } from "../src/chart/coordinates.ts";
 import { resolveColumnForDrawing } from "../src/chart/gaps.ts";
 import { heatColor, positiveNearestRank } from "../src/chart/scale.ts";
-import { formatTimeUs, zoneFromSearch } from "../src/chart/timezone.ts";
+import { formatTimeUs } from "../src/chart/timezone.ts";
 import type { Viewport } from "../src/domain.ts";
 import { column } from "./helpers.ts";
 
@@ -68,8 +68,6 @@ test("time and price transforms round-trip in integer-domain units", () => {
 });
 
 test("JST stays fixed and Chicago labels follow both daylight-saving transitions", () => {
-  assert.equal(zoneFromSearch("?tz=ct"), "ct");
-  assert.equal(zoneFromSearch("?tz=jst"), "jst");
   const springBefore = Date.parse("2026-03-08T07:59:59Z") * 1_000;
   const springAfter = Date.parse("2026-03-08T08:00:00Z") * 1_000;
   assert.equal(formatTimeUs(springBefore, "ct"), "01:59:59");

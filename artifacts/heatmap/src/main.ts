@@ -4,19 +4,22 @@ import { RealtimeClient, type ConnectionState, type HelloMessage, type SocketSta
 import { US_PER_SECOND, clampViewport, type Viewport, bestMidpoint } from "./domain.ts";
 import { BOOK_OVERLAY_FRACTION, followStartUs, timeUsToX, xToTimeUs, zoomPriceAt, zoomTimeAt } from "./chart/coordinates.ts";
 import { HeatmapRenderer, type DrawMetrics } from "./chart/renderer.ts";
-import { formatAxisTicks, zoneFromSearch, type DisplayZone } from "./chart/timezone.ts";
+import { formatAxisTicks, type DisplayZone } from "./chart/timezone.ts";
 import { CurrentTradeState } from "./data/trade-aggregate.ts";
 import { TradeOverlayRenderer } from "./chart/trade-overlay.ts";
-import { parseBubbleMin } from "./chart/trade-geometry.ts";
 import { CurrentBookRenderer } from "./chart/current-book.ts";
 import { LayerScheduler } from "./chart/layer-scheduler.ts";
-import { BigOrderFeed, parseBigOrderOptions } from "./data/big-orders.ts";
+import { BigOrderFeed } from "./data/big-orders.ts";
 import { BigOrderRenderer, visibleBigOrders } from "./chart/big-orders.ts";
 import { FrameProfile } from "./chart/frame-profile.ts";
 import { VpState } from "./data/vp.ts";
 import { VpRenderer } from "./chart/vp.ts";
 import { DeltaRenderer } from "./chart/delta.ts";
 import { deltaBounds, deltaSeconds } from "./chart/delta-geometry.ts";
+import { defaultDocument, fetchSettings, putSettings, resolveSettings, settingsChanges } from "./data/settings.ts";
+import type { SettingsDocument } from "./data/settings.ts";
+import { mountSettingsUi } from "./components/settings-ui.ts";
+import { resetViewport } from "./chart/view-reset.ts";
 
 declare global {
   interface Window {
@@ -30,6 +33,8 @@ declare global {
 }
 
 export interface HeatmapDebugSnapshot {
+  settings: ReturnType<typeof resolveSettings>;
+  sharedColumns: ReturnType<BigOrderFeed["sharing"]>;
   delta: DeltaRenderer["metrics"];
   vp: VpRenderer["metrics"];
   bigOrders: BigOrderRenderer["metrics"] & {
@@ -141,10 +146,16 @@ const emptyState = required<HTMLDivElement>("empty-state");
 const statusBanner = required<HTMLDivElement>("status-banner");
 const debugPanel = required<HTMLPreElement>("debug-panel");
 const scaleValue = required<HTMLSpanElement>("scale-value");
-const renderer = new HeatmapRenderer(canvas, axisCanvas, () => scheduleDraw());
+const renderer = new HeatmapRenderer(canvas, axisCanvas, () => drawScheduler.request("heat"));
 const cache = new ColumnCache();
 const bookRenderer = new CurrentBookRenderer(required<HTMLCanvasElement>("current-book"));
-const bigOptions = parseBigOrderOptions(window.location.search);
+let settingsLoaded = false;
+let settingsGeneration = 0;
+let appliedUpdatedAt: number | null = null;
+let settingsWarning = "";
+let activeSettings = resolveSettings(defaultDocument(), window.location.search);
+let bigOptions = { top: { value: activeSettings.values.bigTopPct, invalid: activeSettings.invalid.includes("bigTop 無効") },
+  minSec: { value: activeSettings.values.bigMinSec, invalid: activeSettings.invalid.includes("bigMinSec 無効") } };
 const bigFeed = new BigOrderFeed(bigOptions.top.value);
 const bigRenderer = new BigOrderRenderer(required<HTMLCanvasElement>("big-orders"));
 const vpState = new VpState();
@@ -157,14 +168,14 @@ const overlayRenderer = new TradeOverlayRenderer(
   required<HTMLCanvasElement>("trade-overlay"),
   required<HTMLCanvasElement>("current-price-label"),
 );
-const bubbleMinimum = parseBubbleMin(window.location.search);
+let bubbleMinimum = { value: activeSettings.values.bubbleMin, invalid: activeSettings.invalid.includes("bubbleMin 無効") };
 const currentTrade = new CurrentTradeState();
 const initialQuote = new CurrentTradeState();
 let initialCutoffUs = 0;
 let replayHeadUs: number | null = null;
 let depthDrawCount = 0;
 let overlayDrawCount = 0;
-const displayZone: DisplayZone = zoneFromSearch(window.location.search);
+let displayZone: DisplayZone = "jst";
 const debugMode = new URLSearchParams(window.location.search).get("debug") === "1";
 
 let viewport: Viewport = {
@@ -198,6 +209,7 @@ let lastTap: { at: number; x: number; y: number } | null = null;
 const tapStarts = new Map<number, { x: number; y: number; at: number }>();
 
 const client = new RealtimeClient(cache, {
+  shareColumn: c => bigFeed.shareColumn(c),
   onConnection: (state, message) => {
     connection = state;
     lastConnectionMessage = message ?? "";
@@ -348,16 +360,17 @@ function setViewport(next: Viewport, pan = false): void {
 }
 
 function resetView(): void {
-  const reference = cache.latestTimeUs !== null ? cache.latestTimeUs + US_PER_SECOND
+  const reference = cache.latestTimeUs !== null ? cache.latestTimeUs
     : hello?.serverTimeUs ?? Date.now() * 1_000;
-  const midpoint = bestMidpoint(cache.latestBook ?? cache.columns.at(-1));
+  const midpoint = currentTrade.trade?.price ?? initialQuote.trade?.price ?? bestMidpoint(cache.latestBook ?? cache.columns.at(-1));
   if (midpoint !== null) {
     viewport.centerPriceTicks = midpoint;
     centeredOnData = true;
   }
   follow = true;
-  viewport = { ...viewport, startUs: reference - (1 - BOOK_OVERLAY_FRACTION) * 600 * US_PER_SECOND, durationSec: 600, priceSpanTicks: 160 };
-  alignFollowToPhysicalPixel();
+  viewport = resetViewport(hello?.mode === "replay" ? replayHeadUs ?? reference : reference,
+    viewport.centerPriceTicks, Math.max(1, Math.round(canvas.clientWidth * (window.devicePixelRatio || 1))),
+    hello?.mode === "replay" ? "replay" : "live");
   refreshVisibleRange();
   renderTimeAxis();
   scheduleDraw();
@@ -365,9 +378,9 @@ function resetView(): void {
 }
 
 const drawScheduler = new LayerScheduler(draw => requestAnimationFrame(draw), {
-  depth: () => {
+  depth: (redrawAxes) => {
       const columns = cache.columns;
-      renderer.draw(columns, viewport, receivedColumnRevision, displayZone, columns.length > 0);
+      renderer.draw(columns, viewport, receivedColumnRevision, displayZone, columns.length > 0, redrawAxes);
       depthDrawCount++;
   },
   book: () => bookRenderer.draw(cache.latestBook, viewport, renderer.metrics.p99),
@@ -417,18 +430,20 @@ const drawScheduler = new LayerScheduler(draw => requestAnimationFrame(draw), {
     drawSamples.push({ at: now, ms: lastMetrics.drawMs });
     drawSamples = drawSamples.filter((sample) => now - sample.at < 30_000).slice(-120);
     drawInstants = drawInstants.filter((time) => now - time < 1_000);
-    scaleValue.textContent = cache.size ? `P99 ${lastMetrics.p99}` : "";
+    scaleValue.textContent = cache.size ? `上位${activeSettings.values.heatTopPct}% ${lastMetrics.p99}` : "";
     }
     if (debugMode) updateDebugPanel();
   },
 });
 
 function scheduleDraw(redrawDepth = true): void {
+  if (!settingsLoaded) return;
   drawScheduler.request(redrawDepth ? "all" : "trades");
   if (!redrawDepth) drawScheduler.request("delta");
 }
 
 function renderTimeAxis(): void {
+  if (!settingsLoaded) return;
   const started = performance.now();
   const rect = heatRegion.getBoundingClientRect();
   const ticks = formatAxisTicks(viewport.startUs, viewport.durationSec, rect.width, displayZone);
@@ -460,6 +475,7 @@ function updateStatus(): void {
   connectionLabel.textContent = text;
   const statusText = extractUpstreamStatus(latestStatus);
   const parts = [
+    settingsWarning,
     client.loadingRangeCount ? `Loading ${client.loadingRangeCount} range(s)` : "",
     lastConnectionMessage,
     statusText,
@@ -515,13 +531,16 @@ Delta ${deltaRenderer.metrics.seconds}s · ${deltaRenderer.metrics.visibleCount}
 Delta ${deltaRenderer.metrics.meanMs.toFixed(2)} / ${deltaRenderer.metrics.maxMs.toFixed(2)} ms · ${deltaRenderer.metrics.omittedCount} incomplete
 big ${bigRenderer.metrics.visibleCount} · threshold ${bigFeed.tracker.snapshot().threshold ?? "none"} · top ${bigOptions.top.value}% · min ${bigOptions.minSec.value}s${bigOptions.top.invalid ? " · bigTop 無効" : ""}${bigOptions.minSec.invalid ? " · bigMinSec 無効" : ""}
 big decision ${bigFeed.tracker.metrics.decisionMs.toFixed(2)} ms · draw ${bigRenderer.metrics.meanMs.toFixed(2)} / ${bigRenderer.metrics.maxMs.toFixed(2)} ms
-big ${bigRenderer.metrics.drawCount} draws · longest ${bigRenderer.metrics.longestSec}s`;
+ big ${bigRenderer.metrics.drawCount} draws · longest ${bigRenderer.metrics.longestSec}s
+${Object.entries(activeSettings.values).map(([key, value]) => `${key} ${value} (${activeSettings.sources[key as keyof typeof activeSettings.sources]})`).join(" · ")}`;
 }
 
 function debugSnapshot(): HeatmapDebugSnapshot {
   const now = performance.now();
   const sample = drawSamples.slice(-30).map((entry) => entry.ms);
   return Object.freeze({
+    settings: structuredClone(activeSettings),
+    sharedColumns: bigFeed.sharing(cache.columns),
     delta: { ...deltaRenderer.metrics },
     vp: vpRenderer.metrics,
     bigOrders: { ...bigRenderer.metrics, threshold: bigFeed.tracker.snapshot().threshold,
@@ -725,6 +744,48 @@ const resizeObserver = new ResizeObserver(() => {
 });
 resizeObserver.observe(heatRegion);
 
-renderTimeAxis();
-updateStatus();
-client.start();
+const settingsUi = mountSettingsUi(document.querySelector<HTMLElement>(".tool-rail")!, {
+  load: fetchSettings, save: putSettings, onSaved: applySettings, onReset: resetView,
+  overridden: activeSettings.overridden,
+  onModalChange: (open) => {
+    if (!open) return;
+    for (const id of pointerPoints.keys()) if (canvas.hasPointerCapture(id)) canvas.releasePointerCapture(id);
+    if (priceDrag && axisCanvas.hasPointerCapture(priceDrag.id)) axisCanvas.releasePointerCapture(priceDrag.id);
+    pointerPoints.clear(); tapStarts.clear(); pointerStart = pinchStart = priceDrag = lastTap = null;
+  },
+});
+// The native modal makes the workspace inert; rendering/feed processing continue.
+void settingsUi;
+
+function applySettings(doc: SettingsDocument): void {
+  // A delayed response from an older PUT must not undo a newer successful PUT.
+  if (doc.updatedAt !== null && appliedUpdatedAt !== null && doc.updatedAt < appliedUpdatedAt) return;
+  appliedUpdatedAt = doc.updatedAt;
+  settingsGeneration++;
+  const next = resolveSettings(doc, window.location.search);
+  const change = settingsChanges(activeSettings.values, next.values);
+  activeSettings = next;
+  bubbleMinimum = { value: next.values.bubbleMin, invalid: next.invalid.includes("bubbleMin 無効") };
+  bigOptions = { top: { value: next.values.bigTopPct, invalid: next.invalid.includes("bigTop 無効") },
+    minSec: { value: next.values.bigMinSec, invalid: next.invalid.includes("bigMinSec 無効") } };
+  displayZone = next.values.timeZone === "America/Chicago" ? "ct" : "jst";
+  settingsWarning = "";
+  if (change.heat) { renderer.setTopPercent(next.values.heatTopPct); if (settingsLoaded) drawScheduler.request("heat"); }
+  if (change.bubbles && settingsLoaded) drawScheduler.request("trades");
+  if (change.big) { bigFeed.reconfigure(next.values.bigTopPct); if (settingsLoaded) drawScheduler.request("big"); }
+  if (change.time) renderTimeAxis();
+  updateStatus(); updateDebugPanel();
+}
+
+async function startWithSettings() {
+  try { const doc = await fetchSettings(); if (settingsGeneration === 0) applySettings(doc); }
+  catch {
+    if (settingsGeneration === 0) {
+      settingsWarning = "設定を読めませんでした";
+      console.error("設定を読めませんでした");
+    }
+  }
+  settingsLoaded = true;
+  renderTimeAxis(); updateStatus(); scheduleDraw(); client.start();
+}
+void startWithSettings();

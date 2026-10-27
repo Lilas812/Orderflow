@@ -1,9 +1,5 @@
 export type DisplayZone = "jst" | "ct";
 
-export function zoneFromSearch(search: string): DisplayZone {
-  return new URLSearchParams(search).get("tz") === "ct" ? "ct" : "jst";
-}
-
 export function formatTimeUs(timeUs: number, zone: DisplayZone): string {
   const timeZone = zone === "ct" ? "America/Chicago" : "Asia/Tokyo";
   const parts = new Intl.DateTimeFormat("en-US", {

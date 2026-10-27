@@ -1,4 +1,4 @@
-import { createServer } from "node:http";
+import { createServer, request as httpRequest } from "node:http";
 import { connect, type Socket } from "node:net";
 import * as fs from "node:fs/promises";
 import path from "node:path";
@@ -12,6 +12,15 @@ export async function staticProxy(root: string, port = 19090, upstreamPort = 808
   const server = createServer(async (request, response) => {
     try {
       const pathname = decodeURIComponent(new URL(request.url ?? "/", "http://localhost").pathname);
+      if (pathname === "/api/settings") {
+        const upstream = httpRequest({ hostname: "127.0.0.1", port: upstreamPort, path: request.url,
+          method: request.method, headers: request.headers, agent: false }, res => {
+          response.writeHead(res.statusCode ?? 502, res.headers); res.pipe(response);
+        });
+        upstream.on("socket", socket => { sockets.add(socket); socket.on("close", () => sockets.delete(socket)); });
+        upstream.on("error", () => { response.statusCode = 502; response.end("settings_proxy_failed"); });
+        request.pipe(upstream); return;
+      }
       const file = path.resolve(root, pathname === "/" ? "index.html" : "." + pathname);
       if (!file.startsWith(path.resolve(root) + path.sep)) throw Error("invalid_static_path");
       const bytes = await fs.readFile(file);

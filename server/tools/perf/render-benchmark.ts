@@ -8,13 +8,20 @@ const staticRoot = path.resolve(process.argv[3] ?? "artifacts/heatmap/dist/publi
 await fs.mkdir(output, { recursive: true });
 const script = await fs.readFile(new URL("./frozen-feed.js", import.meta.url), "utf8");
 const vpFixture = process.argv[5] ? JSON.parse(await fs.readFile(process.argv[5], "utf8")) : null;
+const settingsFixture = process.argv[6] ? JSON.parse(await fs.readFile(process.argv[6], "utf8")) : null;
 const chromium = await browser(9223);
 const results: unknown[] = [];
 try {
   // Page injection must run before the module creates its WebSocket.
   const page = await chromium.page("about:blank", staticRoot);
   await page.cdp.call("Page.addScriptToEvaluateOnNewDocument", {
-    source: `window.__frozenVp=${JSON.stringify(vpFixture)};` + script + `
+    source: `window.__frozenVp=${JSON.stringify(vpFixture)};
+      ${settingsFixture ? `{
+        const capturedSettings=${JSON.stringify(settingsFixture)}, nativeFetch=window.fetch.bind(window);
+        window.fetch=(input,init)=>new URL(typeof input==="string"?input:input.url,location.href).pathname==="/api/settings"
+          ? Promise.resolve(new Response(JSON.stringify(capturedSettings),{status:200,headers:{"Content-Type":"application/json"}}))
+          : nativeFetch(input,init);
+      }` : ""}` + script + `
     addEventListener("DOMContentLoaded", () => {
       const badge = document.createElement("div");
       badge.textContent = "ダミー接続 · 実保存データの固定再生";

@@ -33,6 +33,7 @@ export class HeatmapRenderer {
   private scratch: HTMLCanvasElement | null = null;
   private lastScaleAt = 0;
   private threshold: number | null = null;
+  private topPercent = 1;
   private scaleTimer: number | null = null;
   private physicalWidth = 0;
   private physicalHeight = 0;
@@ -62,8 +63,9 @@ export class HeatmapRenderer {
   }
 
   get metrics(): DrawMetrics { return { ...this.metricsValue }; }
+  setTopPercent(value: number): void { this.topPercent = value; }
 
-  draw(columns: readonly HeatColumn[], view: Viewport, _revision: number, _zone: DisplayZone, hasPriceData = true): void {
+  draw(columns: readonly HeatColumn[], view: Viewport, _revision: number, _zone: DisplayZone, hasPriceData = true, redrawAxis = true): void {
     const drawStart = performance.now();
     const rect = this.canvas.getBoundingClientRect();
     if (rect.width < 1 || rect.height < 1) return;
@@ -139,7 +141,7 @@ export class HeatmapRenderer {
       if (this.scaleTimer !== null) window.clearTimeout(this.scaleTimer);
       this.scaleTimer = null;
       const scaleStart = performance.now();
-      const nextThreshold = viewportPositiveP99(columns, view);
+      const nextThreshold = viewportPositiveP99(columns, view, this.topPercent);
       scaleChanged = nextThreshold !== this.threshold;
       this.threshold = nextThreshold;
       this.lastScaleAt = now;
@@ -191,8 +193,10 @@ export class HeatmapRenderer {
 
     this.lastViewport = { ...view };
     const axisStart = performance.now();
-    if (hasPriceData) drawPriceAxis(this.axis, view);
-    else clearPriceAxis(this.axis);
+    if (redrawAxis) {
+      if (hasPriceData) drawPriceAxis(this.axis, view);
+      else clearPriceAxis(this.axis);
+    }
     const axisMs = performance.now() - axisStart;
     const cacheMetrics = this.tileCache.metrics;
     this.metricsValue = {

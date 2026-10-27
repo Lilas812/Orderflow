@@ -48,6 +48,7 @@ export interface SocketEnvironment {
 }
 
 export interface SocketListeners {
+  shareColumn?(column: HeatColumn): HeatColumn;
   onConnection(state: ConnectionState, message?: string): void;
   onHello(hello: HelloMessage): void;
   onStatus(status: SocketStatus): void;
@@ -324,6 +325,7 @@ export class RealtimeClient {
   }
 
   private acceptColumns(columns: readonly HeatColumn[], kind: 1 | 2, reqId: number): void {
+    if (this.listeners.shareColumn) columns = columns.map(c => this.listeners.shareColumn!(c));
     for (const c of columns) this.deliveries.set(c, kind === 1 ? "live-kind1" : reqId === 0 ? "initial-30min" : `range:${reqId}`);
     this.cache.addColumns(columns);
     this.listeners.onColumns(columns, kind, reqId);

@@ -8,10 +8,14 @@ import { Hub, attachHub } from "./hub/hub.ts";
 import { MemoryMonitor } from "./diagnostics/memory.ts";
 import { measurementLogWriter } from "./diagnostics/measurement-log.ts";
 import { MeasurementIsolation, isolationMarker } from "./diagnostics/isolation.ts";
+import { LocalSettings } from "./settings/local.ts";
+import { fileURLToPath } from "node:url";
 
 async function main() {
   const config = readConfig(process.env);
   const log = createLogger(config.apiKey, measurementLogWriter());
+  const settings = new LocalSettings(fileURLToPath(new URL("../../data/settings.json", import.meta.url)), log);
+  await settings.get();
   const isolation = new MeasurementIsolation(isolationMarker, log);
   isolation.snapshot();
   let activity: () => unknown = () => ({ phase: "initializing" });
@@ -37,7 +41,7 @@ async function main() {
   activity = () => ({ delivery: hub.snapshot(), backfill: pipeline.backfill.snapshot().state });
   const app = createStatusApp(upstream, receiver, config.apiKey, () => pipeline.status(),
     () => ({ ...hub.snapshot(), connections: hub.connections() }),
-    () => memory.snapshot(), () => isolation.snapshot());
+    () => memory.snapshot(), () => isolation.snapshot(), settings);
   const http = app.listen(config.port, "0.0.0.0");
   const wss = attachHub(http, hub, origin => isolation.allows(origin));
   let shuttingDown = false;

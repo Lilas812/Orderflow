@@ -154,3 +154,31 @@ mtime_ms = 1793121567273
 storage_uri = "gcs://replit-rams-assets-pike/rams/assets/repl:c326af06-2355-4bfb-a52e-f433587c4cd9/a316dad2-b424-4e3c-8f50-7ca1307d2a13/4e69639c-1e3f-4d53-ac9e-94dd36b4dfa2"
 storage_version_token = "1793121888886588"
 content_type = "image/png"
+
+[[outputs]]
+id = "zo5XU1wxXZ-NYx3htLU_O"
+uri = "file://data/phase9/settings-open.png"
+type = "image"
+title = "設定画面"
+description = "Phase 9：5項目の設定とツールバー。背後のチャートは更新を継続します。"
+logical_id = "4ac852ed-67d7-410b-8e29-fa43a1edaea6"
+content_hash = "sha256:85f1f8edf1ae6c01cf3b4627a5ab9e5fa566aac52ac6fee96938d84ee1fa5993"
+size = 72630
+mtime_ms = 1793124277300
+storage_uri = "gcs://replit-rams-assets-pike/rams/assets/repl:c326af06-2355-4bfb-a52e-f433587c4cd9/4ac852ed-67d7-410b-8e29-fa43a1edaea6/0315548c-cfbe-40e8-9813-ea8575551dae"
+storage_version_token = "1793125151609973"
+content_type = "image/png"
+
+[[outputs]]
+id = "9vj77wp8TknW6gsTA-UWG"
+uri = "file://data/phase9/settings-invalid.png"
+type = "image"
+title = "入力エラーと保存の無効化"
+description = "上位%が範囲外の場合に理由を表示し、保存を無効にした実画面です。"
+logical_id = "ed363cda-56d7-431b-b119-66fb279d56e3"
+content_hash = "sha256:17b7cc4edda2e258d613f1407ef6ee81e880cccb2030b492031334cff4239d73"
+size = 74445
+mtime_ms = 1793124278980
+storage_uri = "gcs://replit-rams-assets-pike/rams/assets/repl:c326af06-2355-4bfb-a52e-f433587c4cd9/ed363cda-56d7-431b-b119-66fb279d56e3/bc3df779-e154-4ebb-ac40-f12ae485bae2"
+storage_version_token = "1793125152844501"
+content_type = "image/png"

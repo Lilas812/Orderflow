@@ -1,12 +1,12 @@
 import type { HeatColumn, Viewport } from "../domain.ts";
 
-export function viewportPositiveP99(columns: readonly HeatColumn[], view: Viewport): number {
+export function viewportPositiveP99(columns: readonly HeatColumn[], view: Viewport, topPercent = 1): number {
   const endUs = view.startUs + view.durationSec * 1_000_000;
   const visible = columns.filter(c => c.timeUs + 1_000_000 > view.startUs && c.timeUs < endUs);
   const bottom = view.centerPriceTicks - view.priceSpanTicks / 2;
   const top = view.centerPriceTicks + view.priceSpanTicks / 2;
   // A tick cell has half-open extent price±0.5; touching only the border is not visible area.
-  return positiveVisibleP99(visible, Math.floor(bottom - 0.5) + 1, Math.ceil(top + 0.5) - 1);
+  return positiveVisibleP99(visible, Math.floor(bottom - 0.5) + 1, Math.ceil(top + 0.5) - 1, 1 - topPercent / 100);
 }
 
 export const HEAT_STOPS: readonly { at: number; color: string }[] = [
@@ -59,7 +59,7 @@ export function positiveNearestRank(values: readonly number[], percentile = 0.99
   return 1;
 }
 
-export function positiveVisibleP99(columns: readonly HeatColumn[], minTick: number, maxTick: number): number {
+export function positiveVisibleP99(columns: readonly HeatColumn[], minTick: number, maxTick: number, percentile = .99): number {
   const highBins = new Uint32Array(65_536);
   let count = 0;
   for (const column of columns) {
@@ -75,7 +75,7 @@ export function positiveVisibleP99(columns: readonly HeatColumn[], minTick: numb
     }
   }
   if (count === 0) return 1;
-  let rank = Math.max(1, Math.ceil(count * 0.99));
+  let rank = Math.max(1, Math.ceil(count * percentile));
   let high = 0;
   for (; high < highBins.length; high += 1) {
     if (rank <= highBins[high]!) break;
