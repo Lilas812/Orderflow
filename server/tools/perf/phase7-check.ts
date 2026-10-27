@@ -8,7 +8,8 @@ import WebSocket from "ws";
 import { browser, delay } from "./cdp.ts";
 import { staticProxy } from "./static-proxy.ts";
 
-const out = path.resolve("data/phase7");
+const out = path.resolve(process.env.PHASE7_CHECK_OUT ?? "data/phase7");
+await fs.mkdir(out, { recursive: true });
 const status = async () => (await fetch("http://127.0.0.1:8080/api/status")).json();
 const resume = process.argv.includes("--resume");
 const evidence: any = resume ? JSON.parse(await fs.readFile(path.join(out, "browser-checks.json"), "utf8"))
@@ -105,7 +106,7 @@ try {
     await closeBrowser();
     console.log("VP_CHECK loading screenshot captured; browser closed");
   }
-  const deadline = Date.now() + 60 * 60 * 1000;
+  const deadline = Date.now() + Number(process.env.PHASE7_CHECK_TIMEOUT_MS ?? 60 * 60 * 1000);
   for (;;) {
     const s = await status();
     await fs.appendFile(path.join(out, "status-samples.jsonl"), JSON.stringify({ at: Date.now(), ...s }) + "\n");
