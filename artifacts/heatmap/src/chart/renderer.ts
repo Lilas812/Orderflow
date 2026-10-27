@@ -179,8 +179,9 @@ export class HeatmapRenderer {
       rasterMs = performance.now() - rasterStart;
     } else if (rasterRebuilt || scaleChanged || !this.imageData) {
       const rasterStart = performance.now();
-      const rgba = colorize(this.pixelGrid!.values, this.threshold ?? 1);
-      this.imageData = new ImageData(rgba, width, height);
+      const reusable = this.imageData?.width === width && this.imageData.height === height ? this.imageData : null;
+      const rgba = colorize(this.pixelGrid!.values, this.threshold ?? 1, reusable?.data);
+      this.imageData = reusable ?? new ImageData(rgba, width, height);
       colorMs = performance.now() - rasterStart;
       const uploadStart = performance.now();
       this.context.putImageData(this.imageData, 0, 0);
@@ -211,6 +212,16 @@ export class HeatmapRenderer {
 
 const COLOR_LUT_STEPS = 1_024;
 const COLOR_LUT = buildColorLut();
+const PACKED_COLOR_LUT = new Uint32Array(COLOR_LUT_STEPS);
+const packedBytes = new Uint8ClampedArray(PACKED_COLOR_LUT.buffer);
+for (let index = 0; index < COLOR_LUT_STEPS; index++) {
+  packedBytes[index * 4] = COLOR_LUT[index * 3]!;
+  packedBytes[index * 4 + 1] = COLOR_LUT[index * 3 + 1]!;
+  packedBytes[index * 4 + 2] = COLOR_LUT[index * 3 + 2]!;
+  packedBytes[index * 4 + 3] = 255;
+}
+// Construct through bytes so packed writes preserve RGBA on either endianness.
+const PACKED_BLACK = new Uint32Array(Uint8Array.of(0, 0, 0, 255).buffer)[0]!;
 
 function buildColorLut(): Uint8Array {
   const output = new Uint8Array(COLOR_LUT_STEPS * 3);
@@ -237,21 +248,21 @@ function buildColorLut(): Uint8Array {
   return output;
 }
 
-function colorize(values: Uint32Array, threshold: number): Uint8ClampedArray<ArrayBuffer> {
-  const output = new Uint8ClampedArray(values.length * 4);
+export function colorize(values: Uint32Array, threshold: number,
+  reusable?: Uint8ClampedArray<ArrayBuffer>): Uint8ClampedArray<ArrayBuffer> {
+  const output = reusable?.length === values.length * 4 && reusable.byteOffset % 4 === 0
+    ? reusable : new Uint8ClampedArray(values.length * 4);
+  const pixels = new Uint32Array(output.buffer, output.byteOffset, values.length);
+  if (Number.isNaN(threshold)) { pixels.fill(PACKED_BLACK); return output; }
+  const normalizer = Math.max(1, threshold);
   for (let index = 0; index < values.length; index += 1) {
     const size = values[index]!;
-    const offset = index * 4;
     if (size < 1) {
-      output[offset + 3] = 255;
+      pixels[index] = PACKED_BLACK;
       continue;
     }
-    const lutIndex = Math.min(COLOR_LUT_STEPS - 1, Math.round((size / Math.max(1, threshold)) * (COLOR_LUT_STEPS - 1)));
-    const lutOffset = lutIndex * 3;
-    output[offset] = COLOR_LUT[lutOffset]!;
-    output[offset + 1] = COLOR_LUT[lutOffset + 1]!;
-    output[offset + 2] = COLOR_LUT[lutOffset + 2]!;
-    output[offset + 3] = 255;
+    const lutIndex = Math.min(COLOR_LUT_STEPS - 1, Math.round((size / normalizer) * (COLOR_LUT_STEPS - 1)));
+    pixels[index] = PACKED_COLOR_LUT[lutIndex]!;
   }
   return output;
 }

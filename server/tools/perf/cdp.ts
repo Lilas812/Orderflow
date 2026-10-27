@@ -68,7 +68,7 @@ export async function browser(port = 9222) {
   const root = await CDP.connect(info.webSocketDebuggerUrl);
   const pages: { id: string; cdp: CDP }[] = [];
   return {
-    async page(url: string, staticRoot?: string) {
+    async page(url: string, staticRoot?: string, responseStage = false) {
       const { targetId } = await root.call("Target.createTarget", { url: "about:blank" });
       const list = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json() as any[];
       const target = list.find(item => item.id === targetId);
@@ -94,7 +94,8 @@ export async function browser(port = 9222) {
               body: body.toString("base64") });
           })().catch(() => { void cdp.call("Fetch.failRequest", { requestId: request.requestId, errorReason: "Failed" }).catch(() => {}); });
         });
-        await cdp.call("Fetch.enable", { patterns: [{ urlPattern: "http://127.0.0.1*/*", requestStage: "Request" }] });
+        await cdp.call("Fetch.enable", { patterns: [{ urlPattern: "http://127.0.0.1*/*",
+          requestStage: responseStage ? "Response" : "Request" }] });
       }
       await cdp.call("Page.navigate", { url });
       const page = { id: targetId, cdp }; pages.push(page); return page;

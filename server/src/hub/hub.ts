@@ -1,7 +1,8 @@
 import type { Server } from "node:http";
 import { WebSocketServer } from "ws";
 import { boardColumn, encodeFrame, parseRange, replayParams } from "./frame.ts";
-import { Replay, realClock } from "./replay.ts";
+import { realClock } from "./replay.ts";
+import { WindowedReplay } from "./windowed-replay.ts";
 import type { ReplayClock } from "./replay.ts";
 import type { Column } from "../aggregate/columns.ts";
 import type { Trade, BookSnapshot } from "../types.ts";
@@ -28,7 +29,7 @@ interface Peer {
   id: number; range: { reqId: number; fromSec: number; toSec: number } | null; closeReason?: string;
   socket: Socket; mode: "live" | "replay"; initializing: boolean; closed: boolean;
   columns: Column[]; trades: Trade[]; queuedBytes: number;
-  lastStatus: string; lastStatusAt: number; jobs: Promise<void>; replay?: Replay;
+  lastStatus: string; lastStatusAt: number; jobs: Promise<void>; replay?: WindowedReplay;
   replayEnded?: boolean;
 }
 const tradeId = (t: Trade) => `${t.recvUs}:${t.seq}`;
@@ -57,6 +58,10 @@ export class Hub {
   connections() {
     return [...this.peers].map(p => ({ connectedAtUs: p.connectedAtUs,
       mode: p.mode, ...p.origin, readyState: p.socket.readyState, ...this.stage(p) }));
+  }
+  rejectMeasurement(origin: ConnectionOrigin) {
+    this.counts.rejectedConnections++;
+    this.log("hub_connection_rejected", { reason: "measurement_isolation", ...origin });
   }
   private close(p: Peer, code: number, reason: string) {
     if (p.closed) return;
@@ -161,10 +166,11 @@ export class Hub {
         if (p.closed) return;
         if (params) {
           // End is frozen at connection time; new live appends do not extend this replay.
-          const replay = await this.source.read(params.fromSec, params.toSec);
+          const replay = await this.source.read(params.fromSec, Math.min(params.fromSec + 300, params.toSec));
           if (p.closed) return;
           p.columns = []; p.trades = []; p.queuedBytes = 0; p.initializing = false;
-          p.replay = new Replay(replay.columns, replay.trades, params.fromSec, params.toSec, params.speed, {
+          p.replay = new WindowedReplay(replay, params.fromSec, params.toSec, params.speed,
+            (from, to) => this.source.read(from, to), {
             column: c => { this.send(p, encodeFrame(1, 0, [c])); this.send(p, encodeFrame(3, 0, [c]), true); },
             trades: trades => { this.json(p, { type: "trades", trades }); },
             end: () => {
@@ -172,12 +178,17 @@ export class Hub {
               p.replayEnded = true;
               this.log("replay_ended", params);
             },
+            error: () => {
+              this.json(p, { type: "error", reqId: 0, code: "initial_read_failed" });
+              this.log("hub_initial_error", { reason: "initial_read_failed" });
+              this.close(p, 1011, "initial_read_failed");
+            },
           }, this.clock);
           p.replay.start();
         } else {
-          const seconds = new Set(view.columns.map(c => c.tsSec));
+          const seconds = view.seconds;
           // Match only queued live event identities, never deduplicate by trade contents.
-          const trades = new Set(view.trades.map(tradeId));
+          const trades = view.trades;
           p.trades = p.trades.filter(t => !trades.has(tradeId(t)));
           p.initializing = false; p.queuedBytes = 0;
           for (const c of p.columns) if (!seconds.has(c.tsSec)) this.send(p, encodeFrame(1, 0, [c]));
@@ -194,7 +205,7 @@ export class Hub {
     await initial;
   }
   private async range(p: Peer, reqId: number, from: number, to: number) {
-    const initial: View = { columns: [], trades: [] };
+    const initial = { seconds: new Set<number>(), trades: new Set<string>() };
     p.range = { reqId, fromSec: from, toSec: to };
     const stage = this.stage(p);
     let columns = 0, trades = 0, chunks = 0, maxBufferedBytes = 0;
@@ -218,7 +229,10 @@ export class Hub {
           || !this.json(p, { type: "rangeTrades", reqId, trades: view.trades })) return initial;
         columns += view.columns.length; trades += view.trades.length; chunks++;
         maxBufferedBytes = Math.max(maxBufferedBytes, p.socket.bufferedAmount);
-        if (reqId === 0) { initial.columns.push(...view.columns); initial.trades.push(...view.trades); }
+        if (reqId === 0) {
+          for (const column of view.columns) initial.seconds.add(column.tsSec);
+          for (const trade of view.trades) initial.trades.add(tradeId(trade));
+        }
       }
       this.json(p, { type: "rangeDone", reqId, fromSec: from, toSec: to, columns, trades, chunks });
       this.log("hub_range_done", { ...stage, fromSec: from, toSec: to, columns, trades, chunks, maxBufferedBytes });
@@ -261,7 +275,7 @@ export class Hub {
   }
 }
 
-export function attachHub(server: Server, hub: Hub) {
+export function attachHub(server: Server, hub: Hub, allows?: (origin?: string) => boolean) {
   const wss = new WebSocketServer({ noServer: true, perMessageDeflate: {
     zlibDeflateOptions: { level: 3, memLevel: 7 }, threshold: 1024, concurrencyLimit: 1,
     // ws applies threshold only with no-context-takeover. With takeover it
@@ -281,6 +295,10 @@ export function attachHub(server: Server, hub: Hub) {
       userAgent: request.headers["user-agent"]?.replace(/[\r\n]/g, " ").slice(0, 512),
       origin, remoteAddress: request.socket.remoteAddress,
     };
+    if (allows && !allows(origin)) {
+      hub.rejectMeasurement(metadata);
+      socket.end("HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n"); return;
+    }
     // Never copy authorization, cookies, raw headers, or query strings.
     wss.handleUpgrade(request, socket, head, ws => { void hub.connect(ws, url, metadata); });
   });

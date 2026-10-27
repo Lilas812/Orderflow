@@ -50,6 +50,28 @@ function source(columns: Column[] = [], trades: Trade[] = []): Source {
     status: () => ({ upstream: { state: "dummy" } }) };
 }
 
+test("ダミー：Hub replay never reads the entire saved tail and closing stops future windows", async () => {
+  const clock = new Clock(), calls: [number, number][] = [];
+  const src = source([col(9999), col(10300)]);
+  const read = src.read;
+  src.savedRange = () => ({ fromSec: 1, toSec: 100000 });
+  src.read = async (from, to) => { calls.push([from, to]); return read(from, to); };
+  const hub = new Hub(src, () => {}, clock), socket = new Socket();
+  await hub.connect(socket, url("?mode=replay&from=9999&speed=10"));
+  assert.ok(calls.length >= 8);
+  assert.ok(calls.every(([from, to]) => to - from <= 300));
+  assert.ok(calls.some(([from, to]) => from === 10299 && to === 10599));
+  assert.ok(!calls.some(([, to]) => to === 100000));
+  clock.advance(30000);
+  socket.close(1000);
+  await Promise.resolve();
+  const count = calls.length;
+  clock.advance(1000000); await Promise.resolve();
+  assert.equal(calls.length, count);
+  assert.equal(hub.snapshot().connected, 0);
+  hub.stop();
+});
+
 for (const kind of [1, 2, 3] as const) test(`ダミー：kind ${kind} フレームのLE往復・個数・reqId`, () => {
   const columns = kind === 2 ? [col(10), col(11)] : [col(10)];
   const frame = encodeFrame(kind, kind === 2 ? 23 : 0, columns);

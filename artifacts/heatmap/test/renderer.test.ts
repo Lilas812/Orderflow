@@ -163,6 +163,22 @@ test("time zoom reuses per-column price profiles; an append invalidates only its
   assert.ok(tiles.metrics.cachedProfileBytes <= 48 * 1024 * 1024);
 });
 
+test("price zoom retains one reusable projection per column, and removal releases it", () => {
+  const tiles = new TimeTileCache();
+  const first = column(10, { bids: [[100, 7], [101, 20]], asks: [[102, 9]] });
+  tiles.setColumns([first]);
+  for (let n = 0; n < 100; n++) {
+    const view = { ...baseView, durationSec: 1, priceSpanTicks: 4 + n / 20 };
+    const actual = tiles.aggregate(view, 8, 40);
+    const reference = new TimeTileCache();
+    reference.setColumns([first]);
+    assert.deepEqual(actual.values, reference.aggregate(view, 8, 40).values);
+    assert.equal(tiles.metrics.cachedProfileBytes, 40 * 4);
+  }
+  tiles.setColumns([]);
+  assert.equal(tiles.metrics.cachedProfileBytes, 0);
+});
+
 test("tiled max raster matches the full physical-pixel reference without downscaling", () => {
   const columns: HeatColumn[] = [
     column(100, { bids: [[10, 5], [12, 71]], asks: [[11, 12]] }),

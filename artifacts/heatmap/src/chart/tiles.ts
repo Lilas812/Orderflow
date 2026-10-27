@@ -24,6 +24,8 @@ interface ProfileLruItem {
   key: string;
   column: HeatColumn;
   profile: Uint32Array;
+  center: number;
+  span: number;
 }
 
 export interface TileCacheMetrics {
@@ -38,10 +40,6 @@ export interface TileCacheMetrics {
 
 function tileStartFor(second: number): number {
   return Math.floor(second / SECONDS_PER_TILE) * SECONDS_PER_TILE;
-}
-
-function profileProjectionKey(view: Viewport, height: number): string {
-  return `${height}|${view.centerPriceTicks}|${view.priceSpanTicks}`;
 }
 
 function buildPriceTree(column: HeatColumn): PriceMaxTree {
@@ -95,8 +93,9 @@ function upperBound(values: Int32Array, target: number): number {
   return low;
 }
 
-function projectPriceTree(tree: PriceMaxTree, view: Viewport, height: number): Uint32Array {
-  const output = new Uint32Array(height);
+function projectPriceTree(tree: PriceMaxTree, view: Viewport, height: number, reuse?: Uint32Array): Uint32Array {
+  const output = reuse?.length === height ? reuse : new Uint32Array(height);
+  output.fill(0);
   const priceTop = view.centerPriceTicks + view.priceSpanTicks / 2;
   const first = upperBound(tree.prices, priceTop - view.priceSpanTicks - 0.5);
   const end = lowerBound(tree.prices, priceTop + 0.5);
@@ -107,7 +106,14 @@ function projectPriceTree(tree: PriceMaxTree, view: Viewport, height: number): U
     const price = tree.prices[i]!, size = tree.tree[tree.leafCount + i]!;
     const top = Math.max(0, Math.floor(((priceTop - (price + 0.5)) / view.priceSpanTicks) * height));
     const bottom = Math.min(height - 1, Math.ceil(((priceTop - (price - 0.5)) / view.priceSpanTicks) * height) - 1);
-    for (let y = top; y <= bottom; y++) if (size > output[y]!) output[y] = size;
+    if (top > bottom) continue;
+    output[top] = Math.max(output[top]!, size);
+    if (bottom > top) {
+      output[bottom] = Math.max(output[bottom]!, size);
+      // Only edge pixels can overlap an adjacent integer-price cell.
+      // Interior rows belong solely to this price, so native fill is exact.
+      if (bottom > top + 1) output.fill(size, top + 1, bottom);
+    }
   }
   return output;
 }
@@ -132,6 +138,7 @@ export class TimeTileCache {
   private sortedSeconds: number[] = [];
   private readonly rawTrees = new WeakMap<HeatColumn, PriceMaxTree>();
   private readonly profileLru = new Map<string, ProfileLruItem>();
+  private readonly latestProfiles = new WeakMap<HeatColumn, ProfileLruItem>();
   private readonly objectIds = new WeakMap<HeatColumn, number>();
   private nextObjectId = 0;
   private profileBytes = 0;
@@ -190,15 +197,14 @@ export class TimeTileCache {
     const tileStart = tileStartFor(Math.floor(column.timeUs / US_PER_SECOND));
     const tile = this.tiles.get(tileStart);
     if (!tile) return new Uint32Array(height);
-    const projection = profileProjectionKey(view, height);
-    const objectId = this.objectId(column);
-    const key = `${objectId}|${projection}`;
-    const cached = tile.profiles.get(key);
-    if (cached) {
+    const previous = this.latestProfiles.get(column);
+    const key = previous?.key ?? `${this.objectId(column)}|`;
+    if (previous && previous.center === view.centerPriceTicks && previous.span === view.priceSpanTicks
+      && previous.profile.length === height) {
       this.metricsValue.profileHits += 1;
       this.profileLru.delete(key);
-      this.profileLru.set(key, { tileStart, key, column, profile: cached });
-      return cached;
+      this.profileLru.set(key, previous);
+      return previous.profile;
     }
     this.metricsValue.profileMisses += 1;
     this.metricsValue.recomputedColumns += 1;
@@ -208,9 +214,21 @@ export class TimeTileCache {
       tree = buildPriceTree(column);
       this.rawTrees.set(column, tree);
     }
-    const profile = projectPriceTree(tree, view, height);
+    // Price zoom changes the projection on every frame. Keeping dozens of old
+    // projections per column created allocation/LRU eviction spikes. Consumers
+    // copy the profile into the grid synchronously; reuse only its last buffer.
+    if (previous) {
+      this.tiles.get(previous.tileStart)?.profiles.delete(previous.key);
+      this.profileLru.delete(previous.key);
+      this.profileBytes -= previous.profile.byteLength;
+    }
+    const profile = projectPriceTree(tree, view, height, previous?.profile);
+    const item = previous ?? { tileStart, key, column, profile,
+      center: view.centerPriceTicks, span: view.priceSpanTicks };
+    item.profile = profile; item.center = view.centerPriceTicks; item.span = view.priceSpanTicks;
     tile.profiles.set(key, profile);
-    this.profileLru.set(key, { tileStart, key, column, profile });
+    this.profileLru.set(key, item);
+    this.latestProfiles.set(column, item);
     this.profileBytes += profile.byteLength;
     this.evictProfiles();
     return profile;
@@ -248,6 +266,22 @@ export class TimeTileCache {
       const right = Math.min(clipEnd - 1, xRange[1]);
       if (left > right) continue;
       const profile = this.projectedProfile(column, view, safeHeight);
+      if (left === right) {
+        // Compressed time: avoid a one-iteration inner loop and per-row multiply.
+        for (let y = 0, pixel = left; y < safeHeight; y++, pixel += safeWidth) {
+          const size = profile[y]!;
+          if (size > values[pixel]!) values[pixel] = size;
+        }
+        continue;
+      }
+      if (right === left + 1) {
+        for (let y = 0, pixel = left; y < safeHeight; y++, pixel += safeWidth) {
+          const size = profile[y]!;
+          if (size > values[pixel]!) values[pixel] = size;
+          if (size > values[pixel + 1]!) values[pixel + 1] = size;
+        }
+        continue;
+      }
       for (let y = 0; y < safeHeight; y += 1) {
         const size = profile[y]!;
         if (size < 1) continue;
@@ -281,6 +315,7 @@ export class TimeTileCache {
     const tile = this.tiles.get(startSec);
     if (tile) {
       tile.columns.delete(second);
+      this.latestProfiles.delete(column);
       for (const [key, profile] of tile.profiles) {
         if (key.startsWith(`${this.objectId(column)}|`)) {
           tile.profiles.delete(key);
@@ -333,6 +368,7 @@ export class TimeTileCache {
       if (oldestKey === undefined) break;
       const oldest = this.profileLru.get(oldestKey)!;
       this.profileLru.delete(oldestKey);
+      if (this.latestProfiles.get(oldest.column)?.key === oldestKey) this.latestProfiles.delete(oldest.column);
       const tile = this.tiles.get(oldest.tileStart);
       const profile = tile?.profiles.get(oldest.key);
       if (profile) {

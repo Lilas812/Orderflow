@@ -3,6 +3,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { gzip as gzipCallback, gunzip as gunzipCallback } from "node:zlib";
 import { encodeColumns, decodeColumns } from "./binary.ts";
+import { scanColumnFile, tradeFileRows, decodeColumnRange, mergeColumnRecords } from "./records.ts";
 import type { Column } from "../aggregate/columns.ts";
 import type { Trade } from "../types.ts";
 
@@ -41,7 +42,8 @@ export class LocalStore implements Store {
   readonly stats = { files: 0, bytes: 0, latestColumnSec: null as number | null, pendingColumns: 0, pendingTrades: 0 };
   private coverage: Coverage = { book: [], tick: [] };
   private held = new Set<number>();
-  private columns = new Map<number, Map<number, Column>>();
+  private columns = new Map<number, Map<number, Buffer>>();
+  private columnLastSeconds = new Map<number, number>();
   private trades = new Map<number, Trade[]>();
   private queue: Promise<void> = Promise.resolve();
   private failure: Error | null = null;
@@ -104,17 +106,16 @@ export class LocalStore implements Store {
     // Recover actually persisted seconds even if a crash preceded index replacement.
     for (const file of await this.allFiles()) {
       if (file.endsWith(".bin") || file.endsWith(".bin.gz")) {
-        let bytes = await fs.readFile(file);
-        if (file.endsWith(".gz")) bytes = await gunzip(bytes);
-        for (const c of decodeColumns(bytes)) {
-          this.includeSecond(c.tsSec);
-          this.markCovered("book", c.tsSec, c.tsSec + 1);
-          this.stats.latestColumnSec = Math.max(this.stats.latestColumnSec ?? 0, c.tsSec);
-        }
+        const match = file.match(/(\d{4}-\d\d-\d\d)[/\\](\d\d)\./)!;
+        const hour = Date.parse(`${match[1]}T${match[2]}:00:00Z`) / 1000;
+        await scanColumnFile(file, second => {
+          this.includeSecond(second);
+          this.markCovered("book", second, second + 1);
+          this.stats.latestColumnSec = Math.max(this.stats.latestColumnSec ?? 0, second);
+          this.columnLastSeconds.set(hour, Math.max(this.columnLastSeconds.get(hour) ?? -1, second));
+        });
       } else {
-        const text = (await gunzip(await fs.readFile(file))).toString();
-        for (const line of text.split("\n").filter(Boolean)) {
-          const trade = JSON.parse(line) as Trade;
+        for await (const trade of tradeFileRows(file)) {
           const sec = Math.floor(trade.tsUs / 1_000_000);
           this.includeSecond(sec);
           this.markCovered("tick", sec, sec + 1);
@@ -138,9 +139,9 @@ export class LocalStore implements Store {
       for (const c of columns) {
         this.includeSecond(c.tsSec);
         const hour = hourOf(c.tsSec);
-        const pending = this.columns.get(hour) ?? new Map<number, Column>();
+        const pending = this.columns.get(hour) ?? new Map<number, Buffer>();
         // Existing seconds always win. L separates historical and live ownership.
-        if (!pending.has(c.tsSec)) pending.set(c.tsSec, c);
+        if (!pending.has(c.tsSec)) pending.set(c.tsSec, encodeColumns([c]));
         this.columns.set(hour, pending); hours.add(hour);
       }
       for (const hour of hours) if (!this.held.has(hour)) await this.writeHour(hour);
@@ -178,30 +179,41 @@ export class LocalStore implements Store {
   private async tradeRows(hour: number): Promise<Trade[]> {
     const file = this.file("tick", hour);
     if (!await this.exists(file)) return [];
-    return (await gunzip(await fs.readFile(file))).toString().split("\n").filter(Boolean).map(l => JSON.parse(l) as Trade);
+    const rows: Trade[] = [];
+    for await (const trade of tradeFileRows(file)) rows.push(trade);
+    return rows;
   }
   private async writeHour(hour: number) {
     const pending = this.columns.get(hour);
     if (pending?.size) {
       const file = this.file("book", hour);
-      const incoming = [...pending.values()].sort((a, b) => a.tsSec - b.tsSec);
-      const existing = decodeColumns(await this.columnBytes(hour));
-      const existingSeconds = new Set(existing.map(c => c.tsSec));
-      const fresh = incoming.filter(c => !existingSeconds.has(c.tsSec));
+      const incoming = [...pending.entries()].sort((a, b) => a[0] - b[0]);
       const closed = hour + 3600 <= Math.floor(this.now() / 1000);
-      if (!closed && (!existing.length || fresh.every(c => c.tsSec > existing.at(-1)!.tsSec))
-        && !await this.exists(file + ".gz")) {
-        if (fresh.length) {
-          await fs.mkdir(path.dirname(file), { recursive: true, mode: 0o700 });
-          await fs.appendFile(file, encodeColumns(fresh), { mode: 0o600 });
+      const compressed = await this.exists(file + ".gz");
+      const knownLast = this.columnLastSeconds.get(hour);
+      let last: number;
+      if (!closed && knownLast !== undefined && incoming[0][0] > knownLast && !compressed) {
+        // The only writer owns this metadata; ordinary live append never needs
+        // to decode or copy the entire growing hour.
+        await fs.mkdir(path.dirname(file), { recursive: true, mode: 0o700 });
+        await fs.appendFile(file, Buffer.concat(incoming.map(([, bytes]) => bytes)), { mode: 0o600 });
+        last = incoming.at(-1)![0];
+      } else {
+        const merged = mergeColumnRecords(await this.columnBytes(hour), pending);
+        if (!closed && merged.appendOnly && !compressed) {
+          if (merged.freshCount) {
+            await fs.mkdir(path.dirname(file), { recursive: true, mode: 0o700 });
+            await fs.appendFile(file, merged.fresh, { mode: 0o600 });
+          }
+        } else if (merged.freshCount || closed) {
+          await this.atomic(file + (closed ? ".gz" : ""), closed ? await gzip(merged.bytes) : merged.bytes);
+          await fs.rm(closed ? file : file + ".gz", { force: true });
         }
-      } else if (fresh.length || closed) {
-        const bytes = encodeColumns([...existing, ...fresh].sort((a, b) => a.tsSec - b.tsSec));
-        await this.atomic(file + (closed ? ".gz" : ""), closed ? await gzip(bytes) : bytes);
-        await fs.rm(closed ? file : file + ".gz", { force: true });
+        last = merged.lastSecond;
       }
-      for (const c of incoming) this.markCovered("book", c.tsSec, c.tsSec + 1);
-      this.stats.latestColumnSec = Math.max(this.stats.latestColumnSec ?? 0, incoming.at(-1)!.tsSec);
+      if (last >= 0) this.columnLastSeconds.set(hour, last);
+      for (const [second] of incoming) this.markCovered("book", second, second + 1);
+      this.stats.latestColumnSec = Math.max(this.stats.latestColumnSec ?? 0, incoming.at(-1)![0]);
       this.columns.delete(hour);
     }
     const trades = this.trades.get(hour);
@@ -246,16 +258,20 @@ export class LocalStore implements Store {
     await this.queue;
     if (this.failure) throw this.failure;
     const rows: Column[] = [];
-    for (let h = hourOf(start); h < end; h += 3600) rows.push(...decodeColumns(await this.columnBytes(h)));
-    return rows.filter(c => c.tsSec >= start && c.tsSec < end).sort((a, b) => a.tsSec - b.tsSec);
+    for (let h = hourOf(start); h < end; h += 3600) rows.push(...decodeColumnRange(await this.columnBytes(h), start, end));
+    return rows.sort((a, b) => a.tsSec - b.tsSec);
   }
   async readTrades(start: number, end: number): Promise<Trade[]> {
     await this.queue;
     if (this.failure) throw this.failure;
     const rows: Trade[] = [];
-    for (let h = hourOf(start); h < end; h += 3600) rows.push(...await this.tradeRows(h));
-    return rows.filter(t => t.tsUs >= start * 1_000_000 && t.tsUs < end * 1_000_000)
-      .sort((a, b) => a.seq - b.seq);
+    for (let h = hourOf(start); h < end; h += 3600) {
+      const file = this.file("tick", h);
+      if (await this.exists(file)) for await (const t of tradeFileRows(file)) {
+        if (t.tsUs >= start * 1e6 && t.tsUs < end * 1e6) rows.push(t);
+      }
+    }
+    return rows.sort((a, b) => a.seq - b.seq);
   }
   /** Atomic delivery view: persisted data plus confirmed writes held for backfill.
    * Existing disk columns win, just as in writeHour. No unconfirmed column or filled second.
@@ -266,9 +282,15 @@ export class LocalStore implements Store {
     return this.run(async () => {
       const columns = new Map<number, Column>(), trades: Trade[] = [];
       for (let h = hourOf(start); h < end; h += 3600) {
-        for (const c of decodeColumns(await this.columnBytes(h))) columns.set(c.tsSec, c);
-        for (const c of this.columns.get(h)?.values() ?? []) if (!columns.has(c.tsSec)) columns.set(c.tsSec, c);
-        trades.push(...await this.tradeRows(h), ...this.trades.get(h) ?? []);
+        for (const c of decodeColumnRange(await this.columnBytes(h), start, end)) columns.set(c.tsSec, c);
+        for (const [second, bytes] of this.columns.get(h) ?? []) {
+          if (second >= start && second < end && !columns.has(second)) columns.set(second, decodeColumns(bytes)[0]);
+        }
+        const file = this.file("tick", h);
+        if (await this.exists(file)) for await (const t of tradeFileRows(file)) {
+          if (t.tsUs >= start * 1e6 && t.tsUs < end * 1e6) trades.push(t);
+        }
+        for (const t of this.trades.get(h) ?? []) if (t.tsUs >= start * 1e6 && t.tsUs < end * 1e6) trades.push(t);
       }
       result = { columns: [...columns.values()].filter(c => c.tsSec >= start && c.tsSec < end)
         .sort((a, b) => a.tsSec - b.tsSec),
@@ -277,6 +299,7 @@ export class LocalStore implements Store {
   }
   private async retention() {
     const cutoff = Math.floor(this.now() / 1000) - 7 * 86400;
+    for (const hour of this.columnLastSeconds.keys()) if (hour + 3600 <= cutoff) this.columnLastSeconds.delete(hour);
     for (const file of await this.allFiles()) {
       const match = file.match(/(\d{4}-\d\d-\d\d)[/\\](\d\d)\./)!;
       const hour = Date.parse(`${match[1]}T${match[2]}:00:00Z`) / 1000;

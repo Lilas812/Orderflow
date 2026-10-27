@@ -46,6 +46,8 @@ Agent が更新してよいのは、下の Current Status 節だけ。
 
 ## Current Status
 
+- 2026-10-27：メモリ・描画性能の続行を実施。LocalStoreのヘッダー走査・範囲限定読込・バイナリ保存とWindowedReplay（300秒×最大2区間）を実経路に適用し、変更前後5場面を測定（前リプレイはRSSガード後OOM）。変更後5場面のVmHWM最大478.88MiB。独立30分ライブ19:38:16.857〜20:08:17.125 JSTを完走、制御区間VmHWM486.63MiB・最終10分RSS455.56〜455.73MiB、解除後の追加接続確認では514.23MiB。固定描画は価格zoom平均/最大10.73/44.40ms、時間zoom8.16/29.60msで一部目安未達。79/79・67/67試験、両型検査・画面ビルド成功。接続制限解除後の公開WSS hello/close・HTTP接続0・全検証Chromium終了を確認。20:10:06.390 SIGTERM、.662上流close1006、.679 HTTP終了、.891 PID消滅。詳細はserver/PERF_MEMORY_REPORT.md 12〜13節。元のsendErrors1件不明・2GiB実機未確認は残る。Phase 7未着手。
+
 - 2026-10-27：続行許可により残存検証Chromiumを停止し、ローカルの実行プロセス0を確認。Hub.connect/connections/attachHubで開始終了Unixµs・User-Agent・origin・接続元と、HTTP /api/statusの現在接続一覧を追加（WS statusは変更なし）。しかし新規PID12722に開発プレビューorigin・Windows Chrome156の1接続が入り、稼働中の接続0は未成立。起動時取り込みの再測定は接続数ガードで中断し、正式5場面・修正後30分ライブは未実施。終了処理の単独確認でChromium PID12847の終了・ポート閉鎖を確認。サーバー74/74・型検査成功。17:24:33.465 JSTにSIGTERM、17:24:33.736に上流close1006、17:24:33.766にHTTP終了。計測中だけ外部接続を拒否する隔離は挙動変更のため未実装・許可待ち。server/PERF_MEMORY_REPORT.md 11節参照。
 
 - 2026-10-27：メモリ・描画性能調査は測定環境の接続問題で中断、未完了。5秒RSS/heap計測とHTTP状態値、層別フレーム計測を追加。実保存35,550秒の単独走査で旧方式最大RSS690.15MiB、ストリーム候補100.79MiB（同じ列数/チェックサム）だが実受信には未適用。正式な5場面と修正後30分ライブは未実施。固定静的データの価格zoom平均/最大25.51/67.20ms、reset29.11/150.90msで目安未達。サーバー73/73・画面64/64、両型検査・画面ビルド成功。Phase 6のsendErrorsは6件を接続終了中と分類、1件不明。16:47:58.966 JSTにSIGTERM、16:48:06.321に実際の上流close1006、16:48:06.337にHTTP終了・PID消滅を確認。詳細はserver/PERF_MEMORY_REPORT.md。Phase 7は未着手。

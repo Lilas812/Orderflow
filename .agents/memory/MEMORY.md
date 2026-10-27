@@ -6,6 +6,7 @@
 - [ヒートマップの幅と色基準](heatmap-rendering-decisions.md) — ユーザー指定は本体・デルタ・時間軸54%、99パーセンタイルは枚数1以上だけ。
 - [下流の圧縮状態](downstream-compression.md) — 250msごとの板の類似性から、サーバー→ブラウザは圧縮状態を引き継ぐ。
 - [検証時の設定副作用](verification-config-side-effects.md) — 補助ツールによるランタイムの自動追加を、設定変更禁止の作業で見落とさない。
-- [検証画像の保存](screenshot-evidence.md) — ブラウザの画像IDは保存済みPNGではない。会話内表示とワークスペース保存を区別する。
+- [検証画像と終了の証拠](screenshot-evidence.md) — 画像IDと保存ファイル、撮影完了・WS切断とブラウザ本体終了を区別する。
 - [公開環境のメモリ予算](performance-budget.md) — Reserved VMは2GiB予定。Workspaceでの成功だけで公開環境の動作を保証しない。
 - [負荷測定の画面数](performance-measurement-isolation.md) — 残存ブラウザの発生元を決めつけず、計測画面の実受信と測定中の接続数を両方確認する。
+- [CDP合成ページの通信制限](synthetic-document-network.md) — 合成ページからのloopback WSがChromiumに遮断される。実通信の確認には実HTTP配信を使う。

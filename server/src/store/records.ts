@@ -79,6 +79,12 @@ export async function scanColumnFile(file: string, visit: (second: number) => vo
 export async function* tradeFileRows(file: string): AsyncGenerator<Trade> {
   const stream = input(file);
   const lines = createInterface({ input: stream, crlfDelay: Infinity });
-  try { for await (const line of lines) if (line) yield JSON.parse(line) as Trade; }
+  let failure: Error | null = null;
+  const fail = (error: Error) => { failure = error; lines.close(); };
+  stream.once("error", fail); lines.once("error", fail);
+  try {
+    for await (const line of lines) if (line) yield JSON.parse(line) as Trade;
+    if (failure) throw failure;
+  }
   finally { lines.close(); stream.destroy(); }
 }

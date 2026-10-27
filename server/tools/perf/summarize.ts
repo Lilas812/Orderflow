@@ -3,7 +3,7 @@ import path from "node:path";
 
 const root = path.resolve("data/perf-memory");
 const results: unknown[] = [];
-for (const phase of ["before", "after"]) {
+for (const phase of process.argv.length > 2 ? process.argv.slice(2) : ["isolated-before", "isolated-after"]) {
   const base = path.join(root, phase);
   const directories = await fs.readdir(base, { withFileTypes: true }).catch(() => []);
   for (const entry of directories) {
@@ -13,27 +13,49 @@ for (const phase of ["before", "after"]) {
     try { result = JSON.parse(await fs.readFile(path.join(directory, "result.json"), "utf8")); }
     catch { continue; }
     const rows = (await fs.readFile(path.join(directory, "samples.jsonl"), "utf8")).trim().split("\n").map(line => JSON.parse(line));
-    const measured = rows.filter(row => row.resource && !row.resource.exited && row.resource.rssKiB);
+    const fullRun = rows.filter(row => row.resource?.pid === result.pid && !row.resource.exited && row.resource.rssKiB);
+    const releaseAtUs = result.events.find((event: any) => event.event === "measurement_isolation_release_begin")?.atUs ?? Infinity;
+    // Public admission/screenshot checks happen AFTER the timed run and its
+    // recovery; do not mislabel their extra clients as single-screen load.
+    const measured = fullRun.filter(row => row.atUs <= releaseAtUs);
     const peak = measured.reduce((best, row) => row.resource.rssKiB > (best?.resource.rssKiB ?? 0) ? row : best, null);
     const recovery = result.events.find((event: any) => event.event === "recovery_begin")?.atUs;
-    const active = measured.filter(row => row.atUs <= recovery);
+    const activeEndUs = result.events.find((event: any) => event.event === "active_measurement_complete")?.atUs ?? recovery;
+    const active = measured.filter(row => row.atUs <= activeEndUs);
     const before = result.details.initialStatus?.memory;
     const expectedClients = ["dual", "ranges"].includes(result.scenario) ? 2 : result.scenario === "backfill" ? 0 : 1;
-    const maxConnected = Math.max(0, ...rows.map(row => row.status?.phase2b?.connected ?? 0));
+    const controlled = rows.filter(row => row.atUs <= activeEndUs && row.status);
+    const maxConnected = Math.max(0, ...controlled.map(row => row.status.phase2b?.connected ?? 0));
+    const knownSourcesOnly = controlled.every(row => (row.status.phase2b?.connections ?? [])
+      .every((peer: any) => /NQPerf(?:Range)?\/\d+$/.test(peer.userAgent ?? "")));
     const sample = (row: any) => row ? {
       atUs: row.atUs, rssMiB: row.resource.rssKiB / 1024,
-      heapMiB: (row.status?.memory?.heapUsed ?? 0) / 1048576,
+       heapMiB: row.status?.memory ? row.status.memory.heapUsed / 1048576 : null,
       cpuPercent: row.resource.cpuPercent, connected: row.status?.phase2b?.connected ?? null,
     } : null;
     results.push({
       phase, scenario: result.scenario, directory,
       startUs: result.startedAtUs, readyUs: result.details.readyAtUs ?? null, endUs: result.endedAtUs,
       failure: result.details.failure ?? null, guard: result.guard, interrupted: result.interrupted,
-      validClientIsolation: !result.details.failure && !result.isolationFailure && maxConnected <= expectedClients,
+      validClientIsolation: !result.isolationFailure && maxConnected === expectedClients && knownSourcesOnly,
+      completed: !result.details.failure && !result.guard && !result.interrupted && !result.isolationFailure,
+      formalCandidate: (!result.details.failure || result.guard) && !result.isolationFailure
+        && maxConnected === expectedClients && knownSourcesOnly,
       before: before ? { rssMiB: before.rss / 1048576, heapMiB: before.heapUsed / 1048576 } : null,
       peak: sample(peak), activeEnd: sample(active.at(-1)), recoveryEnd: sample(measured.at(-1)),
       firstObserved: sample(measured[0]),
-      heapPeakMiB: Math.max(0, ...rows.map(row => (row.status?.memory?.heapUsed ?? 0) / 1048576)),
+      heapPeakMiB: Math.max(0, ...measured.map(row => (row.status?.memory?.heapUsed ?? 0) / 1048576)),
+      fullRunPeakRssMiB: Math.max(0, ...fullRun.map(row => row.resource.rssKiB / 1024)),
+      peakHighWaterMiB: Math.max(0, ...measured.map(row => (row.resource.rssHighWaterKiB ?? row.resource.rssKiB) / 1024)),
+      meanCpuPercent: measured.filter(row => row.resource.cpuPercent !== null)
+        .reduce((sum, row, _, all) => sum + row.resource.cpuPercent / all.length, 0),
+      peakCpuPercent: Math.max(0, ...measured.map(row => row.resource.cpuPercent ?? 0)),
+      browserClosed: result.details.browserClosed ?? null,
+      staticProxyClosed: result.details.staticProxyClosed ?? null,
+      serverExitConfirmed: result.details.serverExitConfirmed ?? null,
+      activeCompletedAtUs: activeEndUs,
+      isolationReleased: result.details.isolationReleased ?? null,
+      releaseCheckAccepted: result.details.publicPreviewWsAccepted ?? null,
       maxConnected,
       samples: rows.length,
       lastStatus: result.details.finalStatus?.phase2b,
@@ -48,8 +70,8 @@ for (const phase of ["before", "after"]) {
   }
 }
 const rendering: unknown[] = [];
-for (const phase of ["before", "after"]) {
-  const file = path.join(root, phase, "render/frames.json");
+for (const phase of ["isolated-before", "isolated-after", "isolated-final"]) {
+  const file = path.join(root, phase, "render-static/frames.json");
   let cases: any[];
   try { cases = JSON.parse(await fs.readFile(file, "utf8")); } catch { continue; }
   for (const operation of cases) {

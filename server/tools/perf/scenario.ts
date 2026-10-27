@@ -3,18 +3,23 @@ import path from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { browser, delay } from "./cdp.ts";
+import { WebSocket as DiagnosticSocket } from "ws";
+import { processStart } from "../../src/diagnostics/isolation.ts";
+import { staticProxy } from "./static-proxy.ts";
 
 const exec = promisify(execFile);
 const phase = process.argv[2] ?? "before";
 const scenario = process.argv[3] ?? "live";
 const root = path.resolve("data/perf-memory", phase, `${scenario}-${Date.now()}`);
 await fs.mkdir(root, { recursive: true });
+const marker = path.resolve("data/perf-memory/isolation.json");
+await fs.writeFile(marker, JSON.stringify({ ownerPid: process.pid, ownerStart: processStart(process.pid) }));
 const statusUrl = "http://127.0.0.1:8080/api/status";
 // Same path-routing proxy as the screenshot tool; avoid transient public
 // network failures while Chromium imports the app's ES modules.
 // Test-only static page on the API origin: native Chromium WebSocket connects
 // directly to the real service, without the shared preview upgrade proxy.
-const appUrl = "http://127.0.0.1:8080/";
+const appUrl = "http://127.0.0.1:19090/";
 const startedAtUs = Date.now() * 1000;
 let stopped = false, guard = false, pid: number | null = null;
 let sampleBusy = false, previousCpu: { ticks: number; at: number } | null = null;
@@ -85,6 +90,7 @@ async function hold(ms: number) {
   }
 }
 let chromium: Awaited<ReturnType<typeof browser>> | undefined;
+let proxy: Awaited<ReturnType<typeof staticProxy>> | undefined;
 let mainPage: Awaited<ReturnType<Awaited<ReturnType<typeof browser>>["page"]>> | undefined;
 const details: Record<string, unknown> = {};
 try {
@@ -101,12 +107,13 @@ try {
     }, 20 * 60000, "backfill_incomplete_after_20min");
     details.backfill = finalStatus.phase2a.backfill;
   } else {
+    const staticRoot = path.resolve(phase.includes("before") ? "data/perf-memory/original-dist" : "artifacts/heatmap/dist/public");
+    proxy = await staticProxy(staticRoot);
     chromium = await browser();
     const replay = scenario === "replay";
     const from = 1793021400;
     allowedClients = 1;
-    const staticRoot = path.resolve("artifacts/heatmap/dist/public");
-    const page = await chromium.page(appUrl + (replay ? `?debug=1&mode=replay&from=${from}&speed=10` : "?debug=1"), staticRoot);
+    const page = await chromium.page(appUrl + (replay ? `?debug=1&mode=replay&from=${from}&speed=10` : "?debug=1"));
     mainPage = page;
     await waitFor(async () => {
       const debug = await page.cdp.evaluate("window.__heatmapDebug");
@@ -132,12 +139,16 @@ try {
       // exact 60-minute requests, sequentially after each rangeDone.
       details.rangeReceiverIsAdditionalClient = true;
       allowedClients = 2;
-      const ws = new WebSocket(`ws://127.0.0.1:8080/api/ws`);
+      const ws = new DiagnosticSocket(`ws://127.0.0.1:8080/api/ws`, {
+        headers: { Origin: "http://127.0.0.1:19090", "User-Agent": `NQPerfRange/${process.pid}` },
+      });
       const results: unknown[] = [];
       let next = 1, ready = false, failure: string | null = null;
-      ws.addEventListener("message", event => {
-        if (typeof event.data !== "string") return;
-        const value = JSON.parse(event.data);
+      ws.on("error", () => { failure = "range_socket_error"; });
+      ws.on("close", () => { if (results.length < 5) failure = "range_socket_closed"; });
+      ws.on("message", (data, binary) => {
+        if (binary) return;
+        const value = JSON.parse(data.toString());
         if (value.type === "error") failure = value.code;
         if (value.type === "rangeDone") {
           if (value.reqId > 0) results.push(value);
@@ -157,7 +168,7 @@ try {
       } finally { ws.close(1000, "measurement_complete"); details.ranges = results; }
     } else if (scenario === "dual") {
       allowedClients = 2;
-      const past = await chromium.page(appUrl + "?debug=1", staticRoot);
+      const past = await chromium.page(appUrl + "?debug=1");
       await waitFor(async () => {
         const debug = await past.cdp.evaluate("window.__heatmapDebug");
         return debug?.connection === "connected" && debug.traffic?.initialComplete === true;
@@ -189,9 +200,15 @@ try {
   note("scenario_interrupted", { reason: details.failure });
 } finally {
   if (chromium) {
-    details.browserClosed = await chromium.close();
-    note("browser_exit_confirmed", details.browserClosed as object);
+    try {
+      details.browserClosed = await chromium.close();
+      note("browser_exit_confirmed", details.browserClosed as object);
+    } catch (error) {
+      details.failure = error instanceof Error ? error.message : "browser_cleanup_failed";
+      note("browser_cleanup_failed", { reason: details.failure });
+    }
   }
+  if (proxy) details.staticProxyClosed = await proxy.close();
   // Browser close handshakes can overlap one sample, especially under the old
   // server's blocking full-hour reads. Observe them, but allow a short grace.
   allowedClients = null;
@@ -199,16 +216,77 @@ try {
   note("recovery_begin", { seconds: 60 });
   if (!guard && !interrupted && !isolationFailure) await delay(60000);
   await sample();
+  if (scenario === "live30" && !details.failure && !guard && !interrupted && !isolationFailure) {
+    try {
+    allowedClients = null;
+    const beforeRelease = await (await fetch(statusUrl)).json();
+    details.zeroBeforeRelease = beforeRelease.phase2b.connected === 0;
+    note("measurement_isolation_release_begin");
+    await fs.unlink(marker);
+    const released = await (await fetch(statusUrl)).json();
+    details.isolationReleased = released.measurementIsolation.enabled === false;
+    const domain = process.env.REPLIT_DEV_DOMAIN;
+    if (!domain) throw Error("release_check_development_domain_missing");
+    const verification = new DiagnosticSocket(`wss://${domain}/api/ws`, {
+      headers: { Origin: `https://${domain}`, "User-Agent": `NQPerfReleaseCheck/${process.pid}` },
+    });
+    let hello = false, failed = false, closed = false;
+    verification.on("message", (data, binary) => {
+      if (!binary && JSON.parse(data.toString()).type === "hello") hello = true;
+    });
+    verification.on("error", () => { failed = true; });
+    verification.on("close", () => { closed = true; });
+    try {
+      await waitFor(async () => hello || failed, 20000, "release_public_ws_timeout");
+      details.publicPreviewWsAccepted = hello;
+    } finally {
+      verification.close(1000, "release_check_complete");
+      await waitFor(async () => closed, 5000, "release_check_close_timeout");
+      details.releaseCheckSocketClosed = closed;
+    }
+    note("measurement_isolation_release_verified", {
+      disabled: details.isolationReleased, publicPreviewAccepted: hello, checkSocketClosed: closed,
+    });
+    await sample();
+    } catch (error) {
+      details.releaseVerificationFailure = error instanceof Error ? error.message : "release_check_failed";
+      note("release_verification_failed", { reason: details.releaseVerificationFailure });
+    }
+    if (details.isolationReleased) {
+      // Timed measurement and recovery are over. Keep the normal, unrestricted
+      // server briefly available for the required final app screenshot.
+      note("final_visual_check_ready", { directory: root });
+      try {
+        await waitFor(async () => {
+          try { await fs.access(path.join(root, "finish-visual-check")); return true; }
+          catch { return false; }
+        }, 120000, "final_visual_check_timeout");
+        details.finalVisualCheckCompleted = true;
+      } catch {
+        details.finalVisualCheckCompleted = false;
+        note("final_visual_check_timeout");
+      }
+      await sample();
+    }
+  }
   stopped = true; clearInterval(interval);
   details.finalStatus = finalStatus;
   await fs.writeFile(path.join(root, "result.json"), JSON.stringify({
     phase, scenario, pid, startedAtUs, endedAtUs: Date.now() * 1000, guard, interrupted, isolationFailure, details, events,
   }, null, 2));
   if (pid) {
+    details.serverExitConfirmed = false;
     try { process.kill(pid, "SIGTERM"); note("sigterm_sent", { pid }); } catch { note("server_already_exited", { pid }); }
     for (let i = 0; i < 240; i++) {
-      try { await fs.access(`/proc/${pid}`); await delay(250); } catch { note("server_exit_confirmed", { pid }); break; }
+      try { await fs.access(`/proc/${pid}`); await delay(250); }
+      catch { details.serverExitConfirmed = true; note("server_exit_confirmed", { pid }); break; }
     }
+    if (!details.serverExitConfirmed) note("server_exit_not_confirmed", { pid });
   }
   note("scenario_finished", { directory: root });
+  await fs.rm(marker, { force: true });
+  note("isolation_marker_removed");
+  await fs.writeFile(path.join(root, "result.json"), JSON.stringify({
+    phase, scenario, pid, startedAtUs, endedAtUs: Date.now() * 1000, guard, interrupted, isolationFailure, details, events,
+  }, null, 2));
 }

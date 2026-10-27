@@ -12,7 +12,15 @@ const results: unknown[] = [];
 try {
   // Page injection must run before the module creates its WebSocket.
   const page = await chromium.page("about:blank", staticRoot);
-  await page.cdp.call("Page.addScriptToEvaluateOnNewDocument", { source: script });
+  await page.cdp.call("Page.addScriptToEvaluateOnNewDocument", { source: script + `
+    addEventListener("DOMContentLoaded", () => {
+      const badge = document.createElement("div");
+      badge.textContent = "ダミー接続 · 実保存データの固定再生";
+      badge.style.cssText = "position:fixed;top:0;right:8px;color:#e8e3c9;background:#20242b;font:10px monospace;z-index:9999;pointer-events:none";
+      document.body.append(badge);
+      console.info("ダミー接続 · 実保存データの固定再生");
+    });
+  ` });
   await page.cdp.call("Page.navigate", { url: "http://127.0.0.1/?mode=replay&from=1793022000&speed=1&debug=1" });
   for (let i = 0; i < 240; i++) {
     const state = await page.cdp.evaluate("({ready:window.__frozenFeedReady, debug:window.__heatmapDebug,error:window.__frozenFeedError})");
