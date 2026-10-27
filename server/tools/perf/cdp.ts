@@ -1,15 +1,19 @@
 import { spawn } from "node:child_process";
+import * as fs from "node:fs/promises";
+import path from "node:path";
 
 export const delay = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms));
 
 export class CDP {
   private socket: WebSocket;
   private next = 0;
+  private listeners = new Map<string, ((params: any) => void)[]>();
   private calls = new Map<number, { resolve(value: any): void; reject(error: Error): void; timer: ReturnType<typeof setTimeout> }>();
   private constructor(socket: WebSocket) {
     this.socket = socket;
     socket.addEventListener("message", event => {
       const message = JSON.parse(String(event.data));
+      if (message.method) for (const listener of this.listeners.get(message.method) ?? []) listener(message.params);
       const call = this.calls.get(message.id);
       if (!call) return;
       this.calls.delete(message.id); clearTimeout(call.timer);
@@ -36,6 +40,9 @@ export class CDP {
       this.socket.send(JSON.stringify({ id, method, params }));
     });
   }
+  on(method: string, listener: (params: any) => void): void {
+    this.listeners.set(method, [...this.listeners.get(method) ?? [], listener]);
+  }
   async evaluate(expression: string): Promise<any> {
     const response = await this.call("Runtime.evaluate", { expression, returnByValue: true, awaitPromise: true });
     if (response.exceptionDetails) throw Error(`page_exception:${response.exceptionDetails.text}`);
@@ -61,13 +68,32 @@ export async function browser(port = 9222) {
   const root = await CDP.connect(info.webSocketDebuggerUrl);
   const pages: { id: string; cdp: CDP }[] = [];
   return {
-    async page(url: string) {
+    async page(url: string, staticRoot?: string) {
       const { targetId } = await root.call("Target.createTarget", { url: "about:blank" });
       const list = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json() as any[];
       const target = list.find(item => item.id === targetId);
       const cdp = await CDP.connect(target.webSocketDebuggerUrl);
       await cdp.call("Emulation.setDeviceMetricsOverride", { width: 1280, height: 800, deviceScaleFactor: 1, mobile: false });
       await cdp.call("Page.enable");
+      if (staticRoot) {
+        cdp.on("Fetch.requestPaused", request => {
+          void (async () => {
+            const pathname = new URL(request.request.url).pathname;
+            const fixture = pathname.startsWith("/@fs/home/runner/workspace/data/perf-memory/render-fixture/");
+            if (pathname !== "/" && !pathname.startsWith("/assets/") && !fixture) {
+              await cdp.call("Fetch.continueRequest", { requestId: request.requestId }); return;
+            }
+            const file = fixture ? pathname.slice("/@fs".length) : path.join(staticRoot, pathname === "/" ? "index.html" : pathname);
+            const body = await fs.readFile(file);
+            const type = file.endsWith(".html") ? "text/html" : file.endsWith(".css") ? "text/css"
+              : file.endsWith(".json") ? "application/json" : file.endsWith(".bin") ? "application/octet-stream" : "text/javascript";
+            await cdp.call("Fetch.fulfillRequest", { requestId: request.requestId, responseCode: 200,
+              responseHeaders: [{ name: "Content-Type", value: type }, { name: "Cache-Control", value: "no-store" }],
+              body: body.toString("base64") });
+          })().catch(() => { void cdp.call("Fetch.failRequest", { requestId: request.requestId, errorReason: "Failed" }).catch(() => {}); });
+        });
+        await cdp.call("Fetch.enable", { patterns: [{ urlPattern: "http://127.0.0.1/*", requestStage: "Request" }] });
+      }
       await cdp.call("Page.navigate", { url });
       const page = { id: targetId, cdp }; pages.push(page); return page;
     },

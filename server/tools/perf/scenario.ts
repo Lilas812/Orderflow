@@ -10,11 +10,14 @@ const scenario = process.argv[3] ?? "live";
 const root = path.resolve("data/perf-memory", phase, `${scenario}-${Date.now()}`);
 await fs.mkdir(root, { recursive: true });
 const statusUrl = "http://127.0.0.1:8080/api/status";
-const appUrl = `https://${process.env.REPLIT_DEV_DOMAIN}/`;
+// Same path-routing proxy as the screenshot tool; avoid transient public
+// network failures while Chromium imports the app's ES modules.
+const appUrl = "http://127.0.0.1/";
 const startedAtUs = Date.now() * 1000;
 let stopped = false, guard = false, pid: number | null = null;
 let sampleBusy = false, previousCpu: { ticks: number; at: number } | null = null;
 let finalStatus: any = null, interrupted = false;
+let allowedClients: number | null = null, isolationFailure = false;
 const events: unknown[] = [];
 const note = (event: string, details: object = {}) => {
   const value = { atUs: Date.now() * 1000, event, ...details };
@@ -39,6 +42,7 @@ async function sample() {
         const at = Date.now();
         const text = await fs.readFile(`/proc/${pid}/status`, "utf8");
         resource = { pid, rssKiB: Number(text.match(/^VmRSS:\s+(\d+)/m)?.[1] ?? 0),
+          rssHighWaterKiB: Number(text.match(/^VmHWM:\s+(\d+)/m)?.[1] ?? 0),
           cpuPercent: previousCpu ? (ticks - previousCpu.ticks) / ((at - previousCpu.at) / 1000) : null };
         previousCpu = { ticks, at }; // Linux CLK_TCK=100; percentage cancels the 100.
         if (resource.rssKiB > 1536 * 1024 && !guard) {
@@ -51,6 +55,10 @@ async function sample() {
       const response = await fetch(statusUrl, { signal: AbortSignal.timeout(3500) });
       if (!response.ok) throw Error(`http_${response.status}`);
       status = await response.json(); finalStatus = status;
+      if (allowedClients !== null && status.phase2b.connected > allowedClients && !isolationFailure) {
+        isolationFailure = true; note("unexpected_concurrent_clients", { expectedMaximum: allowedClients, actual: status.phase2b.connected });
+        if (pid) process.kill(pid, "SIGTERM");
+      }
       await fs.writeFile(path.join(root, `status-${Date.now()}.json`), JSON.stringify(status, null, 2));
     } catch { error = "status_unavailable"; }
     await fs.appendFile(path.join(root, "samples.jsonl"), JSON.stringify({ atUs: Date.now() * 1000, resource, status, error }) + "\n");
@@ -61,7 +69,7 @@ await sample();
 async function waitFor(check: () => Promise<boolean>, timeout: number, reason: string) {
   const deadline = Date.now() + timeout;
   while (Date.now() < deadline) {
-    if (guard || interrupted) throw Error(guard ? "rss_guard" : "server_exited");
+    if (guard || interrupted || isolationFailure) throw Error(isolationFailure ? "unexpected_concurrent_clients" : guard ? "rss_guard" : "server_exited");
     if (await check()) return;
     await delay(250);
   }
@@ -69,9 +77,13 @@ async function waitFor(check: () => Promise<boolean>, timeout: number, reason: s
 }
 async function hold(ms: number) {
   const until = Date.now() + ms;
-  while (Date.now() < until) { if (guard || interrupted) throw Error(guard ? "rss_guard" : "server_exited"); await delay(250); }
+  while (Date.now() < until) {
+    if (guard || interrupted || isolationFailure) throw Error(isolationFailure ? "unexpected_concurrent_clients" : guard ? "rss_guard" : "server_exited");
+    await delay(250);
+  }
 }
 let chromium: Awaited<ReturnType<typeof browser>> | undefined;
+let mainPage: Awaited<ReturnType<Awaited<ReturnType<typeof browser>>["page"]>> | undefined;
 const details: Record<string, unknown> = {};
 try {
   note("scenario_waiting_for_server", { phase, scenario, directory: root });
@@ -79,6 +91,7 @@ try {
   details.initialStatus = finalStatus;
   note("scenario_begin", { phase, scenario, pid, preexistingClients: finalStatus.phase2b.connected });
   if (scenario === "backfill") {
+    allowedClients = 0;
     await waitFor(async () => {
       const state = finalStatus.phase2a.backfill.state;
       if (state === "failed") throw Error("backfill_failed");
@@ -89,13 +102,22 @@ try {
     chromium = await browser();
     const replay = scenario === "replay";
     const from = 1793021400;
-    const page = await chromium.page(appUrl + (replay ? `?debug=1&mode=replay&from=${from}&speed=10` : "?debug=1"));
+    allowedClients = 1;
+    const staticRoot = path.resolve("artifacts/heatmap/dist/public");
+    const page = await chromium.page(appUrl + (replay ? `?debug=1&mode=replay&from=${from}&speed=10` : "?debug=1"), staticRoot);
+    mainPage = page;
     await waitFor(async () => {
       const debug = await page.cdp.evaluate("window.__heatmapDebug");
-      return debug?.connection === "connected" && debug.loadingRanges === 0;
+      details.lastLoadingDebug = debug ?? null;
+      // A live page may keep filling visible gaps while the background backfill
+      // is running. The validated initial rangeDone, not zero future requests,
+      // defines the beginning of its actual receiving interval.
+      return debug?.connection === "connected" && debug.traffic?.initialComplete === true;
     }, 180000, "page_initial_load_timeout");
     details.readyDebug = await page.cdp.evaluate("window.__heatmapDebug");
     details.readyAtUs = Date.now() * 1000;
+    note("page_initial_range_complete", { atUs: details.readyAtUs, loadingRanges: details.readyDebug.loadingRanges });
+    finalStatus = await (await fetch(statusUrl)).json();
     if (finalStatus.phase2b.connected !== 1) throw Error("unexpected_concurrent_clients");
     if (scenario === "live" || scenario === "live30") await hold((scenario === "live30" ? 30 : 10) * 60000);
     else if (replay) {
@@ -107,6 +129,7 @@ try {
       // A real screen stays connected while a separate diagnostic receiver makes
       // exact 60-minute requests, sequentially after each rangeDone.
       details.rangeReceiverIsAdditionalClient = true;
+      allowedClients = 2;
       const ws = new WebSocket(`ws://127.0.0.1:8080/api/ws`);
       const results: unknown[] = [];
       let next = 1, ready = false, failure: string | null = null;
@@ -131,10 +154,11 @@ try {
         }
       } finally { ws.close(1000, "measurement_complete"); details.ranges = results; }
     } else if (scenario === "dual") {
-      const past = await chromium.page(appUrl + "?debug=1");
+      allowedClients = 2;
+      const past = await chromium.page(appUrl + "?debug=1", staticRoot);
       await waitFor(async () => {
         const debug = await past.cdp.evaluate("window.__heatmapDebug");
-        return debug?.connection === "connected" && debug.loadingRanges === 0;
+        return debug?.connection === "connected" && debug.traffic?.initialComplete === true;
       }, 180000, "second_page_initial_timeout");
       for (let n = 0; n < 6; n++) {
         await past.cdp.call("Input.dispatchMouseEvent", { type: "mousePressed", x: 120, y: 320, button: "left", clickCount: 1 });
@@ -146,6 +170,7 @@ try {
         await delay(400);
       }
       details.pastDebug = await past.cdp.evaluate("window.__heatmapDebug");
+      finalStatus = await (await fetch(statusUrl)).json();
       if (finalStatus.phase2b.connected !== 2) throw Error("unexpected_concurrent_clients");
       await hold(10 * 60000);
       details.pastEndDebug = await past.cdp.evaluate("window.__heatmapDebug");
@@ -155,17 +180,24 @@ try {
     note("active_measurement_complete");
   }
 } catch (error) {
+  if (mainPage) {
+    details.interruptedDebug = await mainPage.cdp.evaluate("({debug:window.__heatmapDebug, body:document.body.innerText.slice(0,300)})").catch(() => null);
+  }
   details.failure = error instanceof Error ? error.message : "scenario_failed";
   note("scenario_interrupted", { reason: details.failure });
 } finally {
   if (chromium) await chromium.close();
+  // Browser close handshakes can overlap one sample, especially under the old
+  // server's blocking full-hour reads. Observe them, but allow a short grace.
+  allowedClients = null;
+  if (!guard && !interrupted && !isolationFailure) { await delay(5000); allowedClients = 0; }
   note("recovery_begin", { seconds: 60 });
-  if (!guard && !interrupted) await delay(60000);
+  if (!guard && !interrupted && !isolationFailure) await delay(60000);
   await sample();
   stopped = true; clearInterval(interval);
   details.finalStatus = finalStatus;
   await fs.writeFile(path.join(root, "result.json"), JSON.stringify({
-    phase, scenario, pid, startedAtUs, endedAtUs: Date.now() * 1000, guard, interrupted, details, events,
+    phase, scenario, pid, startedAtUs, endedAtUs: Date.now() * 1000, guard, interrupted, isolationFailure, details, events,
   }, null, 2));
   if (pid) {
     try { process.kill(pid, "SIGTERM"); note("sigterm_sent", { pid }); } catch { note("server_already_exited", { pid }); }
