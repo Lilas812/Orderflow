@@ -3,6 +3,7 @@ modules = ["nodejs-24"]
 [deployment]
 router = "application"
 deploymentTarget = "vm"
+ignorePorts = false
 
 [deployment.postBuild]
 args = ["pnpm", "store", "prune"]
