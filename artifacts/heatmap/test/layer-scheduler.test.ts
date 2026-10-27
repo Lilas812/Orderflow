@@ -42,3 +42,19 @@ test("ダミー：板と約定の同一フレーム更新はheatmapを描かず�
   queued.shift()!();
   assert.deepEqual(calls, ["book", "trades"]);
 });
+
+test("ダミー：大口板単独は他の層を描かず、板や約定単独も大口板を描かない", () => {
+  const queued: (() => void)[] = [], calls: string[] = [];
+  const scheduler = new LayerScheduler(fn => queued.push(fn), {
+    depth: () => calls.push("depth"), book: () => calls.push("book"),
+    trades: () => calls.push("trades"), big: () => calls.push("big"), after: () => {},
+  });
+  scheduler.request("big"); scheduler.request("big"); queued.shift()!();
+  assert.deepEqual(calls, ["big"]);
+  scheduler.request("book"); queued.shift()!();
+  scheduler.request("trades"); queued.shift()!();
+  assert.deepEqual(calls, ["big", "book", "trades"]);
+  calls.length = 0;
+  scheduler.request("all"); scheduler.request("big"); queued.shift()!();
+  assert.deepEqual(calls, ["depth", "book", "trades", "big"]);
+});

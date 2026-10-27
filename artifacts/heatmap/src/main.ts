@@ -10,6 +10,8 @@ import { TradeOverlayRenderer } from "./chart/trade-overlay.ts";
 import { parseBubbleMin } from "./chart/trade-geometry.ts";
 import { CurrentBookRenderer } from "./chart/current-book.ts";
 import { LayerScheduler } from "./chart/layer-scheduler.ts";
+import { BigOrderFeed, parseBigOrderOptions } from "./data/big-orders.ts";
+import { BigOrderRenderer, visibleBigOrders } from "./chart/big-orders.ts";
 
 declare global {
   interface Window {
@@ -19,6 +21,11 @@ declare global {
 }
 
 export interface HeatmapDebugSnapshot {
+  bigOrders: BigOrderRenderer["metrics"] & {
+    threshold: number | null; tracking: BigOrderFeed["tracker"]["metrics"];
+    top: number; minSec: number; topInvalid: boolean; minSecInvalid: boolean;
+    rebuildCount: number; orders: ReturnType<typeof visibleBigOrders>;
+  };
   currentBook: CurrentBookRenderer["metrics"];
   overlayDrawCount: number;
   overlay: TradeOverlayRenderer["metrics"];
@@ -91,7 +98,8 @@ root.innerHTML = `
           <canvas class="trade-overlay" id="current-price-label" aria-hidden="true"></canvas>
         </section>
         <section class="region large-region" aria-label="Large orders frame">
-          <span class="region-label">Large orders</span><span class="region-hint">Phase 6 · empty frame</span>
+          <canvas class="book-canvas" id="big-orders" aria-label="Persistent large order quantities by price, extending left from the right edge"></canvas>
+          <span class="region-label">Large orders</span>
         </section>
         <section class="region vp-region" aria-label="Volume profile frame">
           <span class="region-label">Volume profile</span><span class="region-hint">Phase 7 · empty frame</span>
@@ -130,6 +138,9 @@ const scaleValue = required<HTMLSpanElement>("scale-value");
 const renderer = new HeatmapRenderer(canvas, axisCanvas, () => scheduleDraw());
 const cache = new ColumnCache();
 const bookRenderer = new CurrentBookRenderer(required<HTMLCanvasElement>("current-book"));
+const bigOptions = parseBigOrderOptions(window.location.search);
+const bigFeed = new BigOrderFeed(bigOptions.top.value);
+const bigRenderer = new BigOrderRenderer(required<HTMLCanvasElement>("big-orders"));
 const overlayRenderer = new TradeOverlayRenderer(
   required<HTMLCanvasElement>("trade-overlay"), required<HTMLCanvasElement>("current-book-line"),
   required<HTMLCanvasElement>("current-price-label"),
@@ -183,6 +194,7 @@ const client = new RealtimeClient(cache, {
     currentTrade.reset(); initialQuote.reset();
     initialCutoffUs = (message.mode === "replay" ? replayFromSec()! * US_PER_SECOND
       : Math.floor(message.serverTimeUs / US_PER_SECOND) * US_PER_SECOND) - 1;
+    bigFeed.beginInitial(initialCutoffUs);
     replayHeadUs = message.mode === "replay" ? initialCutoffUs + 1 : null;
     lastDataError = "";
     if (!hasHello || follow) {
@@ -207,7 +219,9 @@ const client = new RealtimeClient(cache, {
     }
     updateStatus();
   },
-  onColumns: (_columns, _kind) => {
+  onColumns: (_columns, _kind, reqId) => {
+    bigFeed.accept(_columns, _kind, reqId);
+    if (_kind === 1 && !client.initialLoading) drawScheduler.request("big");
     if (_kind === 1 && replayHeadUs !== null) {
       for (const c of _columns) replayHeadUs = Math.max(replayHeadUs, c.timeUs + US_PER_SECOND);
     }
@@ -231,6 +245,7 @@ const client = new RealtimeClient(cache, {
   },
   onRangeComplete: (reqId) => {
     if (reqId === 0) {
+      bigFeed.completeInitial();
       if (!currentTrade.trade && initialQuote.trade) currentTrade.accept([initialQuote.trade]);
       if (follow && cache.latestTimeUs !== null) alignFollowToPhysicalPixel();
       positionPriceFromData();
@@ -340,6 +355,7 @@ const drawScheduler = new LayerScheduler(draw => requestAnimationFrame(draw), {
       depthDrawCount++;
   },
   book: () => bookRenderer.draw(cache.latestBook, viewport, renderer.metrics.p99),
+  big: () => bigRenderer.draw(bigFeed.tracker.snapshot(), viewport, bigOptions.minSec.value),
   trades: () => {
     overlayRenderer.draw(cache.tradeAggregation, viewport, bubbleMinimum.value,
       currentTrade.trade?.price ?? null, replayHeadUs ?? Infinity);
@@ -446,13 +462,21 @@ ${connection.toUpperCase()} · ${follow ? "FOLLOW" : "BROWSE"} · ${requestCount
 ${overlayRenderer.metrics.bubbleCount} bubbles · min ${bubbleMinimum.value}${bubbleMinimum.invalid ? " · bubbleMin 無効" : ""}
 line ${overlayRenderer.metrics.lineMs.toFixed(2)} / bubble ${overlayRenderer.metrics.bubbleMs.toFixed(2)} ms
 book ${bookRenderer.metrics.meanMs.toFixed(2)} / ${bookRenderer.metrics.maxMs.toFixed(2)} ms (mean / max, last 30)
-book ${bookRenderer.metrics.drawCount} / depth ${depthDrawCount} / overlay ${overlayDrawCount} draws`;
+book ${bookRenderer.metrics.drawCount} / depth ${depthDrawCount} / overlay ${overlayDrawCount} draws
+big ${bigRenderer.metrics.visibleCount} · threshold ${bigFeed.tracker.snapshot().threshold ?? "none"} · top ${bigOptions.top.value}% · min ${bigOptions.minSec.value}s${bigOptions.top.invalid ? " · bigTop 無効" : ""}${bigOptions.minSec.invalid ? " · bigMinSec 無効" : ""}
+big decision ${bigFeed.tracker.metrics.decisionMs.toFixed(2)} ms · draw ${bigRenderer.metrics.meanMs.toFixed(2)} / ${bigRenderer.metrics.maxMs.toFixed(2)} ms
+big ${bigRenderer.metrics.drawCount} draws · longest ${bigRenderer.metrics.longestSec}s`;
 }
 
 function debugSnapshot(): HeatmapDebugSnapshot {
   const now = performance.now();
   const sample = drawSamples.slice(-30).map((entry) => entry.ms);
   return Object.freeze({
+    bigOrders: { ...bigRenderer.metrics, threshold: bigFeed.tracker.snapshot().threshold,
+      tracking: { ...bigFeed.tracker.metrics }, top: bigOptions.top.value, minSec: bigOptions.minSec.value,
+      topInvalid: bigOptions.top.invalid, minSecInvalid: bigOptions.minSec.invalid,
+      rebuildCount: bigFeed.tracker.metrics.rebuildCount,
+      orders: visibleBigOrders(bigFeed.tracker.snapshot(), viewport, bigOptions.minSec.value) },
     currentBook: { ...bookRenderer.metrics },
     overlayDrawCount,
     overlay: { ...overlayRenderer.metrics },
