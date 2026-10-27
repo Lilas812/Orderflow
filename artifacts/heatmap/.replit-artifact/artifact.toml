@@ -1,18 +1,18 @@
 kind = "web"
 previewPath = "/"
 title = "NQ Heatmap"
-description = "NQ先物のヒートマップ。公開先は画面とAPIを1つの受信プロセスで配信する。"
+description = "NQ先物のヒートマップ。開発・公開とも画面とAPIを1つの受信プロセスで配信する。"
 version = "1.0.0"
 id = "artifacts/heatmap"
 router = "path"
 
 [[services]]
 name = "web"
-paths = ["/"]
+paths = ["/", "/api", "/api/ws"]
 localPort = 25028
 
 [services.development]
-run = "pnpm --filter @workspace/heatmap run dev"
+run = "pnpm --filter @workspace/receiver run build && pnpm --filter @workspace/receiver run start"
 
 [services.production]
 build = ["pnpm", "--filter", "@workspace/receiver", "run", "build"]

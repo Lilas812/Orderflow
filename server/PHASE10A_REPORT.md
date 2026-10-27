@@ -456,3 +456,77 @@ data/phase10a/shutdown-local-temporary-files.json
 ```
 
 RSS・画面・依存・公開設定の最適化は行っていない。公開後の1GiB実機の値を見て判断するユーザー方針を維持し、ここで停止する。
+
+## 9. 公開後の `/api` 経路の整理（2026-10-28）
+
+### 報告
+
+- 実施内容：ユーザーの承認により、開発・公開とも画面とAPIをheatmapの単一受信プロセスへ統一した。旧APIサービスの経路・起動宣言を外した。再Publishは行っていない。
+- 変更ファイル：`artifacts/heatmap/.replit-artifact/artifact.toml`（経路・開発起動）、`artifacts/api-server/.replit-artifact/artifact.toml`（サービス宣言を空に）、`server/test/routing-config.test.ts`（回帰試験3件）、本報告書、`replit.md` のCurrent Status、Agentメモリ。TOMLは一時ファイルから公式の検証・置換手順で反映した。
+- 確認手順：WorkspaceはRunで画面ビルド後に受信サーバーが起動する。公開反映にはユーザーの再Publishが必要。その後、サインイン済みの公開先 `/api/status` がJSON、`/api/ws` が101、右上がCONNECTEDになることを確認する。公開先での修正後の確認は未実施。
+- 実行した確認：本番用画面ビルド成功。サーバー115/115試験、サーバー・画面の型検査成功。共有プロキシ経由のHTTP4経路は200、WebSocketは101、実画面のCONNECTED・ヒートマップ・価格ラインを確認した。
+- 仕様との差分：今回の承認により、開発もビルド済み画面を配信する起動に変更した。ファイル変更の即時反映はなくなり、変更後はRunをやり直す。保存方式、API URL、配信形式、受信・集計・描画コード、Invite onlyは変更していない。
+- 未解決・懸念：公開プロキシ内部の実転送先は調査時に取得できず、旧8080番への誤転送まで証明したわけではない。設定上の競合は取り除き、Workspaceで疎通した。公開の認証付きUpgradeは再Publish後に確認する必要がある。既存の短時間期限試験の負荷依存と、検証クライアント異常終了時の送信エラーは下記参照。
+- 次の候補：再Publish後のInvite only／HTTP／WebSocket確認、短時間期限の既存試験の安定化。今回は実装していない。
+
+### 9.1 診断結果と修正
+
+ユーザーの添付した `/status` は上流open・板2,925件・約定1,546件の実受信を示し、warning/feed/error/拒否は0だった。上流切断1006・再接続5回はあったが、APIキーがない、または全データが受信できていない状態ではない。公開メトリクスの追加調査でも `/status` はエラーなし、一方 `/api/ws` は5xx。旧APIサービスは `/api` の宣言を保持したまま公開時無効で、実際の起動はheatmapの25028番だけだった。これを経路不具合の最有力仮説とした。Invite onlyの保護を外す対策は採用していない。
+
+環境別の `services.production.paths` は、数値を入れても検証器が受け入れたため、検証成功だけで対応しているとは判断できなかった。確認用変更を戻し、ユーザーに開発起動の挙動変更を説明して追加承認を受けた。最終設定にそのキーは残していない。
+
+最終設定：
+
+- heatmapの `services.paths` は `["/", "/api", "/api/ws"]`。ポートは25028のまま。
+- 開発Runは `pnpm --filter @workspace/receiver run build && pnpm --filter @workspace/receiver run start`。
+- 公開のbuild／runは既存のreceiver用コマンドのまま。
+- API artifactはID・ソースを残し、`services = []`。重複する `/api` 宣言と旧起動はなくなった。対応する管理ワークフローも自動的に外れた。
+- Viteプロキシ・新しい依存・追加の受信プロセスは導入していない。
+- 既存の `storageMode()` は `REPLIT_DEPLOYMENT` で判定する。開発で本番用コマンドを使ってもローカル保存、公開先は従来どおりApp Storageの `prod/`。この条件を回帰試験で確認した。
+
+設定を戻す場合は、検証・置換手順でheatmapのpathsを `["/"]`・開発Runを従来のViteへ戻し、API artifactの8080番サービス宣言を戻す。ただし、今回の公開時の競合が再発する可能性があるため、未実施。
+
+### 9.2 実確認
+
+| 項目 | Workspace共有プロキシ経由の結果 |
+|---|---|
+| `/api/healthz` | 200 |
+| `/api/status` | 200・診断JSON |
+| `/status` | 200・診断JSON |
+| `/api/settings` | 200・設定JSON（GETのみ） |
+| `/api/ws` | 101。hello・rangeTrades・rangeDone・status・trades・VP・バイナリ板45フレームを受信 |
+| 検証ソケットの終了 | close1000。専用User-Agentの残存接続0 |
+| 画面 | 1280×800の撮影でCONNECTED、ヒートマップ・価格ライン・デルタを確認。履歴取り込み中のVPは取り込み中表示 |
+| 開発保存 | `appStorage` なし＝ローカル。検証のライブ・履歴データは通常のローカル保存先へ追加。設定PUT・保存データの削除はしていない |
+
+8秒のソケット確認終了時には板504件・約定356件を受信済み。停止直前は640件・399件。撮影・ソケット確認以外の既存のPC Chrome接続2件は、ユーザー側の接続として区別し、ブラウザを停止していない。
+
+検証中の注意：
+
+- 最初の全試験実行はビルド・起動と同時だった。既存の50ms期限試験がアップロード回数0（期待1）となり、114/115だった。同時ビルドなしで全試験を再実行すると115/115。設定修正とは別のタイミング依存の可能性があり、その試験・保存コードは変更していない。
+- 最初の手動WS検証クライアントは、バイナリ板をJSONとして解釈して異常終了した。検証クライアントを既存プロトコルに合わせて再確認し、上表の101／バイナリ受信／close1000を確認した。送信エラー累計はこの検証の時間帯に0→2となり、停止時も2。サーバー側を修正してエラーを隠してはいない。
+- 撮影完了時、ページのWSは閉じていたがChromium本体が残ったため、今回の撮影用プロセスをSIGTERMで終了した。その後、ローカルChromium残存0を確認した。
+
+### 9.3 終了の確認と公開反映の境界
+
+```text
+2026-10-28 07:49:50.905 JST  PID9200へSIGTERM
+2026-10-28 07:49:51.040 JST  実上流close1006、reason:shutdown
+2026-10-28 07:49:51.040 JST  upstream_stopped.socketClosed:true
+2026-10-28 07:49:51.518 JST  server_stopped、HTTP終了
+SIGTERM→PID消滅             639.624ms
+最終process_memory          /api/ws connected:0
+最終プロセス確認            受信Node・Chromiumとも残存なし
+```
+
+Workspaceのheatmapワークフローは終了済み。公開先の稼働中プロセスは止めておらず、再Publish・アクセス制限変更・公開Secrets変更も行っていない。公開先の修正確認を済ませたとは扱わない。
+
+検証記録：
+
+```text
+data/routing-verification/tests.log
+data/routing-verification/types.log
+data/routing-verification/ws.json
+data/routing-verification/stop.json
+data/routing-verification/lifecycle.json
+```

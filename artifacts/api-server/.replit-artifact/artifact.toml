@@ -4,13 +4,6 @@ title = "API Server"
 version = "1.0.0"
 id = "3B4_FFSkEVBkAeYMFRJ2e"
 
-[[services]]
-localPort = 8080
-name = "API Server"
-paths = ["/api"]
-
-[services.development]
-run = "pnpm --filter @workspace/api-server run dev"
-
-[services.production]
-disabled = true
+# The receiver is served by the heatmap artifact in both environments.
+# Keep the artifact identity and source files, but register no competing route.
+services = []
