@@ -8,6 +8,8 @@ import { formatAxisTicks, zoneFromSearch, type DisplayZone } from "./chart/timez
 import { CurrentTradeState } from "./data/trade-aggregate.ts";
 import { TradeOverlayRenderer } from "./chart/trade-overlay.ts";
 import { parseBubbleMin } from "./chart/trade-geometry.ts";
+import { CurrentBookRenderer } from "./chart/current-book.ts";
+import { LayerScheduler } from "./chart/layer-scheduler.ts";
 
 declare global {
   interface Window {
@@ -17,6 +19,8 @@ declare global {
 }
 
 export interface HeatmapDebugSnapshot {
+  currentBook: CurrentBookRenderer["metrics"];
+  overlayDrawCount: number;
   overlay: TradeOverlayRenderer["metrics"];
   bubbleMin: number;
   bubbleMinInvalid: boolean;
@@ -78,7 +82,8 @@ root.innerHTML = `
           <pre id="debug-panel" class="debug-panel" hidden></pre>
         </section>
         <section class="region book-region" aria-label="Current book frame">
-          <span class="region-label">Current book</span><span class="region-hint">Phase 5 · empty frame</span>
+          <canvas class="book-canvas" id="current-book" aria-label="Current order quantities by price, extending left from the right edge"></canvas>
+          <span class="region-label">Current book</span>
           <canvas class="trade-overlay" id="current-book-line" aria-hidden="true"></canvas>
         </section>
         <section class="region price-region" aria-label="Price axis">
@@ -124,6 +129,7 @@ const debugPanel = required<HTMLPreElement>("debug-panel");
 const scaleValue = required<HTMLSpanElement>("scale-value");
 const renderer = new HeatmapRenderer(canvas, axisCanvas, () => scheduleDraw());
 const cache = new ColumnCache();
+const bookRenderer = new CurrentBookRenderer(required<HTMLCanvasElement>("current-book"));
 const overlayRenderer = new TradeOverlayRenderer(
   required<HTMLCanvasElement>("trade-overlay"), required<HTMLCanvasElement>("current-book-line"),
   required<HTMLCanvasElement>("current-price-label"),
@@ -134,7 +140,7 @@ const initialQuote = new CurrentTradeState();
 let initialCutoffUs = 0;
 let replayHeadUs: number | null = null;
 let depthDrawCount = 0;
-let depthDirty = false;
+let overlayDrawCount = 0;
 const displayZone: DisplayZone = zoneFromSearch(window.location.search);
 const debugMode = new URLSearchParams(window.location.search).get("debug") === "1";
 
@@ -154,7 +160,6 @@ let hello: HelloMessage | null = null;
 let lastConnectionMessage = "";
 let lastDataError = "";
 let hasHello = false;
-let drawQueued = false;
 let bytesPerMinute = 0;
 let drawSamples: { at: number; ms: number }[] = [];
 let drawInstants: number[] = [];
@@ -222,6 +227,7 @@ const client = new RealtimeClient(cache, {
     const wasCentered = centeredOnData;
     positionPriceFromData();
     if (!wasCentered && centeredOnData) scheduleDraw();
+    else drawScheduler.request("book");
   },
   onRangeComplete: (reqId) => {
     if (reqId === 0) {
@@ -327,22 +333,21 @@ function resetView(): void {
   updateStatus();
 }
 
-function scheduleDraw(redrawDepth = true): void {
-  depthDirty ||= redrawDepth;
-  if (drawQueued) return;
-  drawQueued = true;
-  requestAnimationFrame(() => {
-    const drawStart = performance.now();
-    drawQueued = false;
-    const redrewDepth = depthDirty;
-    if (depthDirty) {
+const drawScheduler = new LayerScheduler(draw => requestAnimationFrame(draw), {
+  depth: () => {
       const columns = cache.columns;
       renderer.draw(columns, viewport, receivedColumnRevision, displayZone, columns.length > 0);
       depthDrawCount++;
-      depthDirty = false;
-    }
+  },
+  book: () => bookRenderer.draw(cache.latestBook, viewport, renderer.metrics.p99),
+  trades: () => {
     overlayRenderer.draw(cache.tradeAggregation, viewport, bubbleMinimum.value,
       currentTrade.trade?.price ?? null, replayHeadUs ?? Infinity);
+    overlayDrawCount++;
+  },
+  after: (redrewDepth, drawStart, redrewTrades) => {
+    // Preserve the Phase 4 frame sample population; book-only frames have separate metrics.
+    if (redrewDepth || redrewTrades) {
     lastMetrics = { ...renderer.metrics,
       ...(redrewDepth ? {} : { rasterRebuilt: false, aggregationMs: 0, scaleMs: 0, rasterMs: 0,
         tileSyncMs: 0, colorMs: 0, uploadMs: 0, axisMs: 0, partialRaster: false, repaintPixels: 0,
@@ -354,8 +359,13 @@ function scheduleDraw(redrawDepth = true): void {
     drawSamples = drawSamples.filter((sample) => now - sample.at < 30_000).slice(-120);
     drawInstants = drawInstants.filter((time) => now - time < 1_000);
     scaleValue.textContent = cache.size ? `P99 ${lastMetrics.p99}` : "";
+    }
     if (debugMode) updateDebugPanel();
-  });
+  },
+});
+
+function scheduleDraw(redrawDepth = true): void {
+  drawScheduler.request(redrawDepth ? "all" : "trades");
 }
 
 function renderTimeAxis(): void {
@@ -434,13 +444,17 @@ initial ${(client.traffic.initialBytes / 1_024).toFixed(1)} KiB · ${client.traf
 range ${(client.traffic.rangeBytes / 1_024).toFixed(1)} KiB · ${client.traffic.extensions || "no compression"} · expanded bytes
 ${connection.toUpperCase()} · ${follow ? "FOLLOW" : "BROWSE"} · ${requestCount} range
 ${overlayRenderer.metrics.bubbleCount} bubbles · min ${bubbleMinimum.value}${bubbleMinimum.invalid ? " · bubbleMin 無効" : ""}
-line ${overlayRenderer.metrics.lineMs.toFixed(2)} / bubble ${overlayRenderer.metrics.bubbleMs.toFixed(2)} ms`;
+line ${overlayRenderer.metrics.lineMs.toFixed(2)} / bubble ${overlayRenderer.metrics.bubbleMs.toFixed(2)} ms
+book ${bookRenderer.metrics.meanMs.toFixed(2)} / ${bookRenderer.metrics.maxMs.toFixed(2)} ms (mean / max, last 30)
+book ${bookRenderer.metrics.drawCount} / depth ${depthDrawCount} / overlay ${overlayDrawCount} draws`;
 }
 
 function debugSnapshot(): HeatmapDebugSnapshot {
   const now = performance.now();
   const sample = drawSamples.slice(-30).map((entry) => entry.ms);
   return Object.freeze({
+    currentBook: { ...bookRenderer.metrics },
+    overlayDrawCount,
     overlay: { ...overlayRenderer.metrics },
     bubbleMin: bubbleMinimum.value,
     bubbleMinInvalid: bubbleMinimum.invalid,
