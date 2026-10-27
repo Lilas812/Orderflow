@@ -6,6 +6,7 @@ export interface FrameTiming {
   bookMs: number;
   bigMs: number;
   vpMs?: number;
+  deltaMs?: number;
   priceAxisMs: number;
   timeAxisMs: number;
   otherMs: number;
@@ -23,7 +24,7 @@ export class FrameProfile {
   private frames: FrameTiming[] = [];
   record(frame: Omit<FrameTiming, "otherMs">): void {
     const exclusive = frame.heatmapMs + frame.tradesMs + frame.bookMs + frame.bigMs
-      + (frame.vpMs ?? 0) + frame.priceAxisMs + frame.timeAxisMs;
+      + (frame.vpMs ?? 0) + (frame.deltaMs ?? 0) + frame.priceAxisMs + frame.timeAxisMs;
     this.frames.push({ ...frame, otherMs: Math.max(0, frame.totalMs - exclusive) });
     if (this.frames.length > 2400) this.frames.splice(0, this.frames.length - 2400);
   }

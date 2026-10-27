@@ -18,6 +18,7 @@ export class ColumnCache {
   private retentionToSec: number | null = null;
   private retentionPinned = false;
   private followRetention = false;
+  private liveTradeToSec: number | null = null;
 
   get size(): number { return this.bySecond.size; }
   get latestTimeUs(): number | null { return this._latestTimeUs; }
@@ -57,7 +58,22 @@ export class ColumnCache {
     this._latestBook = column;
   }
 
+  /** Live trades keep their latest two hours independently of the depth viewport.
+   * Replay never enables this: its existing column/cursor retention stays intact. */
+  startLiveTradeRetention(endSec: number): void {
+    this.liveTradeToSec = endSec;
+    this.tradeAggregation.retain((endSec - MAX_CACHE_SECONDS) * US_PER_SECOND, endSec * US_PER_SECOND);
+  }
+
   addTrades(trades: readonly Trade[]): void {
+    if (this.liveTradeToSec !== null) {
+      for (const trade of trades) {
+        this.liveTradeToSec = Math.max(this.liveTradeToSec, Math.floor(trade.tsUs / US_PER_SECOND) + 1);
+      }
+      // Advance BEFORE appendLive's range check; trimming afterwards loses the new second.
+      this.tradeAggregation.retain((this.liveTradeToSec - MAX_CACHE_SECONDS) * US_PER_SECOND,
+        this.liveTradeToSec * US_PER_SECOND);
+    }
     this.tradeAggregation.appendLive(trades);
     this.trim();
   }
@@ -154,6 +170,7 @@ export class ColumnCache {
     this.anchorSec = null;
     this.retentionPinned = false;
     this.followRetention = false;
+    this.liveTradeToSec = null;
   }
 
   private trim(): void {
@@ -175,7 +192,9 @@ export class ColumnCache {
     const from = this.retentionFromSec;
     const to = this.retentionToSec;
     for (const second of this.bySecond.keys()) if (second < from || second >= to) this.bySecond.delete(second);
-    this.tradeAggregation.retain(from * US_PER_SECOND, to * US_PER_SECOND);
+    const tradeTo = this.liveTradeToSec ?? to;
+    const tradeFrom = this.liveTradeToSec === null ? from : tradeTo - MAX_CACHE_SECONDS;
+    this.tradeAggregation.retain(tradeFrom * US_PER_SECOND, tradeTo * US_PER_SECOND);
     this.trimCoverage();
   }
 

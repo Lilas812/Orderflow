@@ -257,6 +257,7 @@ export class RealtimeClient {
       const endSec = hello.mode === "replay" && replayFrom !== null ? replayFrom : Math.floor(hello.serverTimeUs / US_PER_SECOND);
       this.clearPendingRanges();
       this.cache.reset();
+      if (hello.mode === "live") this.cache.startLiveTradeRetention(endSec);
       this.cache.markCovered(endSec - 1_800, endSec);
       this.pending = { reqId: 0, fromSec: Math.max(0, endSec - 1800), toSec: endSec,
         columns: 0, trades: 0, chunks: 0, tradeChunks: 0 };

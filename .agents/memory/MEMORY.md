@@ -12,3 +12,4 @@
 - [CDP合成ページの通信制限](synthetic-document-network.md) — 合成ページからのloopback WSがChromiumに遮断される。実通信の確認には実HTTP配信を使う。
 - [VPの追加指定](vp-decisions.md) — 正本より優先すると承認された17時区切り・POC同数・不足窓と欠け・縮小行の全幅基準。
 - [VPの照合締切](vp-verification-cutoff.md) — ライブと保存の独立比較では、巻き戻る約定時刻だけでなく受信締切を一致させる。
+- [デルタの追加指定](delta-decisions.md) — 区間全体がそろわない過去の棒は非描画、最新区間は受信分で更新。棒の隙間・中央線は承認済み。

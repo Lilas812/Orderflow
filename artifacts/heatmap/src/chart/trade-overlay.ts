@@ -16,9 +16,15 @@ function prepare(canvas: HTMLCanvasElement, dpr: number) {
 export class TradeOverlayRenderer {
   private readonly heat: HTMLCanvasElement;
   private readonly axis: HTMLCanvasElement;
-  metrics = { bubbleCount: 0, geometryMs: 0, lineMs: 0, bubbleMs: 0, overlayMs: 0, downsampled: false, priceBinCount: 0 };
+  private geometry: ReturnType<typeof tradeGeometry> = { bubbles: [], priceBins: [], downsampled: false };
+  metrics = { bubbleCount: 0, geometryMs: 0, lineMs: 0, bubbleMs: 0, overlayMs: 0, downsampled: false, priceBinCount: 0,
+    aggregationRevision: 0 };
   constructor(heat: HTMLCanvasElement, axis: HTMLCanvasElement) {
     this.heat = heat; this.axis = axis;
+  }
+  snapshot() {
+    return { bubbles: this.geometry.bubbles.map(b => ({ ...b })),
+      priceBins: this.geometry.priceBins.map(p => ({ ...p })), downsampled: this.geometry.downsampled };
   }
   draw(aggregation: TradeAggregator, view: Viewport, minimum: number, currentPrice: number | null, cutoffUs = Infinity): void {
     const start = performance.now(), dpr = window.devicePixelRatio || 1;
@@ -26,6 +32,7 @@ export class TradeOverlayRenderer {
     const axis = prepare(this.axis, dpr);
     const geometryStart = performance.now();
     const geometry = tradeGeometry(aggregation, view, width, height, dpr, minimum, cutoffUs);
+    this.geometry = geometry;
     const geometryMs = performance.now() - geometryStart, lineStart = performance.now();
     ctx.strokeStyle = "#b9a7ff"; ctx.lineWidth = 1.5; ctx.beginPath();
     let previous: { x: number; last: number } | null = null;
@@ -65,6 +72,7 @@ export class TradeOverlayRenderer {
       }
     }
     this.metrics = { bubbleCount: geometry.bubbles.length, geometryMs, lineMs, bubbleMs,
-      overlayMs: performance.now() - start, downsampled: geometry.downsampled, priceBinCount: geometry.priceBins.length };
+      overlayMs: performance.now() - start, downsampled: geometry.downsampled, priceBinCount: geometry.priceBins.length,
+      aggregationRevision: aggregation.revision };
   }
 }

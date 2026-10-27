@@ -21,8 +21,22 @@ export class TradeAggregator {
   private toUs = Infinity;
   private count = 0;
   private revisionValue = 0;
+  private coverage: { fromUs: number; toUs: number }[] = [];
   get size(): number { return this.count; }
   get revision(): number { return this.revisionValue; }
+  /** Committed range responses only; queued/aborted responses are not coverage.
+   * An optional received stream interval is clipped to the retained window too. */
+  coversRange(fromUs: number, toUs: number, stream?: { fromUs: number; toUs: number }): boolean {
+    if (fromUs < this.fromUs || toUs > this.toUs || fromUs >= toUs) return false;
+    const ranges = stream ? [...this.coverage, stream].sort((a, b) => a.fromUs - b.fromUs) : this.coverage;
+    let cursor = fromUs;
+    for (const range of ranges) {
+      if (range.fromUs > cursor) break;
+      cursor = Math.max(cursor, range.toUs);
+      if (cursor >= toUs) return true;
+    }
+    return false;
+  }
   get trades(): readonly Trade[] {
     return [...this.buckets].sort(([a], [b]) => a - b).flatMap(([, bucket]) => [...bucket.records.values()]);
   }
@@ -64,6 +78,8 @@ export class TradeAggregator {
     const rows = p.rows.concat(p.live).sort((a, b) => a.seq - b.seq);
     for (const trade of rows) this.add(trade);
     this.pending.delete(reqId);
+    this.coverage.push({ fromUs: p.fromUs, toUs: p.toUs });
+    this.trimCoverage();
     this.revisionValue++;
   }
   abortRange(reqId: number): void { this.pending.delete(reqId); }
@@ -71,6 +87,7 @@ export class TradeAggregator {
     if (fromUs > toUs || toUs - fromUs > MAX_CACHE_SECONDS * US_PER_SECOND) throw new Error("invalid_trade_retention");
     if (fromUs === this.fromUs && toUs === this.toUs) return;
     this.fromUs = fromUs; this.toUs = toUs;
+    this.trimCoverage();
     for (const [second, bucket] of this.buckets) {
       if (second < fromUs || second >= toUs) {
         this.count -= bucket.records.size; this.buckets.delete(second); this.revisionValue++;
@@ -128,7 +145,19 @@ export class TradeAggregator {
   }
   reset(): void {
     this.buckets.clear(); this.pending.clear(); this.count = 0;
+    this.coverage = [];
     this.fromUs = -Infinity; this.toUs = Infinity; this.revisionValue++;
+  }
+  private trimCoverage(): void {
+    const merged: { fromUs: number; toUs: number }[] = [];
+    for (const range of this.coverage.sort((a, b) => a.fromUs - b.fromUs)) {
+      const fromUs = Math.max(this.fromUs, range.fromUs), toUs = Math.min(this.toUs, range.toUs);
+      if (fromUs >= toUs) continue;
+      const last = merged.at(-1);
+      if (last && last.toUs >= fromUs) last.toUs = Math.max(last.toUs, toUs);
+      else merged.push({ fromUs, toUs });
+    }
+    this.coverage = merged;
   }
   private add(trade: Trade): void {
     if (trade.tsUs < this.fromUs || trade.tsUs >= this.toUs) return;

@@ -98,3 +98,59 @@ mtime_ms = 1793043084281
 storage_uri = "gcs://replit-rams-assets-pike/rams/assets/repl:c326af06-2355-4bfb-a52e-f433587c4cd9/6c0eb104-6ccd-471e-bc95-3c8a0b54dd72/56c2ea72-e95b-435f-9ac3-dc77e9d9c58b"
 storage_version_token = "1793044150381266"
 content_type = "image/png"
+
+[[outputs]]
+id = "xxvXAQAqk2VlfQh1EDjJv"
+uri = "file://data/phase8/replay-1s.png"
+type = "image"
+title = "1倍リプレイ：1秒のデルタ"
+description = "保存約定3区間との照合一致。"
+logical_id = "87dfe878-00d9-4e68-a2fb-1076e6fe4d46"
+content_hash = "sha256:624a4698b750eed31a5b8d092725f9accffe00c1839661cf52be3e097221a514"
+size = 132997
+mtime_ms = 1793121544541
+storage_uri = "gcs://replit-rams-assets-pike/rams/assets/repl:c326af06-2355-4bfb-a52e-f433587c4cd9/87dfe878-00d9-4e68-a2fb-1076e6fe4d46/14b37383-f11b-4aef-a312-48b74b98133e"
+storage_version_token = "1793121885006083"
+content_type = "image/png"
+
+[[outputs]]
+id = "WxrFSUmvdNkjPmlZQh_JQ"
+uri = "file://data/phase8/replay-15s.png"
+type = "image"
+title = "1倍リプレイ：15秒のデルタ"
+description = "取引所時刻の15秒区切り。保存約定3区間との照合一致。"
+logical_id = "d3163d9a-2014-4a8c-94aa-3a5bafb28ab3"
+content_hash = "sha256:37066690edd6a377ef894c0f03bba4a753a7ffe2306c974cd19b07ba7440bc40"
+size = 105014
+mtime_ms = 1793121547489
+storage_uri = "gcs://replit-rams-assets-pike/rams/assets/repl:c326af06-2355-4bfb-a52e-f433587c4cd9/d3163d9a-2014-4a8c-94aa-3a5bafb28ab3/8f1a9372-0e35-4186-8ef3-f002dca3a77e"
+storage_version_token = "1793121886344718"
+content_type = "image/png"
+
+[[outputs]]
+id = "rwV1ARJhmy2priJH3YnMD"
+uri = "file://data/phase8/replay-60s.png"
+type = "image"
+title = "1倍リプレイ：60秒のデルタ"
+description = "2時間表示。保存約定3区間との照合一致。"
+logical_id = "81303a90-ef83-4d40-a432-3cbd053df6b7"
+content_hash = "sha256:9c29a7d1cdb4ad1fb76eebae98732cc9dd0b5fcc5b85f804d60d83cd009b96df"
+size = 178537
+mtime_ms = 1793121551777
+storage_uri = "gcs://replit-rams-assets-pike/rams/assets/repl:c326af06-2355-4bfb-a52e-f433587c4cd9/81303a90-ef83-4d40-a432-3cbd053df6b7/4573d826-7ac7-4069-9da7-c46712331302"
+storage_version_token = "1793121887596676"
+content_type = "image/png"
+
+[[outputs]]
+id = "7vROfI15Om3Jd667IUQTA"
+uri = "file://data/phase8/live-follow.png"
+type = "image"
+title = "ライブ：最新約定とデルタ"
+description = "最新数秒99約定を保存と照合。右20%に関する留保は報告書に記載。"
+logical_id = "a316dad2-b424-4e3c-8f50-7ca1307d2a13"
+content_hash = "sha256:4c468372abb2017a53a056d820ce62e041244e796bccf072784d600e53723597"
+size = 93743
+mtime_ms = 1793121567273
+storage_uri = "gcs://replit-rams-assets-pike/rams/assets/repl:c326af06-2355-4bfb-a52e-f433587c4cd9/a316dad2-b424-4e3c-8f50-7ca1307d2a13/4e69639c-1e3f-4d53-ac9e-94dd36b4dfa2"
+storage_version_token = "1793121888886588"
+content_type = "image/png"

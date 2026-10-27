@@ -15,16 +15,22 @@ import { BigOrderRenderer, visibleBigOrders } from "./chart/big-orders.ts";
 import { FrameProfile } from "./chart/frame-profile.ts";
 import { VpState } from "./data/vp.ts";
 import { VpRenderer } from "./chart/vp.ts";
+import { DeltaRenderer } from "./chart/delta.ts";
+import { deltaBounds, deltaSeconds } from "./chart/delta-geometry.ts";
 
 declare global {
   interface Window {
     readonly __heatmapDebug?: Readonly<HeatmapDebugSnapshot>;
     readonly __heatmapColumnDelivery?: ReturnType<typeof columnDeliverySnapshot>;
     readonly __heatmapFrameStats?: ReturnType<FrameProfile["snapshot"]>;
+    readonly __heatmapDeltaBars?: ReturnType<DeltaRenderer["snapshot"]>;
+    readonly __heatmapTradeOverlay?: ReturnType<TradeOverlayRenderer["snapshot"]>;
+    readonly __heatmapRecentTrades?: ReturnType<typeof recentTradeSnapshot>;
   }
 }
 
 export interface HeatmapDebugSnapshot {
+  delta: DeltaRenderer["metrics"];
   vp: VpRenderer["metrics"];
   bigOrders: BigOrderRenderer["metrics"] & {
     threshold: number | null; tracking: BigOrderFeed["tracker"]["metrics"];
@@ -107,10 +113,11 @@ root.innerHTML = `
           <span class="region-label">Volume profile</span><span id="vp-loading" class="region-hint" role="status">取り込み中</span>
         </section>
         <section class="region delta-region" aria-label="Delta histogram frame">
-          <span class="region-label">Delta</span><span class="region-hint">Phase 8 · empty frame</span>
+          <canvas class="book-canvas" id="delta" aria-label="Delta: interval buy quantity minus sell quantity. White positive, purple negative."></canvas>
+          <span class="region-label">Delta</span>
         </section>
         <section class="region delta-scale-region" aria-label="Delta scale frame">
-          <span class="region-label">Delta scale</span>
+          <canvas class="book-canvas" id="delta-scale" aria-label="Delta maximum, zero, negative maximum and interval seconds"></canvas>
         </section>
         <section class="region large-lower-region" aria-label="Lower large orders frame">
           <span class="region-label">Large orders</span>
@@ -143,6 +150,8 @@ const bigRenderer = new BigOrderRenderer(required<HTMLCanvasElement>("big-orders
 const vpState = new VpState();
 const vpRenderer = new VpRenderer(required<HTMLCanvasElement>("volume-profile"), () => drawScheduler.request("vp"));
 const vpLoading = required<HTMLElement>("vp-loading");
+const deltaRenderer = new DeltaRenderer(required<HTMLCanvasElement>("delta"), required<HTMLCanvasElement>("delta-scale"));
+let profiledDeltaDraws = 0;
 let profiledVpDraws = 0;
 const overlayRenderer = new TradeOverlayRenderer(
   required<HTMLCanvasElement>("trade-overlay"),
@@ -318,7 +327,9 @@ function syncRetentionAndRequests(): void {
   const toUs = viewport.startUs + viewport.durationSec * US_PER_SECOND;
   cache.setRetentionAnchor(viewport.startUs, toUs, follow, cache.latestTimeUs);
   const requestEnd = follow && cache.latestTimeUs !== null ? Math.min(toUs, cache.latestTimeUs + US_PER_SECOND) : toUs;
-  client.requestVisible(Math.floor(viewport.startUs / US_PER_SECOND), Math.ceil(requestEnd / US_PER_SECOND));
+  const bounds = deltaBounds(viewport, deltaSeconds(viewport.durationSec, Math.max(1, canvas.getBoundingClientRect().width)));
+  client.requestVisible(bounds.fromUs / US_PER_SECOND,
+    Math.ceil(Math.min(bounds.toUs, follow ? requestEnd : bounds.toUs) / US_PER_SECOND));
 }
 
 function alignFollowToPhysicalPixel(): void {
@@ -362,6 +373,9 @@ const drawScheduler = new LayerScheduler(draw => requestAnimationFrame(draw), {
   book: () => bookRenderer.draw(cache.latestBook, viewport, renderer.metrics.p99),
   big: () => bigRenderer.draw(bigFeed.tracker.snapshot(), viewport, bigOptions.minSec.value),
   vp: () => vpRenderer.draw(vpState, viewport),
+  delta: () => deltaRenderer.draw(cache.tradeAggregation, viewport,
+    replayHeadUs ?? Math.max((cache.latestTimeUs ?? 0) + US_PER_SECOND, currentTrade.trade?.tsUs ?? 0),
+    initialCutoffUs + 1),
   trades: () => {
     overlayRenderer.draw(cache.tradeAggregation, viewport, bubbleMinimum.value,
       currentTrade.trade?.price ?? null, replayHeadUs ?? Math.max(
@@ -379,6 +393,7 @@ const drawScheduler = new LayerScheduler(draw => requestAnimationFrame(draw), {
         bookMs: bookRenderer.metrics.drawCount !== profiledBookDraws ? bookRenderer.metrics.drawMs : 0,
         bigMs: bigRenderer.metrics.drawCount !== profiledBigDraws ? bigRenderer.metrics.drawMs : 0,
         vpMs: vpRenderer.metrics.drawCount !== profiledVpDraws ? vpRenderer.metrics.drawMs : 0,
+        deltaMs: deltaRenderer.metrics.drawCount !== profiledDeltaDraws ? deltaRenderer.metrics.drawMs : 0,
         depth: redrewDepth, aggregationMs: redrewDepth ? depthMetrics.aggregationMs : 0,
         scaleMs: redrewDepth ? depthMetrics.scaleMs : 0,
         rasterMs: redrewDepth ? depthMetrics.rasterMs ?? 0 : 0,
@@ -387,6 +402,7 @@ const drawScheduler = new LayerScheduler(draw => requestAnimationFrame(draw), {
         tileSyncMs: redrewDepth ? depthMetrics.tileSyncMs ?? 0 : 0 });
       profiledBookDraws = bookRenderer.metrics.drawCount; profiledBigDraws = bigRenderer.metrics.drawCount;
       profiledVpDraws = vpRenderer.metrics.drawCount;
+      profiledDeltaDraws = deltaRenderer.metrics.drawCount;
       pendingTimeAxisMs = 0;
     }
     // Preserve the Phase 4 frame sample population; book-only frames have separate metrics.
@@ -409,6 +425,7 @@ const drawScheduler = new LayerScheduler(draw => requestAnimationFrame(draw), {
 
 function scheduleDraw(redrawDepth = true): void {
   drawScheduler.request(redrawDepth ? "all" : "trades");
+  if (!redrawDepth) drawScheduler.request("delta");
 }
 
 function renderTimeAxis(): void {
@@ -494,6 +511,8 @@ book ${bookRenderer.metrics.meanMs.toFixed(2)} / ${bookRenderer.metrics.maxMs.to
 book ${bookRenderer.metrics.drawCount} / depth ${depthDrawCount} / overlay ${overlayDrawCount} draws
 VP ${vpRenderer.metrics.prices} prices · POC ${vpRenderer.metrics.poc ?? "none"} · VA ${vpRenderer.metrics.low ?? "none"}–${vpRenderer.metrics.high ?? "none"}
 VP ${vpRenderer.metrics.meanMs.toFixed(2)} / ${vpRenderer.metrics.maxMs.toFixed(2)} ms · ${vpState.loading ? "取り込み中" : "ready"}
+Delta ${deltaRenderer.metrics.seconds}s · ${deltaRenderer.metrics.visibleCount} bars · max |Δ| ${deltaRenderer.metrics.maximum}
+Delta ${deltaRenderer.metrics.meanMs.toFixed(2)} / ${deltaRenderer.metrics.maxMs.toFixed(2)} ms · ${deltaRenderer.metrics.omittedCount} incomplete
 big ${bigRenderer.metrics.visibleCount} · threshold ${bigFeed.tracker.snapshot().threshold ?? "none"} · top ${bigOptions.top.value}% · min ${bigOptions.minSec.value}s${bigOptions.top.invalid ? " · bigTop 無効" : ""}${bigOptions.minSec.invalid ? " · bigMinSec 無効" : ""}
 big decision ${bigFeed.tracker.metrics.decisionMs.toFixed(2)} ms · draw ${bigRenderer.metrics.meanMs.toFixed(2)} / ${bigRenderer.metrics.maxMs.toFixed(2)} ms
 big ${bigRenderer.metrics.drawCount} draws · longest ${bigRenderer.metrics.longestSec}s`;
@@ -503,6 +522,7 @@ function debugSnapshot(): HeatmapDebugSnapshot {
   const now = performance.now();
   const sample = drawSamples.slice(-30).map((entry) => entry.ms);
   return Object.freeze({
+    delta: { ...deltaRenderer.metrics },
     vp: vpRenderer.metrics,
     bigOrders: { ...bigRenderer.metrics, threshold: bigFeed.tracker.snapshot().threshold,
       tracking: { ...bigFeed.tracker.metrics }, top: bigOptions.top.value, minSec: bigOptions.minSec.value,
@@ -544,7 +564,19 @@ function debugSnapshot(): HeatmapDebugSnapshot {
 }
 
 function columnDeliverySnapshot() { return client.columnDeliveries; }
+/** On-demand evidence only; bounded output, never called by the animation loop. */
+function recentTradeSnapshot() {
+  const toUs = Math.max(currentTrade.trade?.tsUs ?? 0, (cache.latestTimeUs ?? 0) + US_PER_SECOND);
+  const fromUs = Math.floor(toUs / US_PER_SECOND) * US_PER_SECOND - 10 * US_PER_SECOND;
+  return { fromUs, toUs, revision: cache.tradeAggregation.revision,
+    trades: cache.tradeAggregation.trades.filter(t => t.tsUs >= fromUs),
+    cells: cache.tradeAggregation.cells(fromUs, toUs + US_PER_SECOND),
+    lastPrices: cache.tradeAggregation.lastPrices(fromUs, toUs + 1) };
+}
 if (debugMode) {
+  Object.defineProperty(window, "__heatmapRecentTrades", { get: recentTradeSnapshot });
+  Object.defineProperty(window, "__heatmapTradeOverlay", { get: () => overlayRenderer.snapshot() });
+  Object.defineProperty(window, "__heatmapDeltaBars", { get: () => deltaRenderer.snapshot() });
   Object.defineProperty(window, "__heatmapFrameStats", { get: () => frameProfile.snapshot() });
   Object.defineProperty(window, "__heatmapColumnDelivery", { get: columnDeliverySnapshot });
   Object.defineProperty(window, "__heatmapDebug", {
