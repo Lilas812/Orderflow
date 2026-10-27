@@ -7,7 +7,7 @@
 - [下流の圧縮状態](downstream-compression.md) — 250msごとの板の類似性から、サーバー→ブラウザは圧縮状態を引き継ぐ。
 - [検証時の設定副作用](verification-config-side-effects.md) — 補助ツールによるランタイムの自動追加を、設定変更禁止の作業で見落とさない。
 - [検証画像と終了の証拠](screenshot-evidence.md) — 画像IDと保存ファイル、撮影完了・WS切断とブラウザ本体終了を区別する。
-- [公開環境のメモリ予算](performance-budget.md) — Reserved VMは2GiB予定。Workspaceでの成功だけで公開環境の動作を保証しない。
+- [公開環境のメモリ予算](performance-budget.md) — 旧2GiB前提を現在の目標と混同せず、Workspace測定と公開実機を区別する。
 - [負荷測定の画面数](performance-measurement-isolation.md) — 残存ブラウザの発生元を決めつけず、計測画面の実受信と測定中の接続数を両方確認する。
 - [CDP合成ページの通信制限](synthetic-document-network.md) — 合成ページからのloopback WSがChromiumに遮断される。実通信の確認には実HTTP配信を使う。
 - [VPの指定の経緯](vp-decisions.md) — 口頭指定は正本へ反映済み。書換禁止を撤回して既存行を保つ差し込みへ改めた経緯を残す。
