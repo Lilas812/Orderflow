@@ -251,6 +251,27 @@ test("ダミー：App Storage設定保存・別端末読込、破損原本の不
     assert.deepEqual(cloud.files.get(backup), corrupt);
   } finally { await fs.rm(dir, { recursive: true, force: true }); }
 });
+test("ダミー：公開prod/のversion2設定はGETで退避・書換せず、次の保存だけv3", async () => {
+  const dir = await root(), cloud = new DummyObjects(), events: string[] = [];
+  const keys = ["heatTopPct", "bubbleMin", "bigTopPct", "bigMinSec", "timeZone", "bubbleScale", "bookBarPct", "bookBarOpacity"];
+  const original = Buffer.from(JSON.stringify({ version: 2, updatedAt: 1000000,
+    values: { ...Object.fromEntries(keys.map(k => [k, defaults[k as keyof typeof defaults]])), bubbleScale: 2 } }) + "\r\n");
+  cloud.files.set("prod/settings.json", original);
+  try {
+    const app = new AppSettings(path.join(dir, "settings.json"), cloud, "prod/", event => events.push(event));
+    const doc = await app.get();
+    assert.equal(doc.version, 3); assert.equal(doc.values.bubbleScale, 2);
+    assert.equal(doc.values.heatUpperSize, 100); assert.equal(doc.updatedAt, 1000000);
+    assert.deepEqual(cloud.files.get("prod/settings.json"), original);
+    assert.equal(app.snapshot().readError, null);
+    assert.deepEqual(app.snapshot().preservedFiles, []);
+    assert.equal(cloud.uploads.length, 0);
+    await app.put({ ...doc.values, heatUpperMode: "size", heatUpperSize: 42, heatLowerSize: 88 });
+    const saved = JSON.parse(cloud.files.get("prod/settings.json")!.toString());
+    assert.equal(saved.version, 3); assert.equal(saved.values.heatUpperSize, 42); assert.equal(saved.values.heatLowerSize, 88);
+    assert.ok(!events.includes("settings_corrupt_preserved"));
+  } finally { await fs.rm(dir, { recursive: true, force: true }); }
+});
 test("ダミー：47時間のファイルは保持、49時間のアップロード確認済みファイルだけキャッシュから除く", async () => {
   const dir = await root(), cloud = new DummyObjects(); let now = (hour + 3601) * 1000;
   const store = new AppStore(dir, cloud, "prod/", log, () => now);

@@ -21,8 +21,8 @@ test("ダミー：起動GET失敗→実接続回復時に再取得、成功ま�
   await recovery.connected(); assert.equal(reads, 2);
 });
 
-test("ダミー：追加設定・フォーム8項目と0.05刻みの案内", () => {
-  assert.equal(FIELD_SPECS.length, 8);
+test("ダミー：追加設定・フォーム14項目と既存の0.05刻みの案内", () => {
+  assert.equal(FIELD_SPECS.length, 14);
   assert.match(rangeText(FIELD_SPECS.find(f => f.key === "bookBarOpacity")!), /0.05刻み/);
   for (const [key, good, bad] of [
     ["bubbleScale", [.5, 3, 1.1], [.4, 3.1, .55, "1", NaN]],
@@ -58,7 +58,8 @@ test("ダミー：色の帯は最新列の右だけ・過去なし・同一最�
   for (const height of [1, 3, 40]) assert.deepEqual(currentBookRows(book, view, height),
     computePixelMax([book], view, 1, height).values);
   renderer.draw(book, view, 20, 8e6, 20, 1);
-  const band = events.filter(e => e.color.startsWith("rgb(")), bars = events.filter(e => e.color.startsWith("#"));
+  const band = events.filter(e => e.color.startsWith("rgb(")),
+    bars = events.filter(e => e.color === "#8a3cff" || e.color === "#d9d9d9");
   assert.ok(band.length); assert.ok(bars.length);
   assert.ok(band.every(e => e.x === 80 && e.w === 20 && e.alpha === 1));
   assert.ok(events.indexOf(band.at(-1)!) < events.indexOf(bars[0]!));

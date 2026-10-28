@@ -1,12 +1,28 @@
 import type { HeatColumn, Viewport } from "../domain.ts";
+import type { SettingsValues } from "../data/settings.ts";
+
+export type HeatScaleOptions = Pick<SettingsValues, "heatUpperMode" | "heatUpperSize" | "heatTopPct"
+  | "heatLowerMode" | "heatLowerPct" | "heatLowerSize" | "heatGamma">;
+
+export function heatThresholds(columns: readonly HeatColumn[], view: Viewport, options: HeatScaleOptions) {
+  const upper = options.heatUpperMode === "size" ? options.heatUpperSize
+    : viewportPositiveP99(columns, view, options.heatTopPct);
+  const requestedLower = options.heatLowerMode === "off" ? 0 : options.heatLowerMode === "size"
+    ? options.heatLowerSize : viewportPositivePercentile(columns, view, options.heatLowerPct / 100);
+  return { upper, lower: Math.min(requestedLower, upper - 1), lowerAdjusted: requestedLower >= upper };
+}
 
 export function viewportPositiveP99(columns: readonly HeatColumn[], view: Viewport, topPercent = 1): number {
+  return viewportPositivePercentile(columns, view, 1 - topPercent / 100);
+}
+
+export function viewportPositivePercentile(columns: readonly HeatColumn[], view: Viewport, percentile: number): number {
   const endUs = view.startUs + view.durationSec * 1_000_000;
   const visible = columns.filter(c => c.timeUs + 1_000_000 > view.startUs && c.timeUs < endUs);
   const bottom = view.centerPriceTicks - view.priceSpanTicks / 2;
   const top = view.centerPriceTicks + view.priceSpanTicks / 2;
   // A tick cell has half-open extent price±0.5; touching only the border is not visible area.
-  return positiveVisibleP99(visible, Math.floor(bottom - 0.5) + 1, Math.ceil(top + 0.5) - 1, 1 - topPercent / 100);
+  return positiveVisibleP99(visible, Math.floor(bottom - 0.5) + 1, Math.ceil(top + 0.5) - 1, percentile);
 }
 
 export const HEAT_STOPS: readonly { at: number; color: string }[] = [

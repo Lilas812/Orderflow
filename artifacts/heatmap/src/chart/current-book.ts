@@ -48,7 +48,7 @@ export class CurrentBookRenderer {
   }
 
   draw(book: HeatColumn | null, view: Viewport, p99: number, rightEdgeUs: number | null = null,
-    barPct = 10, opacity = .5): void {
+    barPct = 10, opacity = .5, lower = 0, gamma = 1): void {
     const start = performance.now();
     const rect = this.canvas.getBoundingClientRect(), dpr = window.devicePixelRatio || 1;
     if (rect.width < 1 || rect.height < 1) return;
@@ -64,10 +64,12 @@ export class CurrentBookRenderer {
     const bandStart = book ? bookBandStart(rightEdgeUs, view, width) : null;
     // Use the very same LUT, saturation and rounding as historical heatmap cells.
     if (bandStart !== null) {
-      const colors = colorize(rows, p99);
+      const colors = colorize(rows, p99, undefined, lower, gamma);
       ctx.globalAlpha = 1;
+      ctx.fillStyle = "#000000";
+      ctx.fillRect(bandStart, 0, width - bandStart, height);
       for (let y = 0; y < height; y++) {
-        if (rows[y]! < 1) continue;
+        if (rows[y]! < 1 || rows[y]! <= lower) continue;
         const i = y * 4;
         ctx.fillStyle = `rgb(${colors[i]},${colors[i + 1]},${colors[i + 2]})`;
         ctx.fillRect(bandStart, y, width - bandStart, 1);

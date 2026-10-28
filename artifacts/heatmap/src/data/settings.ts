@@ -2,14 +2,17 @@ import { parseBubbleMin } from "../chart/trade-geometry.ts";
 import { parseBigOrderOptions } from "./big-orders.ts";
 
 export interface SettingsValues {
+  heatUpperMode: "auto" | "size"; heatUpperSize: number;
+  heatLowerMode: "off" | "pct" | "size"; heatLowerPct: number; heatLowerSize: number; heatGamma: number;
   heatTopPct: number; bubbleMin: number; bigTopPct: number; bigMinSec: number;
   timeZone: "Asia/Tokyo" | "America/Chicago";
   bubbleScale: number; bookBarPct: number; bookBarOpacity: number;
 }
 export type SettingsKey = keyof SettingsValues;
 export type SettingsSource = "保存" | "初期値" | "URL";
-export interface SettingsDocument { version: 2; values: SettingsValues; updatedAt: number | null; }
+export interface SettingsDocument { version: 3; values: SettingsValues; updatedAt: number | null; }
 export const DEFAULT_SETTINGS: Readonly<SettingsValues> = Object.freeze({
+  heatUpperMode: "auto", heatUpperSize: 100, heatLowerMode: "off", heatLowerPct: 20, heatLowerSize: 5, heatGamma: 1,
   heatTopPct: 1, bubbleMin: 10, bigTopPct: 2, bigMinSec: 5, timeZone: "Asia/Tokyo",
   bubbleScale: 1, bookBarPct: 10, bookBarOpacity: .5,
 });
@@ -17,10 +20,12 @@ export const SETTINGS_KEYS = Object.keys(DEFAULT_SETTINGS) as SettingsKey[];
 
 export function validateSettings(values: unknown): Record<string, string> {
   const errors: Record<string, string> = Object.create(null);
-  if (!values || typeof values !== "object" || Array.isArray(values)) return { values: "8項目のオブジェクトが必要です" };
+  if (!values || typeof values !== "object" || Array.isArray(values)) return { values: "14項目のオブジェクトが必要です" };
   const v = values as Record<string, unknown>;
   for (const key of Object.keys(v)) if (!SETTINGS_KEYS.includes(key as SettingsKey)) errors[key] = "余分な項目です";
   for (const [key, min, max, factor] of [
+    ["heatUpperSize", 1, 100000, 1], ["heatLowerPct", .1, 90, 10],
+    ["heatLowerSize", 0, 100000, 1], ["heatGamma", .3, 3, 10],
     ["heatTopPct", .1, 10, 10], ["bubbleMin", 1, 1000, 1],
     ["bigTopPct", .1, 20, 10], ["bigMinSec", 1, 600, 1],
     ["bubbleScale", .5, 3, 10], ["bookBarPct", 5, 20, 1],
@@ -33,15 +38,17 @@ export function validateSettings(values: unknown): Record<string, string> {
       errors[key] = factor === 1 ? "整数で入力してください" : `${1 / factor}刻みで入力してください`;
   }
   if (v.timeZone !== "Asia/Tokyo" && v.timeZone !== "America/Chicago") errors.timeZone = "時刻の表示を選んでください";
+  if (v.heatUpperMode !== "auto" && v.heatUpperMode !== "size") errors.heatUpperMode = "上限の決め方を選んでください";
+  if (!["off", "pct", "size"].includes(v.heatLowerMode as string)) errors.heatLowerMode = "下限の決め方を選んでください";
   return errors;
 }
 
 export function defaultDocument(): SettingsDocument {
-  return { version: 2, values: { ...DEFAULT_SETTINGS }, updatedAt: null };
+  return { version: 3, values: { ...DEFAULT_SETTINGS }, updatedAt: null };
 }
 export function validDocument(v: unknown): v is SettingsDocument {
   const d = v as SettingsDocument | null;
-  return !!d && d.version === 2 && Object.keys(validateSettings(d.values)).length === 0
+  return !!d && d.version === 3 && Object.keys(validateSettings(d.values)).length === 0
     && (d.updatedAt === null || (Number.isSafeInteger(d.updatedAt) && d.updatedAt >= 0));
 }
 
@@ -62,7 +69,8 @@ export function resolveSettings(doc: SettingsDocument, search: string) {
   return { values, sources, invalid, overridden };
 }
 export function settingsChanges(a: SettingsValues, b: SettingsValues) {
-  return { heat: a.heatTopPct !== b.heatTopPct, bubbles: a.bubbleMin !== b.bubbleMin || a.bubbleScale !== b.bubbleScale,
+  return { heat: (["heatTopPct", "heatUpperMode", "heatUpperSize", "heatLowerMode", "heatLowerPct", "heatLowerSize", "heatGamma"] as const)
+      .some(k => a[k] !== b[k]), bubbles: a.bubbleMin !== b.bubbleMin || a.bubbleScale !== b.bubbleScale,
     book: a.bookBarPct !== b.bookBarPct || a.bookBarOpacity !== b.bookBarOpacity,
     big: a.bigTopPct !== b.bigTopPct || a.bigMinSec !== b.bigMinSec, time: a.timeZone !== b.timeZone };
 }

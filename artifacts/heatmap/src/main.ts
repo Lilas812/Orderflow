@@ -108,6 +108,7 @@ root.innerHTML = `
         </section>
         <section class="region price-region" aria-label="Price axis">
           <canvas class="axis-price" id="price-axis" aria-label="Shared price axis in NQ quarter-point increments."></canvas>
+          <canvas class="trade-overlay vp-labels" id="vp-labels" aria-label="POC, VAH and VAL price labels"></canvas>
           <canvas class="trade-overlay" id="current-price-label" aria-hidden="true"></canvas>
         </section>
         <section class="region large-region" aria-label="Large orders frame">
@@ -118,6 +119,7 @@ root.innerHTML = `
           <canvas class="book-canvas" id="volume-profile" aria-label="Session volume profile, white POC and orange 70 percent value area"></canvas>
           <span class="region-label">Volume profile</span><span id="vp-loading" class="region-hint" role="status">取り込み中</span>
         </section>
+        <canvas class="vp-guides" id="vp-guides" aria-label="POC, VAH and VAL lines across large orders and volume profile"></canvas>
         <section class="region delta-region" aria-label="Delta histogram frame">
           <canvas class="book-canvas" id="delta" aria-label="Delta: interval buy quantity minus sell quantity. White positive, purple negative."></canvas>
           <span class="region-label">Delta</span>
@@ -160,7 +162,8 @@ let bigOptions = { top: { value: activeSettings.values.bigTopPct, invalid: activ
 const bigFeed = new BigOrderFeed(bigOptions.top.value);
 const bigRenderer = new BigOrderRenderer(required<HTMLCanvasElement>("big-orders"));
 const vpState = new VpState();
-const vpRenderer = new VpRenderer(required<HTMLCanvasElement>("volume-profile"), () => drawScheduler.request("vp"));
+const vpRenderer = new VpRenderer(required<HTMLCanvasElement>("volume-profile"), () => drawScheduler.request("vp"),
+  required<HTMLCanvasElement>("vp-guides"), required<HTMLCanvasElement>("vp-labels"));
 const vpLoading = required<HTMLElement>("vp-loading");
 const deltaRenderer = new DeltaRenderer(required<HTMLCanvasElement>("delta"), required<HTMLCanvasElement>("delta-scale"));
 let profiledDeltaDraws = 0;
@@ -387,7 +390,7 @@ const drawScheduler = new LayerScheduler(draw => requestAnimationFrame(draw), {
   },
   book: () => bookRenderer.draw(cache.latestBook, viewport, renderer.metrics.p99,
     cache.latestTimeUs === null ? null : cache.latestTimeUs + US_PER_SECOND,
-    activeSettings.values.bookBarPct, activeSettings.values.bookBarOpacity),
+    activeSettings.values.bookBarPct, activeSettings.values.bookBarOpacity, renderer.metrics.lower ?? 0, renderer.metrics.gamma ?? 1),
   big: () => bigRenderer.draw(bigFeed.tracker.snapshot(), viewport, bigOptions.minSec.value),
   vp: () => vpRenderer.draw(vpState, viewport),
   delta: () => deltaRenderer.draw(cache.tradeAggregation, viewport,
@@ -434,7 +437,10 @@ const drawScheduler = new LayerScheduler(draw => requestAnimationFrame(draw), {
     drawSamples.push({ at: now, ms: lastMetrics.drawMs });
     drawSamples = drawSamples.filter((sample) => now - sample.at < 30_000).slice(-120);
     drawInstants = drawInstants.filter((time) => now - time < 1_000);
-    scaleValue.textContent = cache.size ? `上位${activeSettings.values.heatTopPct}% ${lastMetrics.p99}` : "";
+    const s = activeSettings.values;
+    const upperMode = s.heatUpperMode === "auto" ? `上位${s.heatTopPct}%` : "枚数指定";
+    const lower = s.heatLowerMode === "off" ? "なし" : `${lastMetrics.lower ?? 0}（${s.heatLowerMode === "pct" ? `下位${s.heatLowerPct}%` : "枚数指定"}）`;
+    scaleValue.textContent = cache.size ? `上限 ${lastMetrics.p99}（${upperMode}）／下限 ${lower}` : "";
     }
     if (debugMode) updateDebugPanel();
   },
@@ -480,6 +486,7 @@ function updateStatus(): void {
   const statusText = extractUpstreamStatus(latestStatus);
   const parts = [
     settingsWarning,
+    lastMetrics.lowerAdjusted ? "下限を上限の手前に合わせた" : "",
     client.loadingRangeCount ? `Loading ${client.loadingRangeCount} range(s)` : "",
     lastConnectionMessage,
     statusText,
@@ -774,7 +781,7 @@ function applySettings(doc: SettingsDocument): void {
     minSec: { value: next.values.bigMinSec, invalid: next.invalid.includes("bigMinSec 無効") } };
   displayZone = next.values.timeZone === "America/Chicago" ? "ct" : "jst";
   settingsWarning = "";
-  if (change.heat) { renderer.setTopPercent(next.values.heatTopPct); if (settingsLoaded) drawScheduler.request("heat"); }
+  if (change.heat) { renderer.setScaleOptions(next.values); if (settingsLoaded) drawScheduler.request("heat"); }
   if (change.bubbles && settingsLoaded) drawScheduler.request("trades");
   if (change.book && settingsLoaded) drawScheduler.request("book");
   if (change.big) { bigFeed.reconfigure(next.values.bigTopPct); if (settingsLoaded) drawScheduler.request("big"); }

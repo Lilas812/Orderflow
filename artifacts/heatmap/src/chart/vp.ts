@@ -2,6 +2,7 @@ import type { Viewport } from "../domain.ts";
 import { priceTicksToY } from "./coordinates.ts";
 import { VpState, valueArea } from "../data/vp.ts";
 import type { VpLevel } from "../data/vp.ts";
+import { vpBandBounds, vpGuides, drawVpGuides, drawVpLabels } from "./vp-decoration.ts";
 
 export function vpRows(levels: Iterable<VpLevel>, view: Viewport, height: number,
   area: ReturnType<typeof valueArea>) {
@@ -35,8 +36,12 @@ export class VpRenderer {
     sessionStartSec: null as number | null, upToSec: 0 };
   private canvas: HTMLCanvasElement;
   private invalidate: () => void;
-  constructor(canvas: HTMLCanvasElement, invalidate: () => void) {
+  private guidesCanvas?: HTMLCanvasElement;
+  private labelsCanvas?: HTMLCanvasElement;
+  constructor(canvas: HTMLCanvasElement, invalidate: () => void,
+    guidesCanvas?: HTMLCanvasElement, labelsCanvas?: HTMLCanvasElement) {
     this.canvas = canvas; this.invalidate = invalidate;
+    this.guidesCanvas = guidesCanvas; this.labelsCanvas = labelsCanvas;
     const context = canvas.getContext("2d");
     if (!context) throw Error("VP Canvas 2D is unavailable");
     this.context = context;
@@ -59,18 +64,28 @@ export class VpRenderer {
     const ctx = this.context;
     ctx.clearRect(0, 0, width, height);
     const area = valueArea(state.levels.values()), rows = vpRows(state.levels.values(), view, height, area);
+    const band = vpBandBounds(area, view, height);
+    if (band) {
+      ctx.fillStyle = "#f5a623"; ctx.globalAlpha = .12;
+      ctx.fillRect(0, band.first, width, band.end - band.first); ctx.globalAlpha = 1;
+    }
     const colors = ["#d9d9d9", "#f5a623", "#ffffff"];
     for (let y = 0; y < height; y++) if (rows.totals[y] > 0) {
       const length = width * rows.totals[y] / rows.scaleMaximum;
       ctx.fillStyle = colors[rows.colors[y]]; ctx.fillRect(width - length, y, length, 1);
     }
-    if (area.poc !== null) {
-      const y = priceTicksToY(area.poc, view, height);
-      if (y >= 0 && y < height) {
-        ctx.strokeStyle = "#ffffff"; ctx.lineWidth = dpr; ctx.setLineDash([2 * dpr, 2 * dpr]);
-        ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(width, y); ctx.stroke(); ctx.setLineDash([]);
+    if (this.guidesCanvas) drawVpGuides(this.guidesCanvas, area, view, dpr);
+    else {
+      // Also support isolated renderer tests without the spanning overlay.
+      ctx.lineWidth = dpr; ctx.setLineDash([2 * dpr, 2 * dpr]);
+      for (const guide of vpGuides(area, view, height)) {
+        ctx.strokeStyle = guide.kind === "POC" ? "#ffffff" : "#f5a623";
+        ctx.globalAlpha = guide.kind === "POC" ? 1 : .8;
+        ctx.beginPath(); ctx.moveTo(0, guide.y); ctx.lineTo(width, guide.y); ctx.stroke();
       }
+      ctx.setLineDash([]); ctx.globalAlpha = 1;
     }
+    if (this.labelsCanvas) drawVpLabels(this.labelsCanvas, area, view, dpr);
     const drawMs = performance.now() - start;
     this.samples.push(drawMs); this.samples = this.samples.slice(-30);
     this.metrics = { drawMs, meanMs: this.samples.reduce((a, b) => a + b, 0) / this.samples.length,

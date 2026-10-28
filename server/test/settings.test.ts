@@ -43,7 +43,7 @@ test("ダミー：GET未保存は初期値、PUT400は原本不変、成功と�
   const url = `http://127.0.0.1:${address.port}/api/settings`;
   try {
     const initial = await (await fetch(url)).json();
-    assert.deepEqual(initial, { version: 2, values: defaults, updatedAt: null });
+    assert.deepEqual(initial, { version: 3, values: defaults, updatedAt: null });
     await assert.rejects(fs.access(file));
     const put = (body: unknown) => fetch(url, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
     const saved = await (await put({ values: { ...defaults, bubbleMin: 123 } })).json();

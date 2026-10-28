@@ -1,6 +1,6 @@
 import "./settings-ui.css";
 import type { SettingsDocument, SettingsKey, SettingsValues } from "../data/settings.ts";
-import { FIELD_SPECS, SettingsForm, ZONE_LABELS, rangeText } from "./settings-form.ts";
+import { FIELD_SPECS, SettingsForm, ZONE_LABELS, rangeText, fieldVisible } from "./settings-form.ts";
 
 export interface SettingsUiOptions {
   load: () => Promise<SettingsDocument>;
@@ -66,6 +66,7 @@ export function mountSettingsUi(rail: HTMLElement, options: SettingsUiOptions) {
 
   const controls = new Map<SettingsKey, HTMLInputElement | HTMLSelectElement>();
   const errorEls = new Map<SettingsKey, HTMLElement>();
+  const rows = new Map<SettingsKey, HTMLElement>();
   let lastGroup = "";
   for (const spec of FIELD_SPECS) {
     if (spec.group !== lastGroup) { fields.append(el("h3", "su-group", spec.group)); lastGroup = spec.group; }
@@ -73,9 +74,9 @@ export function mountSettingsUi(rail: HTMLElement, options: SettingsUiOptions) {
     const id = `su-${spec.key}`;
     const label = el("label", "su-label", spec.label); label.htmlFor = id;
     let control: HTMLInputElement | HTMLSelectElement;
-    if (spec.kind === "zone") {
+    if (spec.kind === "zone" || spec.kind === "choice") {
       const s = el("select", "su-input");
-      for (const [v, t] of Object.entries(ZONE_LABELS)) { const o = el("option", undefined, t); o.value = v; s.append(o); }
+      for (const [v, t] of Object.entries(spec.choices ?? ZONE_LABELS)) { const o = el("option", undefined, t); o.value = v; s.append(o); }
       control = s;
     } else {
       const i = el("input", "su-input su-num");
@@ -93,6 +94,7 @@ export function mountSettingsUi(rail: HTMLElement, options: SettingsUiOptions) {
     row.append(err);
     fields.append(row);
     controls.set(spec.key, control); errorEls.set(spec.key, err);
+    rows.set(spec.key, row);
     control.addEventListener("input", () => { form.set(spec.key, control.value); render(false); });
   }
 
@@ -101,6 +103,7 @@ export function mountSettingsUi(rail: HTMLElement, options: SettingsUiOptions) {
     const usable = form.status === "ready" || form.status === "saving";
     panel.dataset.status = form.status;
     for (const spec of FIELD_SPECS) {
+      rows.get(spec.key)!.hidden = !fieldVisible(spec.key, form.inputs);
       const c = controls.get(spec.key)!, e = errorEls.get(spec.key)!;
       if (syncInputs) c.value = form.inputs[spec.key];
       c.disabled = !usable || form.status === "saving";
@@ -108,6 +111,9 @@ export function mountSettingsUi(rail: HTMLElement, options: SettingsUiOptions) {
       e.textContent = msg; c.toggleAttribute("aria-invalid", !!msg);
     }
     notice.textContent = form.status === "loading" ? "最新の設定を読み込み中…" : form.status === "saving" ? "保存中…" : form.message;
+    if (form.status === "ready" && !notice.textContent) notice.textContent = FIELD_SPECS
+      .filter(s => !fieldVisible(s.key, form.inputs) && errors[s.key])
+      .map(s => `${s.label}：${errors[s.key]}`).join(" / ");
     notice.dataset.tone = form.status === "load-error" || (form.status === "ready" && form.message) ? "error" : "info";
     saveBtn.disabled = !form.canSave();
     saveBtn.textContent = form.status === "saving" ? "保存中…" : "保存";

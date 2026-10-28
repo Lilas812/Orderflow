@@ -2,10 +2,16 @@ import { DEFAULT_SETTINGS, validateSettings } from "../data/settings.ts";
 import type { SettingsKey, SettingsValues } from "../data/settings.ts";
 
 export type FormInputs = Record<SettingsKey, string>;
-export interface FieldSpec { key: SettingsKey; group: string; label: string; kind: "number" | "integer" | "zone"; min?: number; max?: number; step?: number; }
+export interface FieldSpec { key: SettingsKey; group: string; label: string; kind: "number" | "integer" | "zone" | "choice"; min?: number; max?: number; step?: number; choices?: Record<string, string>; }
 
 export const FIELD_SPECS: readonly FieldSpec[] = [
-  { key: "heatTopPct", group: "ヒートマップ", label: "色の基準（上位 %）", kind: "number", min: .1, max: 10, step: .1 },
+  { key: "heatUpperMode", group: "ヒートマップ", label: "上限の決め方", kind: "choice", choices: { auto: "自動（上位 %）", size: "枚数" } },
+  { key: "heatTopPct", group: "ヒートマップ", label: "上限：上位 %", kind: "number", min: .1, max: 10, step: .1 },
+  { key: "heatUpperSize", group: "ヒートマップ", label: "上限：枚数", kind: "integer", min: 1, max: 100000, step: 1 },
+  { key: "heatLowerMode", group: "ヒートマップ", label: "下限の決め方", kind: "choice", choices: { off: "なし", pct: "下位 %", size: "枚数" } },
+  { key: "heatLowerPct", group: "ヒートマップ", label: "下限：下位 %", kind: "number", min: .1, max: 90, step: .1 },
+  { key: "heatLowerSize", group: "ヒートマップ", label: "下限：枚数", kind: "integer", min: 0, max: 100000, step: 1 },
+  { key: "heatGamma", group: "ヒートマップ", label: "コントラスト（1 = 直線）", kind: "number", min: .3, max: 3, step: .1 },
   { key: "bubbleMin", group: "約定バブル", label: "閾値（枚）", kind: "integer", min: 1, max: 1000, step: 1 },
   { key: "bubbleScale", group: "約定バブル", label: "大きさ（倍率）", kind: "number", min: .5, max: 3, step: .1 },
   { key: "bookBarPct", group: "現在の板", label: "棒の最大の長さ（ヒートマップの幅の %）", kind: "integer", min: 5, max: 20, step: 1 },
@@ -19,6 +25,7 @@ export const ZONE_LABELS: Record<SettingsValues["timeZone"], string> = { "Asia/T
 export function rangeText(spec: FieldSpec): string {
   const def = DEFAULT_SETTINGS[spec.key];
   if (spec.kind === "zone") return `初期値 ${ZONE_LABELS[def as SettingsValues["timeZone"]]}`;
+  if (spec.kind === "choice") return `初期値 ${spec.choices![String(def)]}`;
   return `${spec.min}〜${spec.max}${spec.kind === "integer" ? "（整数）" : `（${spec.step}刻み）`}・初期値 ${def}`;
 }
 
@@ -30,9 +37,17 @@ export function parseInputs(inputs: FormInputs): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   for (const s of FIELD_SPECS) {
     const raw = inputs[s.key].trim();
-    out[s.key] = s.kind === "zone" ? raw : (raw === "" || !/^[+-]?(\d+\.?\d*|\.\d+)$/.test(raw) ? NaN : Number(raw));
+    out[s.key] = s.kind === "zone" || s.kind === "choice" ? raw : (raw === "" || !/^[+-]?(\d+\.?\d*|\.\d+)$/.test(raw) ? NaN : Number(raw));
   }
   return out;
+}
+
+export function fieldVisible(key: SettingsKey, inputs: FormInputs): boolean {
+  if (key === "heatTopPct") return inputs.heatUpperMode === "auto";
+  if (key === "heatUpperSize") return inputs.heatUpperMode === "size";
+  if (key === "heatLowerPct") return inputs.heatLowerMode === "pct";
+  if (key === "heatLowerSize") return inputs.heatLowerMode === "size";
+  return true;
 }
 
 export type FormStatus = "loading" | "ready" | "load-error" | "saving";

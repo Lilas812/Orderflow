@@ -1,6 +1,6 @@
 import type { HeatColumn, Viewport } from "../domain.ts";
 import { formatPrice } from "./format.ts";
-import { viewportPositiveP99 } from "./scale.ts";
+import { heatThresholds, type HeatScaleOptions } from "./scale.ts";
 import type { DisplayZone } from "./timezone.ts";
 import { TimeTileCache, type TileCacheMetrics } from "./tiles.ts";
 import { shiftPixelGridHorizontally, type PixelMaxGrid } from "./aggregate.ts";
@@ -10,6 +10,9 @@ export interface DrawMetrics extends Partial<TileCacheMetrics> {
   aggregationMs: number;
   scaleMs: number;
   p99: number;
+  lower?: number;
+  lowerAdjusted?: boolean;
+  gamma?: number;
   rasterMs?: number;
   rasterRebuilt?: boolean;
   partialRaster?: boolean;
@@ -33,7 +36,11 @@ export class HeatmapRenderer {
   private scratch: HTMLCanvasElement | null = null;
   private lastScaleAt = 0;
   private threshold: number | null = null;
-  private topPercent = 1;
+  private options: HeatScaleOptions = { heatTopPct: 1, heatUpperMode: "auto", heatUpperSize: 100,
+    heatLowerMode: "off", heatLowerPct: 20, heatLowerSize: 5, heatGamma: 1 };
+  private lower = 0;
+  private lowerAdjusted = false;
+  private colorDirty = false;
   private scaleTimer: number | null = null;
   private physicalWidth = 0;
   private physicalHeight = 0;
@@ -63,7 +70,13 @@ export class HeatmapRenderer {
   }
 
   get metrics(): DrawMetrics { return { ...this.metricsValue }; }
-  setTopPercent(value: number): void { this.topPercent = value; }
+  setTopPercent(value: number): void { this.setScaleOptions({ ...this.options, heatTopPct: value }); }
+  setScaleOptions(options: HeatScaleOptions): void {
+    this.colorDirty ||= (Object.keys(this.options) as (keyof HeatScaleOptions)[]).some(k => this.options[k] !== options[k]);
+    this.options = { heatTopPct: options.heatTopPct, heatUpperMode: options.heatUpperMode, heatUpperSize: options.heatUpperSize,
+      heatLowerMode: options.heatLowerMode, heatLowerPct: options.heatLowerPct,
+      heatLowerSize: options.heatLowerSize, heatGamma: options.heatGamma };
+  }
 
   draw(columns: readonly HeatColumn[], view: Viewport, _revision: number, _zone: DisplayZone, hasPriceData = true, redrawAxis = true): void {
     const drawStart = performance.now();
@@ -134,16 +147,18 @@ export class HeatmapRenderer {
 
     const now = performance.now();
     let scaleMs = 0;
-    let scaleChanged = false;
-    if (hasPriceData && columns.length > 0
-      && (this.threshold !== null || this.pixelGrid!.values.some(size => size >= 1))
+    let scaleChanged = this.colorDirty;
+    if ((hasPriceData && columns.length > 0
+      && (this.threshold !== null || this.pixelGrid!.values.some(size => size >= 1)) || this.options.heatUpperMode === "size")
       && (this.threshold === null || now - this.lastScaleAt >= 1_000)) {
       if (this.scaleTimer !== null) window.clearTimeout(this.scaleTimer);
       this.scaleTimer = null;
       const scaleStart = performance.now();
-      const nextThreshold = viewportPositiveP99(columns, view, this.topPercent);
-      scaleChanged = nextThreshold !== this.threshold;
-      this.threshold = nextThreshold;
+      const next = heatThresholds(columns, view, this.options);
+      scaleChanged ||= next.upper !== this.threshold || next.lower !== this.lower;
+      this.threshold = next.upper;
+      this.lower = next.lower;
+      this.lowerAdjusted = next.lowerAdjusted;
       this.lastScaleAt = now;
       scaleMs = performance.now() - scaleStart;
     } else if (this.threshold !== null && this.scaleTimer === null) {
@@ -172,7 +187,7 @@ export class HeatmapRenderer {
         const values = new Uint32Array(stripWidth * height);
         for (let y = 0; y < height; y++) values.set(this.pixelGrid!.values.subarray(y * width + a, y * width + b), y * stripWidth);
         const colorStart = performance.now();
-        const image = new ImageData(colorize(values, this.threshold ?? 1), stripWidth, height);
+        const image = new ImageData(colorize(values, this.threshold ?? 1, undefined, this.lower, this.options.heatGamma), stripWidth, height);
         colorMs += performance.now() - colorStart;
         const uploadStart = performance.now();
         this.context.putImageData(image, a, 0);
@@ -182,7 +197,7 @@ export class HeatmapRenderer {
     } else if (rasterRebuilt || scaleChanged || !this.imageData) {
       const rasterStart = performance.now();
       const reusable = this.imageData?.width === width && this.imageData.height === height ? this.imageData : null;
-      const rgba = colorize(this.pixelGrid!.values, this.threshold ?? 1, reusable?.data);
+      const rgba = colorize(this.pixelGrid!.values, this.threshold ?? 1, reusable?.data, this.lower, this.options.heatGamma);
       this.imageData = reusable ?? new ImageData(rgba, width, height);
       colorMs = performance.now() - rasterStart;
       const uploadStart = performance.now();
@@ -192,6 +207,7 @@ export class HeatmapRenderer {
     }
 
     this.lastViewport = { ...view };
+    this.colorDirty = false;
     const axisStart = performance.now();
     if (redrawAxis) {
       if (hasPriceData) drawPriceAxis(this.axis, view);
@@ -207,6 +223,7 @@ export class HeatmapRenderer {
       rasterMs,
       tileSyncMs, colorMs, uploadMs, axisMs,
       p99: this.threshold ?? 1,
+      lower: this.lower, lowerAdjusted: this.lowerAdjusted, gamma: this.options.heatGamma,
       rasterRebuilt,
       partialRaster: !!strips && !scaleChanged,
       repaintPixels: strips && !scaleChanged ? strips.reduce((n, [a, b]) => n + (b - a) * height, 0) : rasterRebuilt || scaleChanged ? width * height : 0,
@@ -253,19 +270,20 @@ function buildColorLut(): Uint8Array {
 }
 
 export function colorize(values: Uint32Array, threshold: number,
-  reusable?: Uint8ClampedArray<ArrayBuffer>): Uint8ClampedArray<ArrayBuffer> {
+  reusable?: Uint8ClampedArray<ArrayBuffer>, lower = 0, gamma = 1): Uint8ClampedArray<ArrayBuffer> {
   const output = reusable?.length === values.length * 4 && reusable.byteOffset % 4 === 0
     ? reusable : new Uint8ClampedArray(values.length * 4);
   const pixels = new Uint32Array(output.buffer, output.byteOffset, values.length);
   if (Number.isNaN(threshold)) { pixels.fill(PACKED_BLACK); return output; }
-  const normalizer = Math.max(1, threshold);
+  const normalizer = Math.max(1, threshold - lower);
   for (let index = 0; index < values.length; index += 1) {
     const size = values[index]!;
-    if (size < 1) {
+    if (size < 1 || size <= lower) {
       pixels[index] = PACKED_BLACK;
       continue;
     }
-    const lutIndex = Math.min(COLOR_LUT_STEPS - 1, Math.round((size / normalizer) * (COLOR_LUT_STEPS - 1)));
+    const t = Math.min(1, Math.max(0, (size - lower) / normalizer));
+    const lutIndex = Math.round((gamma === 1 ? t : t ** gamma) * (COLOR_LUT_STEPS - 1));
     pixels[index] = PACKED_COLOR_LUT[lutIndex]!;
   }
   return output;
