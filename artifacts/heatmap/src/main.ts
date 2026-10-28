@@ -23,15 +23,17 @@ import { mountSettingsUi } from "./components/settings-ui.ts";
 import { resetViewport } from "./chart/view-reset.ts";
 import { AutoPriceScale, resetTimeViewport } from "./chart/axis-view.ts";
 import { bindDoubleActivation } from "./chart/double-activation.ts";
+import { isLongVpRoute } from "./long-vp/view-math.ts";
+import { viewSwitchHtml } from "./long-vp/nav.ts";
 
 declare global {
   interface Window {
     readonly __heatmapDebug?: Readonly<HeatmapDebugSnapshot>;
-    readonly __heatmapColumnDelivery?: ReturnType<typeof columnDeliverySnapshot>;
+    readonly __heatmapColumnDelivery?: RealtimeClient["columnDeliveries"];
     readonly __heatmapFrameStats?: ReturnType<FrameProfile["snapshot"]>;
     readonly __heatmapDeltaBars?: ReturnType<DeltaRenderer["snapshot"]>;
     readonly __heatmapTradeOverlay?: ReturnType<TradeOverlayRenderer["snapshot"]>;
-    readonly __heatmapRecentTrades?: ReturnType<typeof recentTradeSnapshot>;
+    readonly __heatmapRecentTrades?: Readonly<Record<string, unknown>>;
   }
 }
 
@@ -83,6 +85,14 @@ type Point = { x: number; y: number };
 const root = document.getElementById("root");
 if (!root) throw new Error("Application root element is missing");
 
+// Screen switch: ?view=longvp mounts the long-term VP screen only; the heatmap (and its WebSocket) never starts.
+if (isLongVpRoute(window.location.search)) {
+  void import("./long-vp/app.ts").then(m => { m.mountLongVp(root); })
+    .catch(e => { root.textContent = `長期VP画面を読み込めませんでした：${e instanceof Error ? e.message : e}`; });
+} else runHeatmap(root);
+
+function runHeatmap(root: HTMLElement): void {
+
 root.innerHTML = `
   <div class="app-shell">
     <aside class="tool-rail" aria-label="Tools frame">
@@ -92,6 +102,7 @@ root.innerHTML = `
     <main class="workspace">
       <header class="masthead">
         <div class="instrument"><strong>NQ / DEPTH</strong><span>ONE-SECOND BOOK HISTORY</span></div>
+        ${viewSwitchHtml("heatmap")}
         <div class="market-state" data-testid="connection-state" data-state="connecting" aria-live="polite">
           <i class="state-dot" aria-hidden="true"></i><span id="connection-label">CONNECTING</span>
         </div>
@@ -872,3 +883,4 @@ async function startWithSettings() {
   renderTimeAxis(); updateStatus(); scheduleDraw(); client.start();
 }
 void startWithSettings();
+}

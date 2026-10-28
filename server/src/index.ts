@@ -10,6 +10,7 @@ import { measurementLogWriter } from "./diagnostics/measurement-log.ts";
 import { MeasurementIsolation, isolationMarker } from "./diagnostics/isolation.ts";
 import { LocalSettings } from "./settings/local.ts";
 import { AppSettings } from "./settings/app.ts";
+import { LongVpSettings } from "./settings/longvp.ts";
 import { AppStore } from "./store/app.ts";
 import { ReplitObjects, storageMode } from "./store/objects.ts";
 import { fileURLToPath } from "node:url";
@@ -34,6 +35,9 @@ async function main() {
   const objects = useObjects ? new ReplitObjects() : null;
   const settings = objects ? new AppSettings(path.join(root!, "settings.json"), objects, mode.prefix, log)
     : new LocalSettings(fileURLToPath(new URL("../../data/settings.json", import.meta.url)), log);
+  const longVpSettings = new LongVpSettings(objects ? path.join(root!, "settings-longvp.json")
+    : fileURLToPath(new URL("../../data/settings-longvp.json", import.meta.url)), log,
+    objects ? { objects, prefix: mode.prefix } : undefined);
   const isolation = new MeasurementIsolation(isolationMarker, log);
   isolation.snapshot();
   let activity: () => unknown = () => ({ phase: "initializing" });
@@ -77,7 +81,7 @@ async function main() {
     () => ({ ...hub.snapshot(), connections: hub.connections() }),
     () => memory.snapshot(), () => isolation.snapshot(), settings,
     process.env.HEATMAP_SERVE_FRONTEND === "1"
-      ? fileURLToPath(new URL("../../artifacts/heatmap/dist/public/", import.meta.url)) : undefined, longVp);
+      ? fileURLToPath(new URL("../../artifacts/heatmap/dist/public/", import.meta.url)) : undefined, longVp, longVpSettings);
   let http: Server | null = null;
   let wss: ReturnType<typeof attachHub> | null = null;
   const startup = new AbortController();
