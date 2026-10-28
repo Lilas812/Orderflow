@@ -13,11 +13,13 @@
   "dependencies": {
     "@replit/object-storage": "^1.0.0",
     "express": "5.3.0",
+    "pg": "^8.23.1",
     "ws": "8.22.0"
   },
   "devDependencies": {
     "@types/express": "5.0.6",
     "@types/node": "^24.19.2",
+    "@types/pg": "^8.23.1",
     "@types/ws": "8.18.2"
   }
 }

@@ -46,6 +46,8 @@ Agent が更新してよいのは、下の Current Status 節だけ。
 
 ## Current Status
 
+- 2026-10-28：長期VPのデータ蓄積を追加。本番限定のPostgreSQL4テーブル、直近7日のREST取り込み・不足回収、17:10 America/New_Yorkの日次処理、RESTだけによる確定、当日暫定集計を実装。開発の上流WSはRun／SIGUSR2とも無効化。133試験、型検査・ビルド、実REST1分149約定（買68／売84）の再取得照合、DB一時表での原子性を確認。開発DBは定義のみで4表0行。本番の再Publish・蓄積開始は未実施。開発起動の初期化284.149秒、最終SIGTERM後PID消滅・ブラウザ0・下流0を確認。長期VP画面と軸操作は未着手。詳細はserver/LONG_VP_REPORT.md。
+
 - 2026-10-28：Phase 10cの閾値・コントラスト、VPの線・帯・ラベル、設定v3／14項目を実装。正本2件を指定ハッシュで差し替え。サーバー118／画面112試験、両型検査・本番ビルド成功。実1倍リプレイ9場面と9改同条件の描画計測を実施し、ズーム性能の目安に一部未達。設定初期値保存、WS0・検証ブラウザ0、SIGTERM後上流close1006／socketClosed・PID消滅確認。詳細は artifacts/heatmap/PHASE10C_REPORT.md。再PublishとPhase 10dは未実施。
 
 - 2026-10-28：公開後のRECONNECTINGを調査し、ユーザー提供/statusで実受信を確認。旧API artifactのサービス宣言を外し、heatmapへ /・/api・/api/ws を統一。追加承認により開発もビルド後の単一Node配信へ変更（即時反映は廃止、保存先はローカルのまま）。115/115試験・両型検査・ビルド、HTTP200・WS101・実画面CONNECTEDをWorkspaceで確認。07:49:50.905 SIGTERM、51.040実close1006/socketClosed、51.518サーバー停止、PID消滅639.624ms。検証Chromium・WS・受信PID残存なし。再Publish・公開先の修正後確認は未実施。詳細はserver/PHASE10A_REPORT.md第9節。

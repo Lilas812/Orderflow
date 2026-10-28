@@ -14,11 +14,20 @@ import { AppStore } from "./store/app.ts";
 import { ReplitObjects, storageMode } from "./store/objects.ts";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
+import { productionAccumulation, LongVpService } from "./long-vp/service.ts";
+import { LongRest } from "./long-vp/rest.ts";
+import { PgLongStore } from "./long-vp/store.ts";
 
 async function main() {
   const config = readConfig(process.env);
   const log = createLogger(config.apiKey, measurementLogWriter());
   const mode = storageMode(process.env);
+  const longVp = productionAccumulation(process.env) && process.env.DATABASE_URL
+    ? new LongVpService(new LongRest(config.apiKey), new PgLongStore(process.env.DATABASE_URL), log) : null;
+  const longStatus = () => longVp?.snapshot() ?? {
+    enabled: false, reason: productionAccumulation(process.env) ? "database_url_missing" : "production_only",
+  };
+  if (!longVp) log("long_vp_disabled", longStatus());
   const root = mode.app ? path.resolve(process.env.HEATMAP_STORAGE_DIR
     ?? fileURLToPath(new URL("../../data/app-storage-working/", import.meta.url))) : null;
   const objects = mode.app ? new ReplitObjects() : null;
@@ -34,7 +43,7 @@ async function main() {
     objects ? new AppStore(root!, objects, mode.prefix, log) : undefined);
   const receiver = new Receiver(log, {
     book: (book) => { pipeline.book(book); hub.book(book); },
-    trade: (trade) => { pipeline.trade(trade); hub.trade(trade); },
+    trade: (trade) => { pipeline.trade(trade); hub.trade(trade); longVp?.trade(trade); },
   });
   await pipeline.initialize();
   const upstream = new Upstream({ apiKey: config.apiKey, receiver, log });
@@ -49,7 +58,7 @@ async function main() {
     }, () => hub.snapshot()),
   }, log);
   activity = () => ({ delivery: hub.snapshot(), backfill: pipeline.backfill.snapshot().state });
-  const app = createStatusApp(upstream, receiver, config.apiKey, () => pipeline.status(),
+  const app = createStatusApp(upstream, receiver, config.apiKey, () => ({ ...pipeline.status(), longVp: longStatus() }),
     () => ({ ...hub.snapshot(), connections: hub.connections() }),
     () => memory.snapshot(), () => isolation.snapshot(), settings,
     process.env.HEATMAP_SERVE_FRONTEND === "1"
@@ -79,6 +88,7 @@ async function main() {
     // Close the upstream first; its existing close timeout is inside the same
     // process-wide budget. Never open another upstream during shutdown.
     await upstream.stop();
+    await longVp?.stop();
     await pipeline.stop();
     await httpClosed;
     await memory.stop();
@@ -91,7 +101,10 @@ async function main() {
   }
   process.on("SIGTERM", () => { void shutdown("SIGTERM"); });
   process.on("SIGINT", () => { void shutdown("SIGINT"); });
-  process.on("SIGUSR2", () => { upstream.reconnect("SIGUSR2"); });
+  process.on("SIGUSR2", () => {
+    if (productionAccumulation(process.env)) upstream.reconnect("SIGUSR2");
+    else log("upstream_disabled", { reason: "production_only_rest_development" });
+  });
   http.once("error", (error) => {
     log("http_error", { error });
     process.exitCode = 1;
@@ -99,7 +112,9 @@ async function main() {
   });
   http.once("listening", () => {
     log("server_listening", { port: config.port, host: "0.0.0.0" });
-    upstream.start();
+    if (productionAccumulation(process.env)) upstream.start();
+    else log("upstream_disabled", { reason: "production_only_rest_development" });
+    longVp?.start();
   });
 }
 
