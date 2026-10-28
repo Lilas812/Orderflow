@@ -41,6 +41,25 @@ export class TradeAggregator {
     return [...this.buckets].sort(([a], [b]) => a - b).flatMap(([, bucket]) => [...bucket.records.values()]);
   }
 
+  /** Exact half-open viewport bounds; uncommitted history is not included. */
+  priceExtent(fromUs: number, toUs: number): { min: number; max: number } | null {
+    let min = Infinity, max = -Infinity;
+    for (const [second, bucket] of this.buckets) {
+      if (second + US_PER_SECOND <= fromUs || second >= toUs) continue;
+      if (second >= fromUs && second + US_PER_SECOND <= toUs) {
+        for (const price of bucket.cells.keys()) {
+          min = Math.min(min, price); max = Math.max(max, price);
+        }
+      } else {
+        for (const trade of bucket.records.values()) {
+          if (trade.tsUs < fromUs || trade.tsUs >= toUs) continue;
+          min = Math.min(min, trade.price); max = Math.max(max, trade.price);
+        }
+      }
+    }
+    return min === Infinity ? null : { min, max };
+  }
+
   appendLive(trades: readonly Trade[]): void {
     for (const trade of trades) {
       for (const p of this.pending.values()) {

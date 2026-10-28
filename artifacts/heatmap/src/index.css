@@ -101,6 +101,8 @@ button, input { font: inherit; }
 }
 .heat-region { grid-column: 1; grid-row: 1; overflow: visible; }
 .price-region { grid-column: 2; grid-row: 1; background: #000000; touch-action: none; }
+.auto-price-label { position: absolute; top: 2px; left: 2px; z-index: 3; color: #8e8c9c; background: #000; font: 9px var(--font-mono); pointer-events: none; }
+.large-region, .vp-region, .time-region { touch-action: none; }
 .large-region { grid-column: 3; grid-row: 1; }
 .vp-region { grid-column: 4; grid-row: 1; }
 .vp-guides {

@@ -21,6 +21,8 @@ import { SettingsRecovery } from "./data/settings-recovery.ts";
 import type { SettingsDocument } from "./data/settings.ts";
 import { mountSettingsUi } from "./components/settings-ui.ts";
 import { resetViewport } from "./chart/view-reset.ts";
+import { AutoPriceScale, resetTimeViewport } from "./chart/axis-view.ts";
+import { bindDoubleActivation } from "./chart/double-activation.ts";
 
 declare global {
   interface Window {
@@ -141,6 +143,11 @@ root.innerHTML = `
 
 const canvas = required<HTMLCanvasElement>("heatmap");
 const axisCanvas = required<HTMLCanvasElement>("price-axis");
+const autoPriceLabel = document.createElement("span");
+autoPriceLabel.className = "auto-price-label";
+autoPriceLabel.textContent = "AUTO";
+autoPriceLabel.hidden = true;
+axisCanvas.parentElement!.append(autoPriceLabel);
 const heatRegion = document.querySelector<HTMLElement>(".heat-region")!;
 const timeAxis = required<HTMLDivElement>("time-axis");
 const connectionLabel = required<HTMLSpanElement>("connection-label");
@@ -189,6 +196,8 @@ let viewport: Viewport = {
   priceSpanTicks: 160,
 };
 let follow = true;
+const autoPrice = new AutoPriceScale();
+let autoPriceTimer: ReturnType<typeof setTimeout> | null = null;
 let centeredOnData = false;
 let receivedColumnRevision = 0;
 let requestCount = 0;
@@ -355,7 +364,9 @@ function alignFollowToPhysicalPixel(): void {
   viewport.startUs = followStartUs(cache.latestTimeUs, viewport.durationSec, width);
 }
 function setViewport(next: Viewport, pan = false): void {
-  viewport = clampViewport(next);
+  const clamped = clampViewport(next);
+  viewport = autoPrice.enabled ? { ...clamped, centerPriceTicks: viewport.centerPriceTicks,
+    priceSpanTicks: viewport.priceSpanTicks } : clamped;
   if (pan) follow = false;
   if (follow) alignFollowToPhysicalPixel();
   syncRetentionAndRequests();
@@ -365,6 +376,7 @@ function setViewport(next: Viewport, pan = false): void {
 }
 
 function resetView(): void {
+  disableAutoPrice();
   const reference = cache.latestTimeUs !== null ? cache.latestTimeUs
     : hello?.serverTimeUs ?? Date.now() * 1_000;
   const midpoint = currentTrade.trade?.price ?? initialQuote.trade?.price ?? bestMidpoint(cache.latestBook ?? cache.columns.at(-1));
@@ -376,6 +388,48 @@ function resetView(): void {
   viewport = resetViewport(hello?.mode === "replay" ? replayHeadUs ?? reference : reference,
     viewport.centerPriceTicks, Math.max(1, Math.round(canvas.clientWidth * (window.devicePixelRatio || 1))),
     hello?.mode === "replay" ? "replay" : "live");
+  refreshVisibleRange();
+  renderTimeAxis();
+  scheduleDraw();
+  updateStatus();
+}
+
+function disableAutoPrice(): void {
+  autoPrice.disable();
+  autoPriceLabel.hidden = true;
+  if (autoPriceTimer !== null) clearTimeout(autoPriceTimer);
+  autoPriceTimer = null;
+}
+
+function requestAutoPrice(): void {
+  autoPrice.invalidate();
+  if (autoPriceTimer !== null) return;
+  const delay = autoPrice.delay(performance.now());
+  if (delay === null) return;
+  autoPriceTimer = setTimeout(() => {
+    autoPriceTimer = null;
+    const next = autoPrice.fit(performance.now(), viewport, cache.tradeAggregation,
+      currentTrade.trade?.price ?? initialQuote.trade?.price
+        ?? bestMidpoint(cache.latestBook ?? cache.columns.at(-1)) ?? viewport.centerPriceTicks);
+    if (!next) { requestAutoPrice(); return; }
+    viewport = next;
+    centeredOnData = true;
+    drawScheduler.request("all");
+  }, delay);
+}
+
+function enableAutoPrice(): void {
+  autoPrice.enable();
+  autoPriceLabel.hidden = false;
+  requestAutoPrice();
+}
+
+function resetTimeView(): void {
+  const reference = cache.latestTimeUs ?? hello?.serverTimeUs ?? Date.now() * 1_000;
+  viewport = resetTimeViewport(viewport, hello?.mode === "replay" ? replayHeadUs ?? reference : reference,
+    Math.max(1, Math.round(canvas.clientWidth * (window.devicePixelRatio || 1))),
+    hello?.mode === "replay" ? "replay" : "live");
+  follow = true;
   refreshVisibleRange();
   renderTimeAxis();
   scheduleDraw();
@@ -448,6 +502,7 @@ const drawScheduler = new LayerScheduler(draw => requestAnimationFrame(draw), {
 
 function scheduleDraw(redrawDepth = true): void {
   if (!settingsLoaded) return;
+  requestAutoPrice();
   drawScheduler.request(redrawDepth ? "all" : "trades");
   if (!redrawDepth) drawScheduler.request("delta");
 }
@@ -723,6 +778,8 @@ function pricePointerDown(event: PointerEvent): void {
 function pricePointerMove(event: PointerEvent): void {
   if (!priceDrag || priceDrag.id !== event.pointerId) return;
   const point = localPoint(event, axisCanvas);
+  if (Math.abs(point.y - priceDrag.y) === 0) return;
+  disableAutoPrice();
   const factor = Math.exp(Math.max(-2, Math.min(2, (point.y - priceDrag.y) * 0.008)));
   setViewport(zoomPriceAt(priceDrag.view, priceDrag.view.centerPriceTicks, factor));
 }
@@ -743,6 +800,12 @@ axisCanvas.addEventListener("pointerdown", pricePointerDown);
 axisCanvas.addEventListener("pointermove", pricePointerMove);
 axisCanvas.addEventListener("pointerup", pricePointerUp);
 axisCanvas.addEventListener("pointercancel", pricePointerUp);
+const clearAxisGestures = [
+  bindDoubleActivation(axisCanvas, enableAutoPrice),
+  bindDoubleActivation(timeAxis, resetTimeView),
+  bindDoubleActivation(document.querySelector<HTMLElement>(".large-region")!, resetView),
+  bindDoubleActivation(document.querySelector<HTMLElement>(".vp-region")!, resetView),
+];
 window.addEventListener("resize", () => {
   if (follow) alignFollowToPhysicalPixel();
   renderTimeAxis();
@@ -760,6 +823,7 @@ const settingsUi = mountSettingsUi(document.querySelector<HTMLElement>(".tool-ra
   overridden: activeSettings.overridden,
   onModalChange: (open) => {
     if (!open) return;
+    for (const clear of clearAxisGestures) clear();
     for (const id of pointerPoints.keys()) if (canvas.hasPointerCapture(id)) canvas.releasePointerCapture(id);
     if (priceDrag && axisCanvas.hasPointerCapture(priceDrag.id)) axisCanvas.releasePointerCapture(priceDrag.id);
     pointerPoints.clear(); tapStarts.clear(); pointerStart = pinchStart = priceDrag = lastTap = null;
