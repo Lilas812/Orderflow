@@ -486,7 +486,6 @@ function updateStatus(): void {
   const statusText = extractUpstreamStatus(latestStatus);
   const parts = [
     settingsWarning,
-    lastMetrics.lowerAdjusted ? "下限を上限の手前に合わせた" : "",
     client.loadingRangeCount ? `Loading ${client.loadingRangeCount} range(s)` : "",
     lastConnectionMessage,
     statusText,
@@ -532,6 +531,7 @@ ${cache.size.toLocaleString()} columns · steady ${(bytesPerMinute / 1_024).toFi
 initial ${(client.traffic.initialBytes / 1_024).toFixed(1)} KiB · ${client.traffic.initialElapsedMs ?? "loading"} ms
 range ${(client.traffic.rangeBytes / 1_024).toFixed(1)} KiB · ${client.traffic.extensions || "no compression"} · expanded bytes
 ${connection.toUpperCase()} · ${follow ? "FOLLOW" : "BROWSE"} · ${requestCount} range
+${lastMetrics.lowerAdjusted ? "下限を上限の手前に合わせた" : ""}
 ${overlayRenderer.metrics.bubbleCount} bubbles · min ${bubbleMinimum.value}${bubbleMinimum.invalid ? " · bubbleMin 無効" : ""}
 line ${overlayRenderer.metrics.lineMs.toFixed(2)} / bubble ${overlayRenderer.metrics.bubbleMs.toFixed(2)} ms
 book ${bookRenderer.metrics.meanMs.toFixed(2)} / ${bookRenderer.metrics.maxMs.toFixed(2)} ms (mean / max, last 30)

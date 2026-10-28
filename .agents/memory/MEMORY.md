@@ -12,6 +12,7 @@
 - [CDP合成ページの通信制限](synthetic-document-network.md) — 合成ページからのloopback WSがChromiumに遮断される。実通信の確認には実HTTP配信を使う。
 - [VPの指定の経緯](vp-decisions.md) — 口頭指定は正本へ反映済み。書換禁止を撤回して既存行を保つ差し込みへ改めた経緯を残す。
 - [VPの照合締切](vp-verification-cutoff.md) — ライブと保存の独立比較では、巻き戻る約定時刻だけでなく受信締切を一致させる。
+- [VP装飾の表示寸法](vp-decoration-decisions.md) — ラベル高さ18 CSS px、拡大時のVA帯もVAH・VALの価格行全体を含める承認。
 - [デルタの追加指定](delta-decisions.md) — 区間全体がそろわない過去の棒は非描画、最新区間は受信分で更新。棒の隙間・中央線は承認済み。
 - [設定変更時の列の共有](settings-decisions.md) — 再構築用の最新列と表示列を重複保持しないユーザー指定。
 - [App Storageの運用指定](app-storage-decisions.md) — 再試行・再DL照合、古い範囲のディスク一時保存、破損設定の退避を維持する。

@@ -210,3 +210,17 @@ mtime_ms = 1793127396934
 storage_uri = "gcs://replit-rams-assets-pike/rams/assets/repl:c326af06-2355-4bfb-a52e-f433587c4cd9/4f056a4e-907e-4cca-802d-1307f9688a41/3d2d9097-b2ff-4bb8-af91-f7c476403dcb"
 storage_version_token = "1793127751982836"
 content_type = "image/png"
+
+[[outputs]]
+id = "LHiKnOomsTtZtxlm7kNdj"
+uri = "file://data/phase10c/comparison.html"
+type = "html"
+title = "Phase 10c 比較画像・描画時間"
+description = "実保存データの1倍リプレイ6設定、補正、VP拡大・縮小の9画像と固定条件の計測結果。画像埋込済みHTML。"
+logical_id = "c79c062c-eaec-4c8f-83bd-beba9f974a49"
+content_hash = "sha256:612d7f75d2fb1bda45e7881d718c8a64e935003feadc1d3cd033ea2c088365d4"
+size = 1621693
+mtime_ms = 1793168068601
+storage_uri = "gcs://replit-rams-assets-pike/rams/assets/repl:c326af06-2355-4bfb-a52e-f433587c4cd9/c79c062c-eaec-4c8f-83bd-beba9f974a49/a0cbb658-a2ac-48e5-b8e3-7b41277eb24a"
+storage_version_token = "1793168208941135"
+content_type = "text/html"

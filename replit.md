@@ -46,6 +46,8 @@ Agent が更新してよいのは、下の Current Status 節だけ。
 
 ## Current Status
 
+- 2026-10-28：Phase 10cの閾値・コントラスト、VPの線・帯・ラベル、設定v3／14項目を実装。正本2件を指定ハッシュで差し替え。サーバー118／画面112試験、両型検査・本番ビルド成功。実1倍リプレイ9場面と9改同条件の描画計測を実施し、ズーム性能の目安に一部未達。設定初期値保存、WS0・検証ブラウザ0、SIGTERM後上流close1006／socketClosed・PID消滅確認。詳細は artifacts/heatmap/PHASE10C_REPORT.md。再PublishとPhase 10dは未実施。
+
 - 2026-10-28：公開後のRECONNECTINGを調査し、ユーザー提供/statusで実受信を確認。旧API artifactのサービス宣言を外し、heatmapへ /・/api・/api/ws を統一。追加承認により開発もビルド後の単一Node配信へ変更（即時反映は廃止、保存先はローカルのまま）。115/115試験・両型検査・ビルド、HTTP200・WS101・実画面CONNECTEDをWorkspaceで確認。07:49:50.905 SIGTERM、51.040実close1006/socketClosed、51.518サーバー停止、PID消滅639.624ms。検証Chromium・WS・受信PID残存なし。再Publish・公開先の修正後確認は未実施。詳細はserver/PHASE10A_REPORT.md第9節。
 
 - 2026-10-28：Phase 10aのApp Storage保存・本番単一Node配信・CPU10/60秒平均／起動以来最大RSSを実装。追加直接依存は@replit/object-storageのみ。サーバー106/106・画面105/105、両型検査・本番ビルド成功。実クラウドの時間境界アップロード、検証キャッシュ／書きかけ消失後の履歴復元、30分ライブ3,823約定／4,382枚の上流・保存・ブラウザ・VP照合、3ブラウザ各60分要求を確認。定常RSS512MB目安は未達（ライブ最大観測596,541,440B、全場面最大628,051,968B）。追加CPUスモークは再アップロード中の停止待ち120秒超過で未完了。全検証Chromium／受信PID消滅・WS0・制限解除後の別Origin受入・各上流socketClosedを確認。設定は初期値、devオブジェクト28件は削除せず。Reserved VM種別の準備のみでPublishせず、公開実機・Invite only・公開Secretsは未確認。詳細はserver/PHASE10A_REPORT.md。10b／10c未着手。
