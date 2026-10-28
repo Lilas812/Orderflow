@@ -46,6 +46,8 @@ Agent が更新してよいのは、下の Current Status 節だけ。
 
 ## Current Status
 
+- 2026-10-29：保存ありの起動を改善。LocalStoreの復旧被覆を行ごとではなく一括統合し、VPの完全取得記録と分離を維持。初期化中のSIGTERMを受理し、完了前はHTTP/WSを待ち受けず、中断・破損時は部分状態をflushしない。サーバー151試験・両型検査・ビルド成功。既存保存89ファイル35,050,830Bで初期化4.86秒／4.72秒、画面・healthz成功。coverageを含む90ファイルのSHA-256が調査前・起動後・停止後で一致。直接SIGTERMのupstream_stopped／server_stopped（26.55ms）、PID・LISTEN・検証Chromium残存0と下流0を確認。開発上流未接続、受信は停止済み。本番・形式・依存・設定・仕様正本は変更なし。詳細はserver/STARTUP_REPORT.md。
+
 - 2026-10-29：PCで実保存1倍リプレイの軸AUTO・解除・各resetを確認。保存約定の独立集計と中心／span一致、上下10%・最小20tick、受信と連続pan時の成功fit13回（間隔1000.0〜1000.4ms）、手動価格zoom解除、時間resetの価格維持、本体／大口板／VP／ツールバーresetが成功。アプリ本体・正本・設定・保存データは未変更（終了後97ファイルのハッシュ一致）。下流0・稼働検証Chromium0、受信PID330のSIGTERM後にupstream_stopped／server_stopped・PID消滅・HTTP閉鎖を確認。詳細はartifacts/heatmap/AXIS_REPLAY_REPORT.md。
 
 - 2026-10-29：承認済みの軸ダブルクリック／ダブルタップを既存ヒートマップに実装。価格軸AUTO（可視約定の高安80%・最小20ティック・最大毎秒1回・手動価格操作で解除）、時間軸のみ初期幅と追尾／再生位置へ戻す処理、大口板／VPの全体リセットを追加。画面119試験・ビルド・起動・初回撮影成功。作業時の型検査は既存phase10c.test.tsのincluded欠落5件で失敗したが、下記の本体側修正を取り込み。開発上流は未接続のまま、実データでのAUTO描画は未確認。検証Chromium残存なし・下流0・上流stoppedを確認後、ワークフローをSIGTERM停止し受信PID消滅・HTTP閉鎖を確認（server_stoppedの終了ログは取得できず）。仕様正本・設定・保存形式・本番は変更なし。

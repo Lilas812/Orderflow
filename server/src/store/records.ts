@@ -5,8 +5,9 @@ import { decodeColumns } from "./binary.ts";
 import type { Column } from "../aggregate/columns.ts";
 import type { Trade } from "../types.ts";
 
-function input(file: string) {
-  const raw = createReadStream(file);
+function input(file: string, signal?: AbortSignal) {
+  signal?.throwIfAborted();
+  const raw = createReadStream(file, { signal });
   if (!file.endsWith(".gz")) return raw;
   const inflated = createGunzip();
   raw.on("error", error => inflated.destroy(error));
@@ -52,10 +53,11 @@ export function mergeColumnRecords(existing: Buffer, pending: ReadonlyMap<number
 }
 
 /** Startup only needs seconds/coverage: never materialize 800 objects per second. */
-export async function scanColumnFile(file: string, visit: (second: number) => void): Promise<void> {
+export async function scanColumnFile(file: string, visit: (second: number) => void, signal?: AbortSignal): Promise<void> {
   const header = Buffer.alloc(9);
   let filled = 0, remaining = 0, previous = -1;
-  for await (const chunk of input(file)) {
+  for await (const chunk of input(file, signal)) {
+    signal?.throwIfAborted();
     const bytes = chunk as Buffer;
     let offset = 0;
     while (offset < bytes.length) {
@@ -94,19 +96,23 @@ export async function* columnFileRange(file: string, start: number, end: number)
   if (bytes.length) throw Error("incomplete_column_record");
 }
 
-export async function* tradeFileEntries(file: string): AsyncGenerator<{ line: string; trade: Trade }> {
-  const stream = input(file);
+export async function* tradeFileEntries(file: string, signal?: AbortSignal): AsyncGenerator<{ line: string; trade: Trade }> {
+  const stream = input(file, signal);
   const lines = createInterface({ input: stream, crlfDelay: Infinity });
   let failure: Error | null = null;
   const fail = (error: Error) => { failure = error; lines.close(); };
   stream.once("error", fail); lines.once("error", fail);
   try {
-    for await (const line of lines) if (line) yield { line, trade: JSON.parse(line) as Trade };
+    for await (const line of lines) if (line) {
+      signal?.throwIfAborted();
+      yield { line, trade: JSON.parse(line) as Trade };
+    }
     if (failure) throw failure;
+    signal?.throwIfAborted();
   }
   finally { lines.close(); stream.destroy(); }
 }
 
-export async function* tradeFileRows(file: string): AsyncGenerator<Trade> {
-  for await (const entry of tradeFileEntries(file)) yield entry.trade;
+export async function* tradeFileRows(file: string, signal?: AbortSignal): AsyncGenerator<Trade> {
+  for await (const entry of tradeFileEntries(file, signal)) yield entry.trade;
 }

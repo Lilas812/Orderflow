@@ -17,7 +17,7 @@ export type Kind = "book" | "tick";
 export type Range = [number, number];
 export type Coverage = Record<Kind, Range[]>;
 export interface Store {
-  initialize(): Promise<void>;
+  initialize(signal?: AbortSignal): Promise<void>;
   hold(start: number, end: number): void;
   addColumns(columns: Column[]): Promise<void>;
   addTrades(trades: Trade[]): Promise<void>;
@@ -48,7 +48,6 @@ export class LocalStore implements Store {
   // Keep VP's interval record separate from startup's best-effort file recovery.
   // Finding a row in a partial old file is not proof of a complete tick second.
   private recordedTicks: Range[] = [];
-  private recoveringFiles = false;
   protected held = new Set<number>();
   private columns = new Map<number, Map<number, Buffer>>();
   private columnLastSeconds = new Map<number, number>();
@@ -103,7 +102,8 @@ export class LocalStore implements Store {
     }
     return result;
   }
-  async initialize() {
+  async initialize(signal?: AbortSignal) {
+    signal?.throwIfAborted();
     await fs.mkdir(this.root, { recursive: true, mode: 0o700 });
     const index = path.join(this.root, "coverage.json");
     if (await this.exists(index)) {
@@ -117,27 +117,37 @@ export class LocalStore implements Store {
     }
     await this.retention();
     // Recover actually persisted seconds even if a crash preceded index replacement.
-    this.recoveringFiles = true;
+    // Merge once after recovery, not once per row against thousands of intervals.
+    // These observed seconds must NEVER enter recordedTicks (VP completeness).
+    const recovered: Coverage = { book: [], tick: [] };
     for (const file of await this.allFiles()) {
+      signal?.throwIfAborted();
+      const seconds = new Set<number>();
       if (file.endsWith(".bin") || file.endsWith(".bin.gz")) {
         const match = file.match(/(\d{4}-\d\d-\d\d)[/\\](\d\d)\./)!;
         const hour = Date.parse(`${match[1]}T${match[2]}:00:00Z`) / 1000;
         await scanColumnFile(file, second => {
           this.includeSecond(second);
-          this.markCovered("book", second, second + 1);
+          seconds.add(second);
           this.stats.latestColumnSec = Math.max(this.stats.latestColumnSec ?? 0, second);
           this.columnLastSeconds.set(hour, Math.max(this.columnLastSeconds.get(hour) ?? -1, second));
-        });
+        }, signal);
       } else {
-        for await (const trade of tradeFileRows(file)) {
+        for await (const trade of tradeFileRows(file, signal)) {
           const sec = Math.floor(trade.tsUs / 1_000_000);
           this.includeSecond(sec);
-          this.markCovered("tick", sec, sec + 1);
+          seconds.add(sec);
         }
       }
+      // Collapse each file's seconds before retaining them for the final union.
+      const kind = file.endsWith(".jsonl.gz") ? "tick" : "book";
+      recovered[kind].push(...ranges([...seconds].map(s => [s, s + 1])));
     }
-    this.recoveringFiles = false;
+    signal?.throwIfAborted();
+    for (const kind of ["book", "tick"] as const)
+      this.coverage[kind] = ranges([...this.coverage[kind], ...recovered[kind]]);
     await this.refreshStats();
+    signal?.throwIfAborted();
   }
   hold(start: number, end: number) {
     for (let hour = hourOf(start); hour < end; hour += 3600) this.held.add(hour);
@@ -147,7 +157,7 @@ export class LocalStore implements Store {
   }
   markCovered(kind: Kind, start: number, end: number) {
     this.coverage[kind] = ranges([...this.coverage[kind], [start, end]]);
-    if (kind === "tick" && !this.recoveringFiles) this.recordedTicks = ranges([...this.recordedTicks, [start, end]]);
+    if (kind === "tick") this.recordedTicks = ranges([...this.recordedTicks, [start, end]]);
   }
   addColumns(columns: Column[]) {
     return this.run(async () => {

@@ -74,8 +74,9 @@ export class Pipeline {
     }).finally(() => this.pending.delete(tracked));
     this.pending.add(tracked);
   }
-  async initialize() {
-    await this.store.initialize();
+  async initialize(signal?: AbortSignal) {
+    await this.store.initialize(signal);
+    signal?.throwIfAborted();
     this.timer = setInterval(() => { void this.tick(); }, 1000);
   }
   book(book: BookSnapshot) {

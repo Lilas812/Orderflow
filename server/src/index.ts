@@ -18,6 +18,7 @@ import { productionAccumulation, accumulationEnabled, AppLongVp } from "./long-v
 import { LongRest } from "./long-vp/rest.ts";
 import { LongObjects } from "./long-vp/objects.ts";
 import { setTimeout as delay } from "node:timers/promises";
+import type { Server } from "node:http";
 
 async function main() {
   const config = readConfig(process.env);
@@ -33,7 +34,6 @@ async function main() {
   const objects = useObjects ? new ReplitObjects() : null;
   const settings = objects ? new AppSettings(path.join(root!, "settings.json"), objects, mode.prefix, log)
     : new LocalSettings(fileURLToPath(new URL("../../data/settings.json", import.meta.url)), log);
-  await settings.get();
   const isolation = new MeasurementIsolation(isolationMarker, log);
   isolation.snapshot();
   let activity: () => unknown = () => ({ phase: "initializing" });
@@ -62,7 +62,6 @@ async function main() {
         signal.throwIfAborted();
       } });
   } else log("long_vp_disabled", longStatus());
-  await pipeline.initialize();
   const upstream = new Upstream({ apiKey: config.apiKey, receiver, log });
   const hub: Hub = new Hub({
     savedRange: () => pipeline.store.savedRange,
@@ -74,20 +73,23 @@ async function main() {
       const { vp: _vp, ...existing } = pipeline.status(); return existing;
     }, () => hub.snapshot()),
   }, log);
-  activity = () => ({ delivery: hub.snapshot(), backfill: pipeline.backfill.snapshot().state });
   const app = createStatusApp(upstream, receiver, config.apiKey, () => ({ ...pipeline.status(), longVp: longStatus() }),
     () => ({ ...hub.snapshot(), connections: hub.connections() }),
     () => memory.snapshot(), () => isolation.snapshot(), settings,
     process.env.HEATMAP_SERVE_FRONTEND === "1"
       ? fileURLToPath(new URL("../../artifacts/heatmap/dist/public/", import.meta.url)) : undefined, longVp);
-  const http = app.listen(config.port, "0.0.0.0");
-  const wss = attachHub(http, hub, origin => isolation.allows(origin));
+  let http: Server | null = null;
+  let wss: ReturnType<typeof attachHub> | null = null;
+  const startup = new AbortController();
+  let initialization: Promise<void> | null = null;
+  let initialized = false;
   let shuttingDown = false;
 
-  async function shutdown(signal: string) {
+  async function shutdown(signal: string, exitCode = 0) {
     if (shuttingDown) return;
     shuttingDown = true;
     log("shutdown_requested", { signal });
+    startup.abort();
     // The whole process, not each individual upload, has one budget. Leave
     // 0.5s before the user's 10s ceiling and 0.5s to finish logging/HTTP.
     const started = performance.now();
@@ -100,28 +102,54 @@ async function main() {
         storage: pipeline.store instanceof AppStore ? pipeline.store.shutdownSummary() : null });
       process.exit(1);
     }, 9500);
-    hub.stop(); wss.close();
-    const httpClosed = new Promise<void>((resolve) => http.close(() => resolve()));
+    hub.stop(); wss?.close();
+    const httpClosed = http
+      ? new Promise<void>((resolve) => http!.close(() => resolve())) : Promise.resolve();
     // Close the upstream first; its existing close timeout is inside the same
     // process-wide budget. Never open another upstream during shutdown.
     await upstream.stop();
     await longVp?.stop();
-    await pipeline.stop();
+    // A cancelled/failed recovery must not flush a partial coverage index or
+    // compress/replace existing data. Wait for its readers to close instead.
+    await initialization?.catch(() => {});
+    if (initialized) await pipeline.stop();
     await httpClosed;
     await memory.stop();
     log("server_stopped", { upstream: upstream.status.state, httpClosed: true,
-      elapsedMs: performance.now() - started, uploadDeadlineReached: budget.signal.aborted });
+      storageInitialized: initialized, elapsedMs: performance.now() - started, uploadDeadlineReached: budget.signal.aborted });
     clearTimeout(abortTimer);
     // The SDK has no public cancellation option. Do not let its outstanding
     // sockets or internal retries keep the process alive past the deadline.
-    process.stdout.write("", () => { clearTimeout(hardTimer); process.exit(0); });
+    process.stdout.write("", () => { clearTimeout(hardTimer); process.exit(exitCode); });
   }
   process.on("SIGTERM", () => { void shutdown("SIGTERM"); });
   process.on("SIGINT", () => { void shutdown("SIGINT"); });
   process.on("SIGUSR2", () => {
-    if (productionAccumulation(process.env)) upstream.reconnect("SIGUSR2");
+    if (initialized && !shuttingDown && productionAccumulation(process.env)) upstream.reconnect("SIGUSR2");
     else log("upstream_disabled", { reason: "production_only_rest_development" });
   });
+  const started = performance.now();
+  log("storage_initializing");
+  initialization = (async () => {
+    await settings.get();
+    startup.signal.throwIfAborted();
+    await pipeline.initialize(startup.signal);
+    initialized = true;
+  })();
+  try { await initialization; }
+  catch {
+    if (!shuttingDown) {
+      log("startup_failed", { reason: "storage_initialization_failed" });
+      await shutdown("startup_failed", 1);
+    }
+    return;
+  }
+  if (shuttingDown) return;
+  log("storage_initialized", { elapsedMs: performance.now() - started });
+  activity = () => ({ delivery: hub.snapshot(), backfill: pipeline.backfill.snapshot().state });
+  // Neither HTTP readiness nor WS rangeDone can be exposed before full recovery.
+  http = app.listen(config.port, "0.0.0.0");
+  wss = attachHub(http, hub, origin => isolation.allows(origin));
   http.once("error", (error) => {
     log("http_error", { error });
     process.exitCode = 1;

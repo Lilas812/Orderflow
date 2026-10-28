@@ -65,10 +65,12 @@ export class AppStore extends LocalStore {
   override get savedRange() {
     return this.bounds ? { ...this.bounds } : null;
   }
-  override async initialize() {
+  override async initialize(signal?: AbortSignal) {
+    signal?.throwIfAborted();
     await fs.mkdir(this.root, { recursive: true });
     const index = path.join(this.root, "coverage.json"), fetched = index + ".cloud";
     if (await this.objects.exists(this.prefix + "coverage.json")) {
+      signal?.throwIfAborted();
       await this.objects.download(this.prefix + "coverage.json", fetched);
       this.cloud = parseCoverage(await fs.readFile(fetched, "utf8")); await fs.rm(fetched);
     }
@@ -78,19 +80,22 @@ export class AppStore extends LocalStore {
     for (const kind of ["book", "tick"] as const) {
       const surviving: Range[] = [];
       for (const [a, b] of working[kind]) for (let h = hourOf(a); h < b; h += 3600) {
+        signal?.throwIfAborted();
         const file = this.file(kind, h);
         if (await this.exists(file) || kind === "book" && await this.exists(file + ".gz"))
           surviving.push(...intersect([[a, b]], h));
       }
       working[kind] = ranges([...this.cloud[kind], ...surviving]);
     }
+    signal?.throwIfAborted();
     await fs.writeFile(index, JSON.stringify(working));
-    await super.initialize();
+    await super.initialize(signal);
     for (const [a, b] of [...working.book, ...working.tick]) this.bounds = {
       fromSec: Math.min(this.bounds?.fromSec ?? a, a), toSec: Math.max(this.bounds?.toSec ?? b, b) };
     // Restore confirmation only from actual cloud bytes AND the same covered
     // intervals, never merely from a filename, size, or local working coverage.
     for (const file of await this.allFiles()) {
+      signal?.throwIfAborted();
       if (!file.endsWith(".gz")) continue;
       const { hour, kind, name } = this.describe(file);
       if (!this.durable(kind, hour)
@@ -105,6 +110,7 @@ export class AppStore extends LocalStore {
         }
       } finally { await fs.rm(check, { force: true }); }
     }
+    signal?.throwIfAborted();
     this.log("app_storage_initialized", { prefix: this.prefix, durable: this.cloud });
   }
   private describe(file: string) {
