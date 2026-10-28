@@ -1,6 +1,6 @@
 - [Specification handoff](phase-scope.md) — pasted project instructions and uploaded specs do not automatically replace canonical workspace files.
 - [TICK STREAM verification cautions](tickstream-cautions.md) — published examples and SDK source disagree; seconds-based history pagination can stall.
-- [仕様の正本](phase-scope.md) — 仕様の正本は replit.md と docs/ の4ファイル（AGENT_RULES.md、SPEC.md、UI_SPEC_HEATMAP.md、PHASE0_REPORT.md）だけ。attached_assets/ や .local/ にある同名のコピーは読まない。
+- [仕様の正本](phase-scope.md) — 正本は replit.md と docs/。追加・差替えは明示承認を確認し、attached_assets/ や .local/ の同名コピーと混同しない。
 - [再取得回数の数え方](retry-semantics.md) — 直近0行は初回＋再取得3回。通信失敗は初回を含む3回で区切る。
 - [リプレイの時間基準](replay-time-semantics.md) — 約定の250ms区切りは仮想時間とする解釈をユーザーが承認。
 - [ヒートマップ描画の指定](heatmap-rendering-decisions.md) — 旧54%固定は廃止。正のセルP99・独立層・縮小時の売買混在行に関するユーザー指定。
@@ -17,4 +17,4 @@
 - [設定変更時の列の共有](settings-decisions.md) — 再構築用の最新列と表示列を重複保持しないユーザー指定。
 - [App Storageの運用指定](app-storage-decisions.md) — 再試行・再DL照合、古い範囲のディスク一時保存、破損設定の退避を維持する。
 - [artifactの経路検証](artifact-routing-cautions.md) — TOML検証成功だけでは環境別pathsのサポートや実際の転送を確認できない。
-- [長期VPの運用条件](long-vp-decisions.md) — 本番限定・開発RESTのみ、ETの壁時計、確定はREST。既存ヒートマップの保存変更は別途承認。
+- [長期VPの運用条件](long-vp-decisions.md) — 新正本優先・開発WS禁止・既存保存保護。CT17:05以降の確定は矛盾解消の例外承認。

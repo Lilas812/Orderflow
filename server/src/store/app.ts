@@ -175,15 +175,16 @@ export class AppStore extends LocalStore {
       this.log("app_storage_downloaded", { object: this.object(kind, hour), temporary: old && !writable });
     } finally { await fs.rm(staged, { force: true }); }
   }
-  private async withRange<T>(start: number, end: number, work: () => Promise<T>): Promise<T> {
+  private async withRange<T>(start: number, end: number, work: () => Promise<T>,
+    kinds: readonly Kind[] = ["book", "tick"]): Promise<T> {
     const keys: string[] = [];
-    for (let h = hourOf(start); h < end; h += 3600) for (const kind of ["book", "tick"] as const) {
+    for (let h = hourOf(start); h < end; h += 3600) for (const kind of kinds) {
       const k = this.key(kind, h); keys.push(k); this.pins.set(k, (this.pins.get(k) ?? 0) + 1);
     }
     try {
       await this.run(async () => {
         for (let h = hourOf(start); h < end; h += 3600)
-          for (const kind of ["book", "tick"] as const) await this.hydrate(kind, h, false);
+          for (const kind of kinds) await this.hydrate(kind, h, false);
       });
       return await work();
     } finally {
@@ -213,7 +214,7 @@ export class AppStore extends LocalStore {
   override readTrades(a: number, b: number) { return this.withRange(a, b, () => super.readTrades(a, b)); }
   override readView(a: number, b: number) { return this.withRange(a, b, () => super.readView(a, b)); }
   override visitTrades(a: number, b: number, visit: (t: Trade) => void) {
-    return this.withRange(a, b, () => super.visitTrades(a, b, visit));
+    return this.withRange(a, b, () => super.visitTrades(a, b, visit), ["tick"]);
   }
   private async writable(kind: Kind, hours: number[]) {
     await this.run(async () => { for (const h of new Set(hours)) await this.hydrate(kind, h, true); });
@@ -227,6 +228,10 @@ export class AppStore extends LocalStore {
   override async replaceTradeRange(a: number, b: number, trades: Trade[]) {
     const hours: number[] = []; for (let h = hourOf(a); h < b; h += 3600) hours.push(h);
     await this.writable("tick", hours); await super.replaceTradeRange(a, b, trades);
+  }
+  override async insertUncoveredTradeRange(a: number, b: number, trades: Trade[]) {
+    const hours: number[] = []; for (let h = hourOf(a); h < b; h += 3600) hours.push(h);
+    await this.writable("tick", hours); await super.insertUncoveredTradeRange(a, b, trades);
   }
   private async expireCache() {
     await this.run(async () => {

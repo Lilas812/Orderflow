@@ -313,7 +313,24 @@ export class LocalStore implements Store {
     });
   }
   replaceTradeRange(start: number, end: number, trades: Trade[]): Promise<void> {
+    return this.run(() => this.insertTradeRange(start, end, trades));
+  }
+  /** Coverage recheck and insertion share the live append queue. */
+  insertUncoveredTradeRange(start: number, end: number, trades: Trade[]): Promise<void> {
     return this.run(async () => {
+      let cursor = start;
+      for (const [a, b] of [...this.recordedTicks, [end, end] as Range]) {
+        if (b <= cursor) continue;
+        if (a > cursor) {
+          const to = Math.min(a, end);
+          await this.insertTradeRange(cursor, to, trades.filter(t => t.tsUs >= cursor * 1e6 && t.tsUs < to * 1e6));
+        }
+        cursor = Math.max(cursor, b);
+        if (cursor >= end) break;
+      }
+    });
+  }
+  private async insertTradeRange(start: number, end: number, trades: Trade[]) {
       if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start >= end
         || trades.some(t => t.tsUs < start * 1e6 || t.tsUs >= end * 1e6)) throw Error("invalid_vp_insert_range");
       if (this.recordedTicks.some(([a, b]) => a < end && start < b)) throw Error("vp_insert_overlaps_coverage");
@@ -345,7 +362,6 @@ export class LocalStore implements Store {
         // Index replacement is strictly after all data-file replacements.
         this.markCovered("tick", start, end); await this.saveCoverage();
       } finally { for (const { temporary } of staged) await fs.rm(temporary, { force: true }); }
-    });
   }
   /** Atomic delivery view: persisted data plus confirmed writes held for backfill.
    * Existing disk columns win, just as in writeHour. No unconfirmed column or filled second.

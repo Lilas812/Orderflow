@@ -14,23 +14,23 @@ import { AppStore } from "./store/app.ts";
 import { ReplitObjects, storageMode } from "./store/objects.ts";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
-import { productionAccumulation, LongVpService } from "./long-vp/service.ts";
+import { productionAccumulation, accumulationEnabled, AppLongVp } from "./long-vp/app-service.ts";
 import { LongRest } from "./long-vp/rest.ts";
-import { PgLongStore } from "./long-vp/store.ts";
+import { LongObjects } from "./long-vp/objects.ts";
+import { setTimeout as delay } from "node:timers/promises";
 
 async function main() {
   const config = readConfig(process.env);
   const log = createLogger(config.apiKey, measurementLogWriter());
   const mode = storageMode(process.env);
-  const longVp = productionAccumulation(process.env) && process.env.DATABASE_URL
-    ? new LongVpService(new LongRest(config.apiKey), new PgLongStore(process.env.DATABASE_URL), log) : null;
+  let longVp: AppLongVp | null = null;
   const longStatus = () => longVp?.snapshot() ?? {
-    enabled: false, reason: productionAccumulation(process.env) ? "database_url_missing" : "production_only",
+    enabled: false, reason: "production_only",
   };
-  if (!longVp) log("long_vp_disabled", longStatus());
-  const root = mode.app ? path.resolve(process.env.HEATMAP_STORAGE_DIR
+  const useObjects = mode.app || accumulationEnabled(process.env);
+  const root = useObjects ? path.resolve(process.env.HEATMAP_STORAGE_DIR
     ?? fileURLToPath(new URL("../../data/app-storage-working/", import.meta.url))) : null;
-  const objects = mode.app ? new ReplitObjects() : null;
+  const objects = useObjects ? new ReplitObjects() : null;
   const settings = objects ? new AppSettings(path.join(root!, "settings.json"), objects, mode.prefix, log)
     : new LocalSettings(fileURLToPath(new URL("../../data/settings.json", import.meta.url)), log);
   await settings.get();
@@ -45,6 +45,23 @@ async function main() {
     book: (book) => { pipeline.book(book); hub.book(book); },
     trade: (trade) => { pipeline.trade(trade); hub.trade(trade); longVp?.trade(trade); },
   });
+  if (accumulationEnabled(process.env) && objects && root) {
+    longVp = new AppLongVp({ repository: new LongObjects(objects, mode.prefix, path.join(root, "longvp-working")),
+      store: pipeline.store, history: pipeline.client, metrics: pipeline.historyMetrics,
+      metadata: new LongRest(config.apiKey), nextSeq: () => receiver.nextSequence(), log,
+      ready: async signal => {
+        if (!productionAccumulation(process.env)) return;
+        while (pipeline.status().seamL === null) await delay(1000, undefined, { signal });
+        let onAbort: () => void = () => {};
+        const interrupted = new Promise<never>((_resolve, reject) => {
+          onAbort = () => reject(signal.reason);
+          if (signal.aborted) onAbort(); else signal.addEventListener("abort", onAbort, { once: true });
+        });
+        try { await Promise.race([Promise.all([pipeline.backfill.settled(), pipeline.vpHistory.settled()]), interrupted]); }
+        finally { signal.removeEventListener("abort", onAbort); }
+        signal.throwIfAborted();
+      } });
+  } else log("long_vp_disabled", longStatus());
   await pipeline.initialize();
   const upstream = new Upstream({ apiKey: config.apiKey, receiver, log });
   const hub: Hub = new Hub({
@@ -62,7 +79,7 @@ async function main() {
     () => ({ ...hub.snapshot(), connections: hub.connections() }),
     () => memory.snapshot(), () => isolation.snapshot(), settings,
     process.env.HEATMAP_SERVE_FRONTEND === "1"
-      ? fileURLToPath(new URL("../../artifacts/heatmap/dist/public/", import.meta.url)) : undefined);
+      ? fileURLToPath(new URL("../../artifacts/heatmap/dist/public/", import.meta.url)) : undefined, longVp);
   const http = app.listen(config.port, "0.0.0.0");
   const wss = attachHub(http, hub, origin => isolation.allows(origin));
   let shuttingDown = false;

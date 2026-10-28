@@ -1,22 +1,11 @@
 import { setTimeout as delay } from "node:timers/promises";
 import { VolumeProfile } from "./state.ts";
-import { historyTrades, inWindow } from "../history/decode.ts";
-import { WindowUnavailableError } from "../history/client.ts";
 import type { HistorySource } from "../history/client.ts";
 import type { LocalStore } from "../store/local.ts";
 import type { Metrics } from "../ingest/metrics.ts";
 import type { Log } from "../logger.ts";
-
-export function coverageSegments(ranges: readonly [number, number][], start: number, end: number) {
-  const result: { start: number; end: number; covered: boolean }[] = [];
-  for (let a = start; a < end;) {
-    const covered = ranges.some(([x, y]) => x <= a && a < y);
-    const boundaries = ranges.flat().filter(x => x > a && x < end);
-    const b = Math.min(end, ...boundaries);
-    result.push({ start: a, end: b, covered }); a = b;
-  }
-  return result;
-}
+import { readTradeRange } from "./trade-history.ts";
+export { coverageSegments } from "./trade-history.ts";
 
 export class VpHistory {
   readonly state = {
@@ -54,49 +43,6 @@ export class VpHistory {
       ? this.schedule.now() - this.state.startedAtUs! / 1000 : this.state.elapsedMs,
     gaps: this.state.gaps.map(g => ({ ...g })), noData: this.state.noData.map(g => ({ ...g })) };
   }
-  private async take(start: number, end: number, retry = 0): Promise<void> {
-    this.abort.signal.throwIfAborted();
-    const wait = (end + 300) * 1000 - this.schedule.now();
-    if (wait > 0) {
-      this.state.pendingMaturityUntilUs = (end + 300) * 1e6;
-      await this.schedule.wait(wait, this.abort.signal);
-      this.state.pendingMaturityUntilUs = null;
-    }
-    let response;
-    const before = this.schedule.now();
-    try {
-      this.state.apiWindows++;
-      response = await this.source.get("tick", start, end, this.abort.signal);
-    } catch (error) {
-      if (!(error instanceof WindowUnavailableError)) throw error;
-      const gap = { startSec: start, endSec: end, reason: error.reason };
-      this.state.gaps.push(gap); this.log("vp_history_gap", gap); return;
-    } finally { this.state.apiMs += this.schedule.now() - before; }
-    if (response.truncated) {
-      if (end - start <= 1) {
-        const gap = { startSec: start, endSec: end, reason: "truncated_at_one_second" };
-        this.state.gaps.push(gap); this.log("vp_history_gap", gap); return;
-      }
-      this.state.splitRequests++;
-      const middle = start + Math.floor((end - start) / 2);
-      await this.take(start, middle); await this.take(middle, end); return;
-    }
-    if (!response.rows.some(r => inWindow(r, start, end))) {
-      if ((retry > 0 || end >= this.schedule.now() / 1000 - 600) && retry < 3) {
-        this.state.emptyRetries++;
-        await this.schedule.wait(120000, this.abort.signal);
-        return this.take(start, end, retry + 1);
-      }
-      this.state.noData.push({ startSec: start, endSec: end, attempts: retry + 1 });
-    }
-    const trades = historyTrades(response.rows, start, end, this.metrics, this.nextSeq);
-    // Insert only an uncovered interval, preserving every existing row and its
-    // order. Unexpected old rows inside a missing range fail visibly, not delete.
-    await this.store.replaceTradeRange(start, end, trades);
-    for (const trade of trades) this.profile.add(trade);
-    this.state.importedTrades += trades.length; this.state.apiSeconds += end - start;
-    this.log("vp_history_window", { startSec: start, endSec: end, trades: trades.length, retry });
-  }
   private async run(L: number) {
     const start = this.profile.start;
     Object.assign(this.state, { state: "running", startSec: start, endSec: L,
@@ -104,21 +50,9 @@ export class VpHistory {
     this.log("vp_history_started", this.snapshot());
     try {
       this.abort.signal.throwIfAborted();
-      const coverage = await this.store.recordedTickCoverage();
-      for (const segment of coverageSegments(coverage, start, L)) {
-        for (let a = segment.start; a < segment.end; a += 900) {
-          this.abort.signal.throwIfAborted();
-          const b = Math.min(a + 900, segment.end);
-          if (segment.covered) {
-            const before = this.schedule.now();
-            await this.store.visitTrades(a, b, trade => {
-              this.profile.add(trade); this.state.importedTrades++;
-            });
-            this.state.fileReadMs += this.schedule.now() - before;
-            this.state.fileWindows++; this.state.fileSeconds += b - a;
-          } else await this.take(a, b);
-        }
-      }
+      await readTradeRange({ store: this.store, source: this.source, metrics: this.metrics,
+        nextSeq: this.nextSeq, start, end: L, signal: this.abort.signal,
+        visit: trade => this.profile.add(trade), state: this.state, schedule: this.schedule });
       this.state.state = "complete";
       this.profile.complete(start);
     } catch (error) {
