@@ -191,3 +191,42 @@ steadyは0フレームなので平均・最大を0msとして性能評価しな�
 ## 9. replit.md Current Status追記
 
 2026-10-28：Phase 10cの閾値・コントラスト、VP装飾、設定v3／14項目を実装。正本2件を指定ハッシュで差し替え。サーバー118／画面112試験、型検査・本番ビルド、実1倍リプレイ9場面と9改同条件の描画計測を実施。ズーム性能の目安に一部未達。初期値保存、WS0、ブラウザ0、SIGTERM後上流close1006／socketClosed・PID消滅確認。詳細は本報告。再PublishとPhase 10dは未実施。
+
+## 10. 新版指示の再受領と型検査での停止（2026-10-29 JST）
+
+### 報告
+
+- 実施内容：今回の添付2件を、バイト列を変えず正本へ差し替えた。今回版と前版の差分はPhase 11のバブル設定・軸操作と、その説明・履歴。Phase 10cの閾値・VP装飾の仕様に変更はない。既存の実装を再確認したが、フロント型検査が不合格となったため、完了として扱わず停止した。
+- 変更ファイル：`docs/SPEC.md`・`docs/UI_SPEC_HEATMAP.md` は許可された完全コピー。本報告の追記と `replit.md` のCurrent Statusのみ。アプリ・テスト・依存・起動設定・本番は未変更。
+- 確認手順：`pnpm --filter @workspace/heatmap typecheck` で下記の5件を再現する。修正には許可が必要。今回新たに添付されたPhase 11は「Phase 10cが終わっていなければ作業せず報告」という条件なので未着手。
+- 実行した確認：サーバー133/133・画面112/112の単体テスト成功。サーバー型検査成功。画面型検査は5件のTS2345で失敗。今回の本番ビルド・実画面撮影・描画性能測定は未実行。上記の以前の成功記録を今回の確認結果として流用しない。
+- 仕様との差分：設定は指示どおり14項目・version 3のまま。20項目・version 4・軸の自動調整・見出し開閉はPhase 11として未着手。新たな製品の具体値を独自に決めていない。
+- 未解決・懸念：`artifacts/heatmap/test/phase10c.test.ts` の2つのダミーVAオブジェクトに、`valueArea` の戻り値型が必須とする `included` がない。`vpBandBounds`・`vpGuides`・`drawVpGuides`・`drawVpLabels` への引数として合計5件のエラー。単体テストの成功と型検査の成功は別であり、今回は後者を満たさない。
+- 次の候補：テスト用データの必須項目を補う最小修正を承認後に行い、型検査・本番ビルド・残りの画面確認を進める。描画ロジックや期待値・型の検査を緩めて隠す修正はしない。
+
+### 仕様の配置と削除
+
+| 元添付 | 配置先 |
+|---|---|
+| `attached_assets/SPEC_(16)_1793214638919.md` | `docs/SPEC.md` |
+| `attached_assets/UI_SPEC_HEATMAP_(9)_1793214637536.md` | `docs/UI_SPEC_HEATMAP.md` |
+
+配置直後の実行結果：
+
+```text
+7ab50532153f7295c7cf2ebc8f6690fc3774aef266a31f52d37358f9db2a3f2e  docs/SPEC.md
+bb3a850c47407bb74ed9dd65bd2984d8315ef1f25d986559fea7ae772f7efd39  docs/UI_SPEC_HEATMAP.md
+28d8eb6a7a68ea51137a2e17f840ceedb6b7f5e58d807c5defa4b84e6fb2539c  docs/AGENT_RULES.md
+```
+
+3件とも指定値と一致。AGENT_RULESは変更なし。配置・確認後、上表の添付2件だけを削除した。検索時にほかのSPEC・UI_SPECで始まる.mdはなく、削除後もなし。作業指示の添付は残した。
+
+### 停止・接続・メモリの確認
+
+今回、ブラウザは起動していない。ローカルChromium検索結果0。既存開発サーバーPID436へSIGTERMを送り、PID消滅・25028のHTTP接続拒否・workflow `finished` を確認した。停止前の下流はユーザー側Windows Chromeの2接続で、今回の検証ブラウザではない。終了ログの `hub_closed` と `server_stopped`、HTTPポート閉鎖により残存受信接続がないことを確認。ユーザーのブラウザプロセスを終了してはいない。
+
+上流は起動時から `state:stopped`・`connectedAtUs:null`・`reconnectCount:0`。前回の「上流WSは本番だけ」という指定を維持しており、開発から上流へ接続していない。そのため今回の上流closeイベントはない。終了ログは `upstream:stopped, httpClosed:true, elapsedMs:295.71677`。
+
+停止前HTTP状態値のメモリ：RSS 386,768,896 B、起動以来最大RSS 400,277,504 B、heapUsed 29,312,600 B。これは描画測定時の値ではない。接続制限は使用していない。設定の変更・PUTはしていないため、今回の初期値復元保存も未実行。
+
+今回の検証ログは `/tmp/phase10c-repeat-server-tests.log` と `/tmp/phase10c-repeat-web-tests.log`。型検査の失敗は本節のコマンドで再現可能。再Publishは未実施であり、この型検査の修正前にPhase 10c完了とは報告しない。
