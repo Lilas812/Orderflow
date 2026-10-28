@@ -230,3 +230,97 @@ bb3a850c47407bb74ed9dd65bd2984d8315ef1f25d986559fea7ae772f7efd39  docs/UI_SPEC_H
 停止前HTTP状態値のメモリ：RSS 386,768,896 B、起動以来最大RSS 400,277,504 B、heapUsed 29,312,600 B。これは描画測定時の値ではない。接続制限は使用していない。設定の変更・PUTはしていないため、今回の初期値復元保存も未実行。
 
 今回の検証ログは `/tmp/phase10c-repeat-server-tests.log` と `/tmp/phase10c-repeat-web-tests.log`。型検査の失敗は本節のコマンドで再現可能。再Publishは未実施であり、この型検査の修正前にPhase 10c完了とは報告しない。
+
+## 11. 承認後の最小修正と確認完了（2026-10-29 JST）
+
+本節が今回の最終結果。10節の型検査失敗と保留は、解決前の経緯として残す。
+
+### 報告
+
+- 実施内容：ユーザーの「Phase 10cを完了」の承認後、ダミーVAデータ2か所だけを修正。型検査・本番ビルド、実保存データの1倍リプレイ9場面、設定保持と初期値復元、9改と同条件の固定描画計測を完了した。
+- 変更ファイル：実コードの差分は `artifacts/heatmap/test/phase10c.test.ts` の2行のみ。`included:70` と `included:100` を補った。期待値、描画処理、型定義の検査を緩めていない。本報告と `replit.md` のCurrent Statusを追記。正本の配置と添付2件の削除は10節のとおり。追加依存なし。
+- 確認手順：既存Runを起動し、保存済みの `/?mode=replay&from=1793022000&speed=1&debug=1` で設定を切り替える。今回の画像集は `data/phase10c-repeat/screenshots.html`、各PNG・結果は同じディレクトリ。公開への反映が必要ならユーザーが再Publishし、8節の項目を確認する。Agentは再Publishしていない。
+- 実行した確認：画面112/112テスト、画面型検査、本番ビルド、`PHASE10C_CHECK_PASSED`、固定描画5場面が成功。サーバー133/133とサーバー型検査は直前の再受領時に成功しており、サーバーコードはその後変更していない。
+- 仕様との差分：設定14項目・version 3を維持。Phase 11の20項目・version 4・バブル集約設定・軸の自動調整・見出し開閉は未実装のまま。機能確認は完了したが、下記の描画性能の目安に一部未達。
+- 未解決・懸念：価格・時間ズームの平均8ms、価格ズームの最大33msの目安に未達。リプレイVPに保存されていない時間帯がある。本番実機・実機Safari・高DPR・長時間安定性の新たな確認はしていない。性能や欠損を隠す変更はしていない。
+- 次の候補：Phase 11は別タスクとして扱う。Phase 12aは以前の「上流WSは本番だけ」と開発ライブ測定の条件を確認してから。今回はどちらにも着手せず、ここで停止する。
+
+### 11.1 検査コマンドと結果
+
+| コマンド・手順 | 結果 |
+|---|---|
+| `pnpm --filter @workspace/receiver test` | 直前の再受領時に133/133成功。以後、サーバー変更なし。 |
+| `pnpm --filter @workspace/receiver typecheck` | 同じく成功。以後、サーバー変更なし。 |
+| `pnpm --filter @workspace/heatmap test` | 最小修正後に112/112成功。 |
+| `pnpm --filter @workspace/heatmap typecheck` | 最小修正後に成功。10節のTS2345×5は解消。 |
+| 既存管理workflowの `pnpm --filter @workspace/receiver run build` | 成功。35 modules、559ms。Runコマンドは変更なし。 |
+| 既存 `phase10c-check.ts` の実行 | `PHASE10C_CHECK_PASSED`。出力先だけ `data/phase10c-repeat/` に変更してメモリ上で実行。既存ツールのファイル自体は変更なし。 |
+| `node server/tools/perf/render-benchmark.ts phase10c-repeat artifacts/heatmap/dist/public 1793021400135557 data/phase7/benchmark-vp.json data/phase10c-repeat/benchmark-settings.json` | 5場面完了。 |
+| `git diff --check` | 成功。 |
+
+過去の `data/phase10c/` の証拠を上書きせず、今回の結果を別ディレクトリに保存した。比較画像は外部通信しない自己完結HTMLとして作成し、依存は追加していない。
+
+### 11.2 実1倍リプレイの9場面
+
+| PNG | 確認結果 |
+|---|---|
+| `01-default.png` | 上限自動・下限なし・gamma 1。 |
+| `02-upper-size.png` | 上限100枚を設定・保存して反映。 |
+| `03-lower-pct.png` | 下限を下位20％にして反映。 |
+| `04-lower-size.png` | 下限5枚を設定・保存して反映。 |
+| `05-gamma-half.png` | gamma 0.5を反映。 |
+| `06-gamma-two.png` | gamma 2を反映。 |
+| `07-lower-clamp.png` | U=42、Lo=88の補正文言を確認。この1枚は再読み込み途中（VP価格0・loadingRanges 1）で、描画完了の証拠とはしない。 |
+| `08-vp-expanded.png` | 約650tick。VA全域が収まり、3本の線・帯・ラベルを確認。 |
+| `09-vp-compressed.png` | 約1300tick。1物理画素に複数価格が入る状態を確認。 |
+
+画像は `data/phase10c-repeat/` に保存。最初の6枚は1280×800 CSS px、VP2枚は1280×1000 CSS px、いずれもDPR1。最初の6枚とVP2枚はloadingRanges 0・VP756価格を確認。通常場面の再生位置は1793022003→1793022012秒へ進み、speed=1で再生していることを確認した。別時刻の画像なので、同時刻の画素差による比較とは扱わない。
+
+U=42・Lo=88をモードで隠して保存し、再読込後も値が残ることを確認。線のCanvasの上端・高さ・左右端と、ラベル／現在値のz-indexも実DOMで検査した。Runtime例外は0。線と帯の層は2節のとおり変更していない。
+
+共有プレビューの別撮影 `preview-current.jpg` は初期range読み込み中であり、完成表示の証拠は上記8枚と `browser-checks.json` を用いる。
+
+リプレイログに `vp_replay_gap`（1792965600〜1793016308秒）がある。今回は手元の保存済み部分を描いており、セッション全履歴が完全であることは主張しない。REST補完・保存方式の変更は今回行っていない。
+
+### 11.3 描画時間
+
+受信サーバーをSIGTERMで終了し、画面・consoleに「ダミー接続 · 実保存データの固定再生」と表示する既存フィクスチャで測定した。実WSリプレイと混ぜていない。9改と同じ固定データ・1280×800・DPR1・600秒・中心117244.5tick・価格幅160tick・操作スクリプトを使用。左端一致の差は0.0903724px。使った設定は復元済みのversion 3初期値。
+
+全フレームの描画時間（ms）：
+
+| 操作 | 9改 平均／最大 | 今回 平均／最大 | frame数 |
+|---|---:|---:|---:|
+| 価格ズーム | 10.50 / 37.70 | **10.49 / 47.90** | 63 |
+| 時間ズーム | 9.68 / 24.70 | **9.80 / 28.30** | 86 |
+| pan | 7.23 / 23.10 | **7.07 / 24.90** | 120 |
+| 価格リセット（参考） | 10.30 / 23.20 | 9.27 / 15.10 | 64 |
+
+steadyは1フレーム・1.10msのみで、安定した平均性能の評価には使わない。価格・時間ズームの平均8msと、価格ズームの最大33msの目安は未達。今回は本体の実装を変えておらず、別時刻の単回測定であるため、差の原因を型修正と結びつけない。
+
+証拠：`data/perf-memory/phase10c-repeat/render-static/frames.json`・各PNG・`viewport-match.json`、`data/phase10c-repeat/render-summary.json`。
+
+### 11.4 設定復元、メモリ、ブラウザとサーバーの終了
+
+最終GETはversion 3。全14項目がサーバーの初期値と完全一致し、`updatedAt:1793215306458000` で保存済み。
+
+| 時点 | RSS (B) | heapUsed (B) | external (B) | 起動以来最大RSS (B) |
+|---|---:|---:|---:|---:|
+| UI確認前 | 430,186,496 | 66,156,376 | 11,565,405 | 430,186,496 |
+| SIGTERM直前 | 515,907,584 | 54,841,816 | 11,238,320 | 519,614,464 |
+
+Workspaceの値であり、公開2GiB実機の値ではない。UI確認中は、ユーザー側Windows Chromeの外部2接続と測定1接続があった。これは「単一画面のサーバー負荷」として評価しない。固定描画計測はサーバーを止めてから行い、外部接続の影響を分離した。外部接続拒否は使っていないため、解除する制限はない。
+
+- UI確認のChromium PID2326：`exited:true`・CDP9222閉鎖をfinallyで確認。
+- 共有プレビュー撮影が残したChromiumは、専用プロファイルが一致する7プロセスだけをSIGTERMで終了。`screenshot-browser-closed.json` の `survivors:[]`。ユーザーのPCブラウザは止めていない。
+- 04:23:02.532 JST、受信PID2222へSIGTERM。02.534の `upstream_stopped socketClosed:true`、02.814／02.836の残り2接続の `hub_closed reason:shutdown`、02.847の `server_stopped httpClosed:true` を確認。ログ上313.73ms、外部からPID消滅・HTTP接続拒否を確認するまで410ms。
+- 開発上流は開始から `state:stopped`・`connectedAtUs:null`・`reconnectCount:0`。接続を一度も開いておらず、新たなcloseイベントはない。以前の本番限定指定を維持した。
+- 固定描画のChromium PID2751：`exited:true`・CDP9223閉鎖。最終プロセス検索はChromium0・受信サーバー0。
+- 最終GET時は検証WS0・外部2接続。サーバー終了時はその2接続もcloseログを確認し、待受ポート閉鎖により残存接続0。`sendErrors:0`・`slowClosed:0`。
+
+証拠：`before-status.json`・`final-status.json`・`browser-checks.json`・`screenshot-browser-closed.json`・`server-stopped.json`、固定描画ディレクトリの `browser-closed.json`。
+
+### 11.5 仕様にない値とCurrent Status
+
+新しい製品仕様の具体値は決めていない。ラベル18 CSS px・拡大時も価格行全体を塗る指定は、7節の既承認事項を維持。今回の `included:70/100` はダミー試験の入力であり、製品設定や集計方式の変更ではない。
+
+Current Statusには、型エラー解消・画面112試験と型検査／ビルド成功・実リプレイと性能測定結果・初期値復元保存・全ブラウザと受信サーバー終了・本番未変更・Phase 11／12a未着手を追記した。

@@ -81,7 +81,7 @@ test("ダミー：現在板の帯は同じLo/gamma、棒はLo/gammaに依存せ�
 });
 
 test("ダミー：VAの帯と線は拡大・縮小時の同じ価格行、画面端をclip", () => {
-  const area = { poc: 100, high: 102, low: 99, total: 100 };
+  const area = { poc: 100, high: 102, low: 99, total: 100, included: 70 };
   for (const height of [2, 100]) {
     const band = vpBandBounds(area, view, height)!;
     assert.ok(band.first >= 0 && band.end <= height);
@@ -98,7 +98,7 @@ test("ダミー：VAの帯と線は拡大・縮小時の同じ価格行、画面
 
 test("ダミー：線の全幅・色・dash・透明度、ラベルはPOCが最後", () => {
   const c = canvas(290, 100), labels = canvas(50, 100);
-  const area = { poc: 100, high: 100, low: 100, total: 100 };
+  const area = { poc: 100, high: 100, low: 100, total: 100, included: 100 };
   drawVpGuides(c as unknown as HTMLCanvasElement, area, view, 1);
   assert.deepEqual(c.ctx.events.filter(e => e[0] === "line"), [["line", 290, 50], ["line", 290, 50], ["line", 290, 50]]);
   assert.deepEqual(c.ctx.events.filter(e => e[0] === "stroke"), [

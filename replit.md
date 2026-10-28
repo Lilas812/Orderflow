@@ -46,6 +46,8 @@ Agent が更新してよいのは、下の Current Status 節だけ。
 
 ## Current Status
 
+- 2026-10-29：Phase 10cの承認後、phase10c.test.tsのダミーVA2か所にincludedを追加してTS2345×5を解消。画面112/112・型検査・本番ビルド成功（サーバー133/133と型検査は直前成功、以後未変更）。実保存1倍リプレイ9場面・設定保持・v3初期値復元保存を確認。9改同条件の価格zoom10.49/47.90ms・時間zoom9.80/28.30ms・pan7.07/24.90msで性能目安は一部未達。最終RSS515,907,584B。検証ブラウザ0・受信PID2222のSIGTERM終了・全下流closeとHTTP閉鎖を確認。開発上流は未接続、本番・依存・アプリ本体は未変更。詳細はartifacts/heatmap/PHASE10C_REPORT.md 11節、画像はdata/phase10c-repeat/screenshots.html。Phase 11／12aは未着手、ここで停止。
+
 - 2026-10-29：新版Phase 10c指示を受領し、正本2件を指定ハッシュ（SPEC 7ab505…／UI bb3a85…）で差し替え、確認後に元添付2件を削除。サーバー133／画面112試験とサーバー型検査は成功したが、画面型検査はphase10c.test.tsのダミーVAにincludedがないTS2345×5で失敗。無断修正せず保留。今回のビルド・撮影・性能測定は未実行。PID436のSIGTERM終了、HTTP閉鎖、ローカルChromium0を確認。開発上流は未接続。本番・設定v3／14項目は変更なし。Phase 11は前提未達で未着手。詳細はartifacts/heatmap/PHASE10C_REPORT.md 10節。
 
 - 2026-10-28：長期VPのデータ蓄積を追加。本番限定のPostgreSQL4テーブル、直近7日のREST取り込み・不足回収、17:10 America/New_Yorkの日次処理、RESTだけによる確定、当日暫定集計を実装。開発の上流WSはRun／SIGUSR2とも無効化。133試験、型検査・ビルド、実REST1分149約定（買68／売84）の再取得照合、DB一時表での原子性を確認。開発DBは定義のみで4表0行。本番の再Publish・蓄積開始は未実施。開発起動の初期化284.149秒、最終SIGTERM後PID消滅・ブラウザ0・下流0を確認。長期VP画面と軸操作は未着手。詳細はserver/LONG_VP_REPORT.md。
