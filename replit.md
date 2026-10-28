@@ -46,6 +46,8 @@ Agent が更新してよいのは、下の Current Status 節だけ。
 
 ## Current Status
 
+- 2026-10-29：PCで実保存1倍リプレイの軸AUTO・解除・各resetを確認。保存約定の独立集計と中心／span一致、上下10%・最小20tick、受信と連続pan時の成功fit13回（間隔1000.0〜1000.4ms）、手動価格zoom解除、時間resetの価格維持、本体／大口板／VP／ツールバーresetが成功。アプリ本体・正本・設定・保存データは未変更（終了後97ファイルのハッシュ一致）。下流0・稼働検証Chromium0、受信PID330のSIGTERM後にupstream_stopped／server_stopped・PID消滅・HTTP閉鎖を確認。詳細はartifacts/heatmap/AXIS_REPLAY_REPORT.md。
+
 - 2026-10-29：承認済みの軸ダブルクリック／ダブルタップを既存ヒートマップに実装。価格軸AUTO（可視約定の高安80%・最小20ティック・最大毎秒1回・手動価格操作で解除）、時間軸のみ初期幅と追尾／再生位置へ戻す処理、大口板／VPの全体リセットを追加。画面119試験・ビルド・起動・初回撮影成功。作業時の型検査は既存phase10c.test.tsのincluded欠落5件で失敗したが、下記の本体側修正を取り込み。開発上流は未接続のまま、実データでのAUTO描画は未確認。検証Chromium残存なし・下流0・上流stoppedを確認後、ワークフローをSIGTERM停止し受信PID消滅・HTTP閉鎖を確認（server_stoppedの終了ログは取得できず）。仕様正本・設定・保存形式・本番は変更なし。
 
 - 2026-10-29：Phase 10cの承認後、phase10c.test.tsのダミーVA2か所にincludedを追加してTS2345×5を解消。画面112/112・型検査・本番ビルド成功（サーバー133/133と型検査は直前成功、以後未変更）。実保存1倍リプレイ9場面・設定保持・v3初期値復元保存を確認。9改同条件の価格zoom10.49/47.90ms・時間zoom9.80/28.30ms・pan7.07/24.90msで性能目安は一部未達。最終RSS515,907,584B。検証ブラウザ0・受信PID2222のSIGTERM終了・全下流closeとHTTP閉鎖を確認。開発上流は未接続、本番・依存・アプリ本体は未変更。詳細はartifacts/heatmap/PHASE10C_REPORT.md 11節、画像はdata/phase10c-repeat/screenshots.html。Phase 11／12aは未着手、ここで停止。
