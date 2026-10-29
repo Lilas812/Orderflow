@@ -26,6 +26,7 @@ import { AutoPriceScale, resetTimeViewport } from "./chart/axis-view.ts";
 import { bindDoubleActivation } from "./chart/double-activation.ts";
 import { isLongVpRoute } from "./long-vp/view-math.ts";
 import { viewSwitchHtml } from "./long-vp/nav.ts";
+import { CrosshairOverlay } from "./chart/crosshair.ts";
 
 declare global {
   interface Window {
@@ -39,6 +40,7 @@ declare global {
 }
 
 export interface HeatmapDebugSnapshot {
+  crosshair: ReturnType<CrosshairOverlay["snapshot"]>;
   settings: ReturnType<typeof resolveSettings>;
   sharedColumns: ReturnType<BigOrderFeed["sharing"]>;
   delta: DeltaRenderer["metrics"];
@@ -214,6 +216,8 @@ let viewport: Viewport = {
   centerPriceTicks: 0,
   priceSpanTicks: 160,
 };
+const crosshair = new CrosshairOverlay(board, canvas, axisCanvas, timeAxis, () => viewport, () => displayZone,
+  () => !document.querySelector("dialog[open]"));
 let follow = true;
 const autoPrice = new AutoPriceScale();
 let autoPriceTimer: ReturnType<typeof setTimeout> | null = null;
@@ -477,6 +481,7 @@ const drawScheduler = new LayerScheduler(draw => requestAnimationFrame(draw), {
     overlayDrawCount++;
   },
   after: (redrewDepth, drawStart, redrewTrades) => {
+    crosshair.request();
     if (debugMode) {
       const depthMetrics = renderer.metrics;
       const frameMs = performance.now() - drawStart;
@@ -529,6 +534,7 @@ function scheduleDraw(redrawDepth = true): void {
 
 function renderTimeAxis(): void {
   if (!settingsLoaded) return;
+  crosshair.request();
   const started = performance.now();
   const rect = heatRegion.getBoundingClientRect();
   const ticks = formatAxisTicks(viewport.startUs, viewport.durationSec, rect.width, displayZone);
@@ -625,6 +631,7 @@ function debugSnapshot(): HeatmapDebugSnapshot {
   const now = performance.now();
   const sample = drawSamples.slice(-30).map((entry) => entry.ms);
   return Object.freeze({
+    crosshair: crosshair.snapshot(),
     settings: structuredClone(activeSettings),
     sharedColumns: bigFeed.sharing(cache.columns),
     delta: { ...deltaRenderer.metrics },
@@ -836,6 +843,7 @@ const settingsUi = mountSettingsUi(document.querySelector<HTMLElement>(".tool-ra
   overridden: activeSettings.overridden,
   onModalChange: (open) => {
     if (!open) return;
+    crosshair.hide();
     for (const clear of clearAxisGestures) clear();
     for (const id of pointerPoints.keys()) if (canvas.hasPointerCapture(id)) canvas.releasePointerCapture(id);
     if (priceDrag && axisCanvas.hasPointerCapture(priceDrag.id)) axisCanvas.releasePointerCapture(priceDrag.id);

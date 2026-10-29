@@ -1,5 +1,18 @@
 export type DisplayZone = "jst" | "ct";
 
+const crosshairFormatters = {
+  jst: new Intl.DateTimeFormat("en-US", { timeZone: "Asia/Tokyo", month: "2-digit", day: "2-digit",
+    hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23" }),
+  ct: new Intl.DateTimeFormat("en-US", { timeZone: "America/Chicago", month: "2-digit", day: "2-digit",
+    hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23" }),
+};
+
+export function formatCrosshairTimeUs(timeUs: number, zone: DisplayZone): string {
+  const parts = crosshairFormatters[zone].formatToParts(new Date(Math.floor(timeUs / 1_000_000) * 1_000));
+  const part = (type: Intl.DateTimeFormatPartTypes) => parts.find(item => item.type === type)?.value ?? "00";
+  return `${part("month")}/${part("day")} ${part("hour")}:${part("minute")}:${part("second")}`;
+}
+
 export function formatTimeUs(timeUs: number, zone: DisplayZone): string {
   const timeZone = zone === "ct" ? "America/Chicago" : "Asia/Tokyo";
   const parts = new Intl.DateTimeFormat("en-US", {
