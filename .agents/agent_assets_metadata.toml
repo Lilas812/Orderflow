@@ -336,3 +336,17 @@ mtime_ms = 1793295178626
 storage_uri = "gcs://replit-rams-assets-pike/rams/assets/repl:c326af06-2355-4bfb-a52e-f433587c4cd9/02c59032-b61b-4a48-b4da-4ac6fa94ca78/79e3ccd5-55bf-4174-909d-92aa214f2b7f"
 storage_version_token = "1793295243041805"
 content_type = "text/html"
+
+[[outputs]]
+id = "_bpAXRy5sOxccaVzwfc3W"
+uri = "file://server/STORAGE_OPTIMIZATION_REPORT.md"
+type = "text"
+title = "NQ・GC 保存最適化の調査報告"
+description = "容量実測、保持期間の比較、削除を伴わない最小改善案、保護・coverage整合案。調査のみで実装・削除・本番変更なし。"
+logical_id = "b05a95d2-f6d7-4dc7-9718-176e8b9880cc"
+content_hash = "sha256:2b724d38ca8851e1e66aeb66fb26308d8605af2759ba7d9ff47687de414ea599"
+size = 29321
+mtime_ms = 1793299279598
+storage_uri = "gcs://replit-rams-assets-pike/rams/assets/repl:c326af06-2355-4bfb-a52e-f433587c4cd9/b05a95d2-f6d7-4dc7-9718-176e8b9880cc/bf8efc0b-50de-4938-9ebf-e22a790c2f16"
+storage_version_token = "1793299288307849"
+content_type = "text/markdown"
