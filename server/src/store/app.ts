@@ -1,5 +1,6 @@
 import * as fs from "node:fs/promises";
 import path from "node:path";
+import type { MarketSymbol } from "../../../lib/market/instruments.ts";
 import { randomUUID } from "node:crypto";
 import { gzipSync } from "node:zlib";
 import { LocalStore, hourOf, ranges } from "./local.ts";
@@ -49,8 +50,8 @@ export class AppStore extends LocalStore {
   readonly cloudStatus = { mode: "app-storage", prefix: "", uploading: false,
     uploads: 0, downloads: 0, failures: 0, lastError: null as string | null,
     nextRetryAtUs: null as number | null, pending: [] as string[], cacheHours: 48 };
-  constructor(root: string, objects: Objects, prefix: string, log: Log, now = Date.now) {
-    super(root, now); this.objects = objects; this.prefix = prefix; this.log = log; this.clock = now;
+  constructor(root: string, objects: Objects, prefix: string, log: Log, now = Date.now, symbol: MarketSymbol = "NQ") {
+    super(root, now, fs.rename, symbol); this.objects = objects; this.prefix = prefix; this.log = log; this.clock = now;
     this.cloudStatus.prefix = prefix;
   }
   private key(kind: Kind, hour: number) { return `${kind}:${hour}`; }

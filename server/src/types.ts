@@ -8,6 +8,8 @@ export interface Trade {
   price: PriceTicks;
   size: number;
   side: "buy" | "sell";
+  /** GC only: explicit record identity or verified current LIVE identity; absent = unknown. */
+  contract?: string;
 }
 
 export interface BookLevel {

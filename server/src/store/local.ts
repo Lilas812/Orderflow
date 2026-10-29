@@ -4,6 +4,7 @@ import { createGzip } from "node:zlib";
 import { Readable } from "node:stream";
 import { pipeline as streamPipeline } from "node:stream/promises";
 import path from "node:path";
+import type { MarketSymbol } from "../../../lib/market/instruments.ts";
 import { promisify } from "node:util";
 import { gzip as gzipCallback, gunzip as gunzipCallback } from "node:zlib";
 import { encodeColumns, decodeColumns } from "./binary.ts";
@@ -42,6 +43,7 @@ export const hourOf = (sec: number) => Math.floor(sec / 3600) * 3600;
 
 /** One serialization queue protects live append, history merge, rotation and readers. */
 export class LocalStore implements Store {
+  readonly symbol: MarketSymbol;
   readonly root: string;
   readonly stats = { files: 0, bytes: 0, latestColumnSec: null as number | null, pendingColumns: 0, pendingTrades: 0 };
   private coverage: Coverage = { book: [], tick: [] };
@@ -65,7 +67,8 @@ export class LocalStore implements Store {
     return this.bounds ? { ...this.bounds, fromSec: Math.max(this.bounds.fromSec, Math.floor(this.now() / 1000) - 7 * 86400) } : null;
   }
   constructor(root: string, now: () => number = Date.now,
-    replaceVpFile: typeof fs.rename = fs.rename) {
+    replaceVpFile: typeof fs.rename = fs.rename, symbol: MarketSymbol = "NQ") {
+    this.symbol = symbol;
     this.root = root; this.now = now; this.replaceVpFile = replaceVpFile;
   }
 
@@ -79,7 +82,7 @@ export class LocalStore implements Store {
   }
   protected file(kind: Kind, hour: number) {
     const date = new Date(hour * 1000).toISOString();
-    return path.join(this.root, kind === "book" ? "columns/NQ/1s" : "trades/NQ", date.slice(0, 10),
+    return path.join(this.root, kind === "book" ? `columns/${this.symbol}/1s` : `trades/${this.symbol}`, date.slice(0, 10),
       date.slice(11, 13) + (kind === "book" ? ".bin" : ".jsonl.gz"));
   }
   protected async exists(file: string) {
@@ -93,7 +96,7 @@ export class LocalStore implements Store {
   }
   protected async allFiles(): Promise<string[]> {
     const result: string[] = [];
-    for (const dir of ["columns/NQ/1s", "trades/NQ"]) {
+    for (const dir of [`columns/${this.symbol}/1s`, `trades/${this.symbol}`]) {
       const base = path.join(this.root, dir);
       if (!await this.exists(base)) continue;
       for (const name of await fs.readdir(base, { recursive: true })) {

@@ -3,12 +3,13 @@ import { normalizeBook, normalizePrice, normalizeTime } from "../ingest/normaliz
 import type { Metrics } from "../ingest/metrics.ts";
 import type { Trade } from "../types.ts";
 import type { Column } from "../aggregate/columns.ts";
+import { validContract, type MarketSymbol } from "../../../lib/market/instruments.ts";
 
 export type HistoryRow = Record<string, unknown>;
 export const inWindow = (row: HistoryRow, start: number, end: number) =>
   typeof row.ts === "number" && row.ts >= start * 1_000_000 && row.ts < end * 1_000_000;
 
-export function historyColumns(rows: HistoryRow[], start: number, end: number, metrics: Metrics): Column[] {
+export function historyColumns(rows: HistoryRow[], start: number, end: number, metrics: Metrics, symbol: MarketSymbol = "NQ"): Column[] {
   const result: Column[] = [];
   const aggregate = new ColumnAggregator(c => result.push(c));
   let previous: number | undefined;
@@ -59,13 +60,13 @@ export function historyColumns(rows: HistoryRow[], start: number, end: number, m
       metrics.count("rejectedBook"); return;
     }
     const book = normalizeBook({
-      symbol: "NQ", ts, bids: bids.map(r => [r.price, r.size]), asks: asks.map(r => [r.price, r.size]),
+      symbol, ts, bids: bids.map(r => [r.price, r.size]), asks: asks.map(r => [r.price, r.size]),
     }, Number(ts), "history", metrics, (tsUs) => {
       if (previous !== undefined && tsUs < previous) {
         metrics.issue("bookTimestampRollback", { type: "history_book", tsUs, previous }); return true;
       }
       return false;
-    });
+    }, symbol);
     if (book) { previous = book.tsUs; metrics.count("acceptedBook"); aggregate.accept(book); }
   };
   for (const row of rows) {
@@ -78,14 +79,14 @@ export function historyColumns(rows: HistoryRow[], start: number, end: number, m
 }
 
 export function historyTrades(
-  rows: HistoryRow[], start: number, end: number, metrics: Metrics, nextSequence: () => number,
+  rows: HistoryRow[], start: number, end: number, metrics: Metrics, nextSequence: () => number, symbol: MarketSymbol = "NQ",
 ): Trade[] {
   const trades: Trade[] = [];
   let previous: number | undefined;
   for (const row of rows) {
     if (!inWindow(row, start, end)) continue;
     const tsUs = normalizeTime(row.ts, "history");
-    const price = normalizePrice(row.price);
+    const price = normalizePrice(row.price, symbol);
     let invalid = false;
     if (price === null) { metrics.issue("offTick", { type: "history_tick", price: row.price }); invalid = true; }
     if (tsUs === null || typeof row.size !== "number" || !Number.isFinite(row.size) || row.size <= 0
@@ -98,7 +99,8 @@ export function historyTrades(
     if (invalid) { metrics.count("rejectedTrade"); continue; }
     previous = tsUs!;
     trades.push({ tsUs: tsUs!, recvUs: tsUs!, seq: nextSequence(), price: price!,
-      size: row.size as number, side: row.side as Trade["side"] });
+      size: row.size as number, side: row.side as Trade["side"],
+      ...(symbol === "GC" && validContract(row.contract, symbol) ? { contract: row.contract } : {}) });
     metrics.count("acceptedTrade");
   }
   return trades;

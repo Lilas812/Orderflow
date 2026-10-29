@@ -3,6 +3,8 @@ import { US_PER_SECOND } from "../domain.ts";
 import { ColumnCache, type TimeRange } from "./cache.ts";
 import { decodeFrame, decodeTrades } from "./protocol.ts";
 import { HistoryFreshness } from "./history-freshness.ts";
+import { ACTIVE_SYMBOL } from "../instrument.ts";
+import { INSTRUMENTS, type MarketSymbol } from "../../../../lib/market/instruments.ts";
 
 export type ConnectionState = "connecting" | "connected" | "reconnecting" | "error" | "replay-ended";
 
@@ -72,9 +74,10 @@ const defaultEnvironment: SocketEnvironment = {
   now: () => Date.now(),
 };
 
-export function buildSocketUrl(locationLike: Pick<Location, "protocol" | "host" | "search">): string {
+export function buildSocketUrl(locationLike: Pick<Location, "protocol" | "host" | "search">, symbol: MarketSymbol = ACTIVE_SYMBOL): string {
   const scheme = locationLike.protocol === "https:" ? "wss:" : "ws:";
   const url = new URL(`${scheme}//${locationLike.host}/api/ws`);
+  if (symbol !== "NQ") url.searchParams.set("symbol", symbol);
   const params = new URLSearchParams(locationLike.search);
   if (params.get("mode") === "replay") {
     url.searchParams.set("mode", "replay");
@@ -87,6 +90,8 @@ export function buildSocketUrl(locationLike: Pick<Location, "protocol" | "host" 
 }
 
 export class RealtimeClient {
+  private symbol: MarketSymbol;
+  private verifiedHello = false;
   private readonly cache: ColumnCache;
   private readonly listeners: SocketListeners;
   private readonly locationLike: Pick<Location, "protocol" | "host" | "search">;
@@ -125,8 +130,10 @@ export class RealtimeClient {
     listeners: SocketListeners,
     locationLike: Pick<Location, "protocol" | "host" | "search"> = window.location,
     env: SocketEnvironment = defaultEnvironment,
+    symbol: MarketSymbol = ACTIVE_SYMBOL,
   ) {
     this.cache = cache;
+    this.symbol = symbol;
     this.listeners = listeners;
     this.locationLike = locationLike;
     this.env = env;
@@ -139,6 +146,7 @@ export class RealtimeClient {
   }
 
   stop(): void {
+    this.verifiedHello = false;
     this.stopped = true;
     if (this.reconnectTimer !== null) this.env.clearTimeout(this.reconnectTimer);
     this.reconnectTimer = null;
@@ -174,11 +182,12 @@ export class RealtimeClient {
   }
 
   private open(): void {
+    this.verifiedHello = false;
     if (this.stopped || this.ended || (this.socket && this.socket.readyState < 2)) return;
     this.listeners.onConnection(this.reconnectDelay === 1_000 ? "connecting" : "reconnecting");
     let socket: SocketLike;
     try {
-      socket = this.env.createSocket(buildSocketUrl(this.locationLike));
+      socket = this.env.createSocket(buildSocketUrl(this.locationLike, this.symbol));
     } catch {
       this.scheduleReconnect();
       return;
@@ -193,7 +202,7 @@ export class RealtimeClient {
     };
     socket.onmessage = (event) => {
       if (this.socket !== socket) return;
-      void this.handleMessage(event.data);
+      void this.handleMessage(event.data, socket);
     };
     socket.onerror = () => {
       if (this.socket === socket) this.listeners.onConnection("error", "WebSocket transport error");
@@ -217,7 +226,7 @@ export class RealtimeClient {
     }, delay);
   }
 
-  private async handleMessage(data: unknown): Promise<void> {
+  private async handleMessage(data: unknown, socket = this.socket): Promise<void> {
     try {
       if (typeof data === "string") {
         const value = JSON.parse(data) as Record<string, unknown>;
@@ -231,6 +240,7 @@ export class RealtimeClient {
       else if (data instanceof Uint8Array) bytes = data;
       else if (data instanceof Blob) bytes = new Uint8Array(await data.arrayBuffer());
       else throw new Error("unsupported_websocket_payload");
+      if (this.stopped || this.socket !== socket || !this.verifiedHello) return;
       const frame = decodeFrame(bytes);
       this.recordBytes(bytes.byteLength, this.initialLoading ? "initial" : frame.kind === 2 ? "range" : "steady");
       if (frame.kind === 1) {
@@ -253,16 +263,19 @@ export class RealtimeClient {
   }
 
   private handleJson(message: Record<string, unknown>): void {
+    if (message.type !== "hello" && !this.verifiedHello) return;
     if (message.type === "vp" || message.type === "vpUpdate") {
       this.listeners.onVp?.(message); return;
     }
     if (message.type === "hello") {
       const hello = message as unknown as HelloMessage;
-      if (hello.symbol !== "NQ" || hello.tickSize !== 0.25 || hello.columnSeconds !== 1
+      if (hello.symbol !== this.symbol || hello.tickSize !== INSTRUMENTS[this.symbol].tickSize || hello.columnSeconds !== 1
         || !Number.isSafeInteger(hello.serverTimeUs) || (hello.mode !== "live" && hello.mode !== "replay")) {
         this.listeners.onError("Invalid hello contract");
+        this.socket?.close(1008, "invalid_market");
         return;
       }
+      this.verifiedHello = true;
       const replayFrom = this.replayFromSec();
       const endSec = hello.mode === "replay" && replayFrom !== null ? replayFrom : Math.floor(hello.serverTimeUs / US_PER_SECOND);
       this.clearPendingRanges();

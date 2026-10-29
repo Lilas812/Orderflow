@@ -10,6 +10,10 @@ import { longVpRouter } from "../long-vp/routes.ts";
 import { longVpSettingsRouter } from "../settings/longvp.ts";
 import type { LongVpSettings } from "../settings/longvp.ts";
 import type { SettingsTrace } from "../settings/trace.ts";
+import { INSTRUMENTS, marketSymbol, type MarketSymbol } from "../../../lib/market/instruments.ts";
+export interface MarketStatus {
+  receiver: Receiver; extra(): unknown; delivery(): unknown; longVp: AppLongVp | null;
+}
 
 export function statusSnapshot(upstream: Upstream, receiver: Receiver, apiKey: string, extra?: () => unknown, delivery?: () => unknown) {
   return makeSanitizer(apiKey)({
@@ -21,7 +25,7 @@ export function statusSnapshot(upstream: Upstream, receiver: Receiver, apiKey: s
     book: receiver.book.summary(),
     tradeCount: receiver.trades.size,
     recentTrades: receiver.trades.latest(5),
-    units: { time: "Unix microseconds (integer)", price: "NQ ticks (0.25)" },
+    units: { time: "Unix microseconds (integer)", price: `${receiver.symbol} ticks (${INSTRUMENTS[receiver.symbol].tickSize})` },
     ...(extra ? { phase2a: extra() } : {}),
     ...(delivery ? { phase2b: delivery() } : {}),
   });
@@ -29,21 +33,28 @@ export function statusSnapshot(upstream: Upstream, receiver: Receiver, apiKey: s
 
 export function createStatusApp(upstream: Upstream, receiver: Receiver, apiKey: string, extra?: () => unknown, delivery?: () => unknown,
   memory?: () => unknown, isolation?: () => unknown, settings?: SettingsPersistence, staticDirectory?: string,
-  longVp?: AppLongVp | null, longVpSettings?: LongVpSettings, settingsTrace?: SettingsTrace) {
+  longVp?: AppLongVp | null, longVpSettings?: LongVpSettings, settingsTrace?: SettingsTrace,
+  markets?: (symbol: MarketSymbol) => MarketStatus | null) {
   const app = express();
   app.disable("x-powered-by");
   // The public proxy already routes /api; /status remains the canonical handler.
-  app.get(["/status", "/api/status"], (_req, res) => {
+  app.get(["/status", "/api/status"], (req, res) => {
+    const symbol = marketSymbol(req.query.symbol ?? "NQ");
+    if (!symbol) { res.status(400).json({ error: "invalid_symbol" }); return; }
+    const selected = markets?.(symbol);
+    if (symbol === "GC" && !selected) { res.status(503).json({ error: "gc_disabled" }); return; }
     res.set("Cache-Control", "no-store");
-    res.json({ ...(statusSnapshot(upstream, receiver, apiKey, extra, delivery) as Record<string, unknown>),
+    res.json({ ...(statusSnapshot(upstream, selected?.receiver ?? receiver, apiKey, selected?.extra ?? extra,
+      selected?.delivery ?? delivery) as Record<string, unknown>), symbol,
       ...(memory ? { memory: memory() } : {}), ...(isolation ? { measurementIsolation: isolation() } : {}),
       ...(settings ? { settings: settings.snapshot() } : {}),
       ...(longVpSettings ? { longVpSettings: longVpSettings.snapshot() } : {}),
-      longVp: longVp?.snapshot() ?? { enabled: false, reason: "production_only" } });
+      longVp: (selected ? selected.longVp : longVp)?.snapshot() ?? { enabled: false, reason: "production_only" } });
   });
   if (longVpSettings) app.use("/api/settings/longvp", longVpSettingsRouter(longVpSettings));
   if (settings) app.use("/api/settings", settingsRouter(settings, settingsTrace));
-  app.use("/api/longvp", longVpRouter(longVp ?? null));
+  app.use("/api/longvp", longVpRouter(longVp ?? null, markets
+    ? symbol => symbol === "NQ" ? longVp ?? null : markets(symbol)?.longVp ?? null : undefined));
   app.get("/api/healthz", (_req, res) => { res.json({ status: "ok" }); });
   if (staticDirectory) {
     app.use(express.static(staticDirectory));

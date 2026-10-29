@@ -12,7 +12,8 @@ export interface Socket {
 
 export class Upstream {
   private apiKey: string;
-  private receiver: Receiver;
+  private receiver: Pick<Receiver, "metrics" | "receive">;
+  private symbols: string[];
   private log: Log;
   private createSocket: (url: string) => Socket;
   private now: () => number;
@@ -39,11 +40,12 @@ export class Upstream {
   };
 
   constructor(options: {
-    apiKey: string; receiver: Receiver; log: Log;
+    apiKey: string; receiver: Pick<Receiver, "metrics" | "receive">; log: Log; symbols?: string[];
     createSocket?: (url: string) => Socket;
     now?: () => number; random?: () => number;
   }) {
     this.apiKey = options.apiKey;
+    this.symbols = options.symbols ?? ["NQ"];
     this.receiver = options.receiver;
     this.log = options.log;
     this.createSocket = options.createSocket ?? ((url) => new WebSocket(url));
@@ -68,7 +70,7 @@ export class Upstream {
     let socket: Socket;
     try {
       socket = this.createSocket(
-        `wss://stream.tick-stream.xyz/v1/stream?key=${encodeURIComponent(this.apiKey)}&symbols=NQ`,
+        `wss://stream.tick-stream.xyz/v1/stream?key=${encodeURIComponent(this.apiKey)}&symbols=${this.symbols.join(",")}`,
       );
     } catch (error) {
       this.log("upstream_constructor_error", { error });
@@ -85,8 +87,8 @@ export class Upstream {
       this.log("upstream_open");
       try {
         // Trades are subscribed by symbols=NQ on each new socket.
-        socket.send(JSON.stringify({ op: "subscribe", channel: "book", symbols: ["NQ"] }));
-        this.log("upstream_subscribed", { trades: "NQ", book: "NQ" });
+        socket.send(JSON.stringify({ op: "subscribe", channel: "book", symbols: this.symbols }));
+        this.log("upstream_subscribed", { trades: this.symbols.join(","), book: this.symbols.join(",") });
       } catch (error) {
         this.log("upstream_send_error", { error });
         this.reconnect("subscribe_error");

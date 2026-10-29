@@ -1,5 +1,8 @@
 import { parseDay, parseRolls, type DayData, type RollData } from "./model.ts";
 import { tradingDatesBetween } from "./time.ts";
+import { symbolUrl } from "../instrument.ts";
+import { ACTIVE_SYMBOL } from "../instrument.ts";
+import { validContract } from "../../../../lib/market/instruments.ts";
 
 export const MAX_DAYS_PER_CALL = 60;
 export const MAX_CACHED_DAYS = 160;
@@ -24,15 +27,15 @@ export function evictionOrder(cached: string[], from: string, to: string, max = 
   return cached.slice().sort((a, b) => dist(b) - dist(a)).slice(0, cached.length - max).filter(d => dist(d) > 0);
 }
 
-async function getJson(path: string, signal: AbortSignal): Promise<{ status: number; body: unknown }> {
-  const res = await fetch(`${import.meta.env.BASE_URL}${path}`, { cache: "no-store", credentials: "include", signal });
+async function getJson(path: string, signal: AbortSignal): Promise<{ status: number; body: unknown; front: string | null }> {
+  const res = await fetch(`${import.meta.env.BASE_URL}${symbolUrl(path)}`, { cache: "no-store", credentials: "include", signal });
   let body: unknown = null;
   try { body = await res.json(); } catch { body = null; }
   if (!res.ok && res.status !== 503) {
     const msg = body && typeof body === "object" && "error" in body ? String((body as { error: unknown }).error) : `HTTP ${res.status}`;
     throw Error(msg);
   }
-  return { status: res.status, body };
+  return { status: res.status, body, front: res.headers.get("X-LongVP-Front-Contract") };
 }
 
 export type LoadState = "idle" | "loading" | "error" | "disabled";
@@ -44,6 +47,7 @@ export class LongVpStore {
   private todayController: AbortController | null = null;
   private timer: ReturnType<typeof setInterval> | null = null;
   rolls: RollData[] = [];
+  frontContract: string | null = null;
   rollsState: LoadState = "idle"; rollsError = "";
   today: DayData | null = null;
   todayState: LoadState = "idle"; todayError = "";
@@ -68,6 +72,7 @@ export class LongVpStore {
   private changed() { this.revision++; if (!this.destroyed) this.onChange(); }
 
   async loadRolls() {
+    this.frontContract = null;
     this.rollsState = "loading"; this.changed();
     this.rollsController?.abort();
     const c = new AbortController(), timer = setTimeout(() => c.abort(), 15000);
@@ -76,7 +81,11 @@ export class LongVpStore {
       const r = await getJson("api/longvp/rolls", c.signal);
       if (this.destroyed) return;
       if (r.status === 503) { this.rollsState = "disabled"; this.rollsError = "長期VPは無効です"; }
-      else { this.rolls = parseRolls(r.body); this.rollsState = "idle"; this.rollsError = ""; }
+      else {
+        this.rolls = parseRolls(r.body);
+        this.frontContract = validContract(r.front, ACTIVE_SYMBOL) ? r.front : null;
+        this.rollsState = "idle"; this.rollsError = "";
+      }
     } catch (e) {
       if (this.destroyed || c !== this.rollsController) return;
       this.rollsState = "error"; this.rollsError = c.signal.aborted ? "乗り換え記録の取得がタイムアウトしました" : message(e);

@@ -76,13 +76,24 @@ export function mergeAggregates(a: LongAggregate, b: LongAggregate) {
   return result;
 }
 export function serializeDay(date: string, aggregate: LongAggregate, timeline: Roll[],
-  gaps: [number, number][], nowUs: number, provisional = false): DayData {
+  gaps: [number, number][], nowUs: number, provisional = false, recordContracts = false): DayData {
   const { startUs, endUs } = dayBounds(date);
   const contracts: DayData["contracts"] = [];
   const sorted = timeline.slice().sort((a, b) => a.sinceUs - b.sinceUs);
   for (let i = 0; i < sorted.length; i++) {
     const from = Math.max(startUs, sorted[i].sinceUs), to = Math.min(endUs, sorted[i + 1]?.sinceUs ?? endUs);
     if (from < to) contracts.push({ contract: sorted[i].contract, fromSec: from / 1e6, toSec: to / 1e6 });
+  }
+  if (recordContracts) {
+    // These are row-attribution spans, NOT inferred expiry activation times.
+    // Unknown and explicit identities may overlap within the same minute.
+    contracts.length = 0;
+    const identities = new Set([...aggregate.minutes.values()].map(b => b.contract));
+    for (const contract of identities) {
+      const rows = [...aggregate.minutes.values()].filter(b => b.contract === contract);
+      contracts.push({ contract, fromSec: Math.max(startUs / 1e6, Math.min(...rows.map(b => b.firstUs)) / 1e6),
+        toSec: Math.min(endUs / 1e6, (Math.max(...rows.map(b => b.lastUs)) + 1) / 1e6) });
+    }
   }
   const index = (contract: string, us: number) => {
     const n = contracts.findIndex(c => c.contract === contract && us < c.toSec * 1e6

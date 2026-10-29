@@ -12,6 +12,7 @@ import { dayEndSec, dayStartSec, latestTradingDate, nextTradingDate, shiftDate, 
 import { clampView, fitPrice, initialView, type LvView } from "./view-math.ts";
 import { viewSwitchHtml } from "./nav.ts";
 import { LongVpCrosshair, cvdScale, cvdY } from "./crosshair.ts";
+import { ACTIVE_SYMBOL, formatInstrumentPrice } from "../instrument.ts";
 
 const C = {
   bg: "#000000", grid: "#15141d", sep: "#252431", weekSep: "#3a3850", text: "#8e8c9c", textHi: "#d9d9d9",
@@ -20,14 +21,14 @@ const C = {
 };
 const SVG = 'xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"';
 const AXIS_W = 70, MIN_DIVIDER = .3, MAX_DIVIDER = .9;
-const priceText = (t: number) => (t * .25).toFixed(2);
+const priceText = formatInstrumentPrice;
 
 export function mountLongVp(root: HTMLElement): () => void {
-  document.title = "NQ | Long-term volume profile";
+  document.title = `${ACTIVE_SYMBOL} | Long-term volume profile`;
   for (const [selector, content] of [
-    ['meta[name="description"]', "NQの日次・週次出来高プロファイル、週VWAPと週CVD。"],
-    ['meta[property="og:title"]', "NQ | Long-term volume profile"],
-    ['meta[property="og:description"]', "NQの日次・週次VP、週VWAPと週CVD。"],
+    ['meta[name="description"]', `${ACTIVE_SYMBOL}の日次・週次出来高プロファイル、週VWAPと週CVD。`],
+    ['meta[property="og:title"]', `${ACTIVE_SYMBOL} | Long-term volume profile`],
+    ['meta[property="og:description"]', `${ACTIVE_SYMBOL}の日次・週次VP、週VWAPと週CVD。`],
   ]) document.querySelector(selector)?.setAttribute("content", content);
   root.innerHTML = `
   <div class="app-shell">
@@ -37,7 +38,7 @@ export function mountLongVp(root: HTMLElement): () => void {
     </aside>
     <main class="workspace">
       <header class="masthead">
-        <div class="instrument"><strong>NQ / LONG VP</strong><span>ADJUSTED TO FRONT CONTRACT</span></div>
+        <div class="instrument"><strong>${ACTIVE_SYMBOL} / LONG VP</strong><span>ADJUSTED TO FRONT CONTRACT</span></div>
         ${viewSwitchHtml("longvp")}
         <div class="market-state" id="lv-state" data-state="connecting" data-testid="status-longvp"><i class="state-dot" aria-hidden="true"></i><span id="lv-state-label">LOADING</span></div>
       </header>
@@ -96,7 +97,7 @@ export function mountLongVp(root: HTMLElement): () => void {
       seriesKey = key;
       loadedDays = store.loaded(dates);
       const all = store.today ? [...loadedDays, store.today] : loadedDays;
-      series = buildSeries(loadedDays, store.rolls, latestContract(all, store.rolls));
+      series = buildSeries(loadedDays, store.rolls, ACTIVE_SYMBOL === "GC" ? store.frontContract : latestContract(all, store.rolls));
       profilesKey = "";
     }
     const pk = `${seriesKey}|${settings.vpPeriod}|${settings.rthOnly}`;
@@ -406,7 +407,7 @@ export function mountLongVp(root: HTMLElement): () => void {
     if (store.daysState === "disabled") lines.push({ text: store.daysError, tone: "error", retry: () => store.retry() });
     if (store.rollsState === "error" || store.rollsState === "disabled") lines.push({ text: `乗り換え記録：${store.rollsError}。古い限月は調整不能`, tone: "error", retry: () => void store.loadRolls() });
     if (store.todayState === "error" || store.todayState === "disabled") lines.push({ text: store.todayError, tone: store.todayState === "error" ? "error" : "warn", retry: () => void store.pollToday() });
-    if (series && series.unadjustableDates.size) lines.push({ text: `調整不能 ${series.unadjustableDates.size}日：乗り換えを確認できない限月の価格行を省いています（CVDは表示）`, tone: "warn" });
+    if (series && series.unadjustableDates.size) lines.push({ text: `調整不能 ${series.unadjustableDates.size}日：${ACTIVE_SYMBOL === "GC" ? "限月不明／価格差未確認の" : "乗り換えを確認できない限月の"}価格行を省いています（CVDは表示）`, tone: "warn" });
     const incomplete = loadedDays.filter(d => !d.complete && d.tradingDate !== store.today?.tradingDate).length;
     if (incomplete) lines.push({ text: `不完全な取引日 ${incomplete}（斜線が欠損区間）`, tone: "warn" });
     const missing = store.missingDates(dates).length;
@@ -428,7 +429,9 @@ export function mountLongVp(root: HTMLElement): () => void {
     centerEl.hidden = !(noData || dates.length === 0 || (store.daysState === "disabled" && loadedDays.length === 0));
     centerEl.textContent = dates.length === 0 ? "この範囲は取引日がありません（週末または未来）"
       : store.daysState === "disabled" ? "長期VPはサーバーで無効です · 蓄積データを表示できません"
-        : "この範囲に蓄積データはありません · 移動して過去や当日を表示できます";
+        : ACTIVE_SYMBOL === "GC" && series?.unadjustableDates.size
+          ? "限月不明／調整不能のため価格を表示できません · 生データを保持し、週CVDは表示します"
+          : "この範囲に蓄積データはありません · 移動して過去や当日を表示できます";
     const err = store.daysState === "error" || store.daysState === "disabled";
     stateEl.dataset.state = err ? "error" : store.daysState === "loading" ? "connecting" : "connected";
     stateLabel.textContent = err ? "DATA ERROR" : store.daysState === "loading" ? "LOADING"

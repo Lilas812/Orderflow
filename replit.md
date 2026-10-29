@@ -2,7 +2,7 @@
 
 ## Overview
 
-NQ先物（CME）向けの、ヒートマップ型オーダーフロー画面を作る個人用Webアプリ。
+NQ先物（CME）と標準金先物GC（COMEX）向けの、ヒートマップ型オーダーフロー画面を作る個人用Webアプリ。
 データは TICK STREAM（Realtime + L2 プラン）から取得する。将来はフットプリントなどの画面を追加する。
 
 - 全体仕様の正本：`docs/SPEC.md`
@@ -45,6 +45,8 @@ NQ先物（CME）向けの、ヒートマップ型オーダーフロー画面を
 Agent が更新してよいのは、下の Current Status 節だけ。
 
 ## Current Status
+
+2026-10-30：NQを維持して標準GCを両画面へ追加。1上流接続での複数購読、銘柄別保存・履歴調整、タブ内選択、GC限月不明の保持を実装し、隔離試験を実施。実上流のNQ＋GC同時受信・本番反映は未実施。詳細は server/GC_IMPLEMENTATION_REPORT.md。
 
 - 2026-10-29：承認されたUI 5.1・LONGVP 4.8をCRLF→LFのみで配置し、両画面に独立Canvasの十字カーソルを実装。価格/時刻/CVDの座標照合、操作・表示切替・消去、100移動→1描画と重い層/通信の不増を隔離実ブラウザで確認。画面150/150・型検査・本番ビルド成功。検証ブラウザ終了・専用Chrome残存0、下流0/上流stoppedを確認。既存受信プロセス・公開・保存形式・設定version・依存は未変更。Safari実機・実上流ライブは未確認。詳細artifacts/heatmap/CROSSHAIR_REPORT.md。
 

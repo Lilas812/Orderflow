@@ -6,8 +6,9 @@ import type { Objects } from "../store/objects.ts";
 import { uploadVerified } from "../store/objects.ts";
 import type { DayData, RollData } from "./day.ts";
 import { validDate } from "./day.ts";
+import { validContract, type MarketSymbol } from "../../../lib/market/instruments.ts";
 
-export function validateDay(value: unknown): DayData {
+export function validateDay(value: unknown, symbol: MarketSymbol = "NQ"): DayData {
   if (!value || typeof value !== "object") throw Error("invalid_longvp_day");
   const d = value as DayData;
   if (d.version !== 1 || !validDate(d.tradingDate ?? "") || !Number.isInteger(d.startSec)
@@ -16,7 +17,7 @@ export function validateDay(value: unknown): DayData {
     || !Array.isArray(d.gaps) || typeof d.complete !== "boolean"
     || d.complete !== (d.gaps.length === 0)) throw Error("invalid_longvp_day");
   for (const c of d.contracts) {
-    if (!/^NQ[HMUZ]\d{1,4}$/.test(c.contract) || !Number.isFinite(c.fromSec) || !Number.isFinite(c.toSec)
+    if (!validContract(c.contract, symbol, true) || !Number.isFinite(c.fromSec) || !Number.isFinite(c.toSec)
       || c.fromSec < d.startSec || c.toSec > d.endSec || c.fromSec >= c.toSec) throw Error("invalid_longvp_contract");
   }
   for (const [rows, length, quantum] of [[d.bars1m, 8, 60], [d.vp30m, 5, 1800]] as const) {
@@ -33,11 +34,11 @@ export function validateDay(value: unknown): DayData {
     || g[0] < d.startSec || g[1] > d.endSec || g[0] >= g[1]) throw Error("invalid_longvp_gap");
   return d;
 }
-export function validateRolls(value: unknown): RollData[] {
+export function validateRolls(value: unknown, symbol: MarketSymbol = "NQ"): RollData[] {
   if (!Array.isArray(value)) throw Error("invalid_longvp_rolls");
   let previous = -Infinity;
   for (const r of value as RollData[]) {
-    if (!r || !/^NQ[HMUZ]\d{1,4}$/.test(r.from) || !/^NQ[HMUZ]\d{1,4}$/.test(r.to)
+    if (!r || !validContract(r.from, symbol) || !validContract(r.to, symbol)
       || r.from === r.to || !Number.isFinite(r.atSec) || r.atSec <= previous
       || !Number.isSafeInteger(r.diffTicks) || r.method !== "edge" || !r.detail
       || ![r.detail.beforeUs, r.detail.afterUs, r.detail.beforePrice, r.detail.afterPrice].every(Number.isSafeInteger)
@@ -52,6 +53,7 @@ export function validateRolls(value: unknown): RollData[] {
   return value;
 }
 export class LongObjects {
+  readonly symbol: MarketSymbol;
   private objects: Objects;
   private prefix: string;
   private root: string;
@@ -61,9 +63,10 @@ export class LongObjects {
   readonly maxBytes = 32 * 1024 * 1024;
   private bytes = 0;
   private reads = new Map<string, Promise<DayData>>();
-  constructor(objects: Objects, prefix: string, root: string) {
+  constructor(objects: Objects, prefix: string, root: string, symbol: MarketSymbol = "NQ") {
+    this.symbol = symbol;
     if (!["prod/", "dev/"].includes(prefix)) throw Error("invalid_longvp_prefix");
-    this.objects = objects; this.prefix = prefix + "longvp/NQ/"; this.root = root;
+    this.objects = objects; this.prefix = prefix + `longvp/${symbol}/`; this.root = root;
   }
   snapshot() { return { days: this.cache.size, estimatedBytes: this.bytes,
     maxDays: this.maxDays, maxBytes: this.maxBytes }; }
@@ -104,7 +107,7 @@ export class LongObjects {
     const promise = this.temporary(async file => {
       await this.objects.download(this.prefix + `days/${date}.json.gz`, file);
       const day = validateDay(JSON.parse(gunzipSync(await fs.readFile(file),
-        { maxOutputLength: this.maxBytes / 8 }).toString("utf8")));
+        { maxOutputLength: this.maxBytes / 8 }).toString("utf8")), this.symbol);
       if (day.tradingDate !== date) throw Error("longvp_date_mismatch");
       this.remember(day); return day;
     });
@@ -112,7 +115,7 @@ export class LongObjects {
     try { return await promise; } finally { this.reads.delete(date); }
   }
   async save(day: DayData, signal?: AbortSignal) {
-    validateDay(day);
+    validateDay(day, this.symbol);
     const json = Buffer.from(JSON.stringify(day)), compressed = gzipSync(json);
     if (json.length * 8 > this.maxBytes) throw Error("longvp_day_exceeds_memory_budget");
     await this.temporary(async file => {
@@ -126,11 +129,11 @@ export class LongObjects {
     if (!await this.objects.exists(this.prefix + "rolls.json")) return [];
     return this.temporary(async file => {
       await this.objects.download(this.prefix + "rolls.json", file);
-      return validateRolls(JSON.parse(await fs.readFile(file, "utf8")));
+      return validateRolls(JSON.parse(await fs.readFile(file, "utf8")), this.symbol);
     });
   }
   async saveRolls(rolls: RollData[], signal?: AbortSignal) {
-    validateRolls(rolls);
+    validateRolls(rolls, this.symbol);
     await this.temporary(async file => {
       await fs.writeFile(file, JSON.stringify(rolls), { mode: 0o600 });
       await uploadVerified(this.objects, this.prefix + "rolls.json", file, signal);

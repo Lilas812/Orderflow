@@ -4,6 +4,7 @@ import { Metrics } from "./metrics.ts";
 import type { BookSnapshot, Trade } from "../types.ts";
 import type { Log } from "../logger.ts";
 import { normalizeBook, normalizePrice, normalizeTime } from "./normalize.ts";
+import { validContract, type MarketSymbol } from "../../../lib/market/instruments.ts";
 
 function record(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -15,10 +16,14 @@ export class Receiver {
   readonly metrics: Metrics;
   private log: Log;
   private seq = 0;
+  readonly symbol: MarketSymbol;
+  currentContract: string | null = null;
   private lastTs: Partial<Record<"tick" | "book", number>> = {};
   private observers: { book?: (book: BookSnapshot) => void; trade?: (trade: Trade) => void };
 
-  constructor(log: Log, observers: { book?: (book: BookSnapshot) => void; trade?: (trade: Trade) => void } = {}) {
+  constructor(log: Log, observers: { book?: (book: BookSnapshot) => void; trade?: (trade: Trade) => void } = {},
+    symbol: MarketSymbol = "NQ") {
+    this.symbol = symbol;
     this.log = log;
     this.metrics = new Metrics(log);
     this.observers = observers;
@@ -33,7 +38,7 @@ export class Receiver {
 
   /** Sole boundary for external price -> integer NQ ticks. No rounding. */
   private price(price: unknown): number | null {
-    return normalizePrice(price);
+    return normalizePrice(price, this.symbol);
   }
 
   private rollback(type: "tick" | "book", tsUs: number): boolean {
@@ -110,7 +115,7 @@ export class Receiver {
       this.metrics.issue("offTick", { type: "tick", price: message.price, recvUs });
       invalid = true;
     }
-    if (tsUs === null || message.symbol !== "NQ"
+    if (tsUs === null || message.symbol !== this.symbol
       || typeof message.size !== "number" || !Number.isFinite(message.size) || message.size <= 0
       || (message.side !== "buy" && message.side !== "sell")) {
       this.metrics.issue("invalidMessage", { type: "tick", reason: "invalid_fields", recvUs });
@@ -122,6 +127,10 @@ export class Receiver {
       tsUs: tsUs!, recvUs, seq: this.nextSequence(), price: price!,
       size: message.size as number, side: message.side as Trade["side"],
     };
+    if (this.symbol === "GC") {
+      const contract = validContract(message.contract, "GC") ? message.contract : this.currentContract;
+      if (contract) trade.contract = contract;
+    }
     this.lastTs.tick = trade.tsUs;
     this.trades.push(trade);
     this.metrics.count("acceptedTrade");
@@ -129,7 +138,7 @@ export class Receiver {
   }
 
   private snapshot(message: Record<string, unknown>, recvUs: number) {
-    const book = normalizeBook(message, recvUs, "live", this.metrics, (tsUs) => this.rollback("book", tsUs));
+    const book = normalizeBook(message, recvUs, "live", this.metrics, (tsUs) => this.rollback("book", tsUs), this.symbol);
     if (!book) return;
     this.lastTs.book = book.tsUs;
     this.book.replace(book);

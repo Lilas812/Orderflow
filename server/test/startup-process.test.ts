@@ -17,6 +17,7 @@ async function fixture(corrupt = false) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "heatmap-startup-process-"));
   await fs.mkdir(path.join(root, "server"));
   await fs.cp(source, path.join(root, "server/src"), { recursive: true });
+  await fs.cp(fileURLToPath(new URL("../../lib/market", import.meta.url)), path.join(root, "lib/market"), { recursive: true });
   // The dedicated long-VP settings schema is shared with the browser.
   const shared = "artifacts/heatmap/src/long-vp/settings-schema.ts";
   await fs.mkdir(path.dirname(path.join(root, shared)), { recursive: true });

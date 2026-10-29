@@ -12,6 +12,7 @@ import type { HistorySource } from "../history/client.ts";
 import type { Metrics } from "../ingest/metrics.ts";
 import type { Trade } from "../types.ts";
 import type { Log } from "../logger.ts";
+import { validContract, UNKNOWN_CONTRACT } from "../../../lib/market/instruments.ts";
 
 export const productionAccumulation = (env: NodeJS.ProcessEnv) => env.REPLIT_DEPLOYMENT === "1";
 export const accumulationEnabled = (env: NodeJS.ProcessEnv) =>
@@ -19,7 +20,8 @@ export const accumulationEnabled = (env: NodeJS.ProcessEnv) =>
 const WEEK_US = 7 * 86400e6;
 export interface LongDependencies {
   repository: LongObjects; store: LocalStore; history: HistorySource; metrics: Metrics;
-  metadata: Pick<LongSource, "roll">; nextSeq(): number; log: Log; now?(): number;
+  metadata: Pick<LongSource, "roll"> & { readonly currentContract?: string | null };
+  nextSeq(): number; log: Log; now?(): number;
   ready?(signal: AbortSignal): Promise<void>;
   schedule?: { now(): number; wait(ms: number, signal: AbortSignal): Promise<void> };
 }
@@ -53,6 +55,11 @@ export class AppLongVp {
   private retryAtUs: number | null = null;
   private failures = 0;
   constructor(deps: LongDependencies) { this.deps = deps; this.repository = deps.repository; }
+  private get gc() { return this.repository.symbol === "GC"; }
+  private contract(t: Trade) {
+    return this.gc ? (validContract(t.contract, "GC") ? t.contract : contractAt(t.tsUs, this.timeline) ?? UNKNOWN_CONTRACT)
+      : contractAt(t.tsUs, this.timeline);
+  }
   private now() { return this.deps.now?.() ?? Date.now() * 1000; }
   snapshot() {
     const dates = [...this.repository.records].filter(([, r]) => r.complete).map(([d]) => d).sort();
@@ -98,6 +105,9 @@ export class AppLongVp {
   async settled() { await this.job; }
   private async refreshMetadata() {
     const next = await this.deps.metadata.roll(this.abort.signal);
+    if (this.gc && next.contract === UNKNOWN_CONTRACT) {
+      this.timeline = [next]; this.pendingRoll = null; this.rollError = "unknown_contract_since"; return;
+    }
     if (next.sinceUs > this.now()) throw Error("longvp_future_contract");
     const old = this.timeline.at(-1);
     if (!old) this.timeline.push(next);
@@ -106,7 +116,7 @@ export class AppLongVp {
     } else {
       if (next.sinceUs <= old.sinceUs) throw Error("longvp_contract_rollback");
       this.timeline.push(next);
-      this.pendingRoll = { old, next };
+      this.pendingRoll = old.contract === UNKNOWN_CONTRACT ? null : { old, next };
       this.rollError = "roll_edge_pending";
     }
     if (this.pendingRoll) {
@@ -148,13 +158,13 @@ export class AppLongVp {
     if (first > bounds.startUs) gaps.push([bounds.startUs / 1e6, Math.min(first, endUs) / 1e6]);
     const state = first < endUs ? await this.range(first / 1e6, endUs / 1e6, t => {
       if (t.recvUs > cutoffRecvUs || (t.recvUs === cutoffRecvUs && t.seq >= cutoffSeq)) return;
-      const contract = contractAt(t.tsUs, this.timeline);
+      const contract = this.contract(t);
       if (contract) a.add(t, contract);
     }) : historyProgress();
     gaps.push(...state.gaps.map(g => [g.startSec, g.endSec] as [number, number]));
     // Unknown contract intervals are gaps even if there were no prints.
     const verifiedStart = this.timeline[0]?.sinceUs ?? endUs;
-    if (verifiedStart > first && first < endUs)
+    if (!this.gc && verifiedStart > first && first < endUs)
       gaps.push([first / 1e6, Math.min(verifiedStart, endUs) / 1e6]);
     return { aggregate: a, gaps: union(gaps.filter(([x, y]) => x < y)) };
   }
@@ -169,16 +179,20 @@ export class AppLongVp {
     const date = dayAt(this.now());
     if (date !== this.todayDate) this.resetToday(date);
     if (!date || dayAt(t.tsUs) !== date || t.seq < this.restoreCutoffSeq) return;
-    const contract = contractAt(t.tsUs, this.timeline);
+    const contract = this.contract(t);
     if (contract) this.todayLive.add(t, contract);
     else this.rollError = "unverified_live_contract";
   }
   today(): DayData | null {
     if (!this.todayDate || !this.todayReady) return null;
     return serializeDay(this.todayDate, mergeAggregates(this.todayBase, this.todayLive),
-      this.timeline, this.todayGaps, this.now(), true);
+      this.timeline, this.todayGaps, this.now(), true, this.gc);
   }
   rolls() { return this.rollRows; }
+  frontContract(): string | null {
+    const c = this.deps.metadata.currentContract;
+    return validContract(c, this.gc ? "GC" : "NQ") ? c : null;
+  }
   async run() {
     this.state = "running"; this.error = null;
     if (!this.initialized) {
@@ -188,7 +202,7 @@ export class AppLongVp {
         if (r.detail.fromSinceUs !== undefined) this.timeline.push({ contract: r.from, sinceUs: r.detail.fromSinceUs });
         this.timeline.push({ contract: r.to, sinceUs: Math.round(r.atSec * 1e6) });
       }
-      for (const record of this.repository.records.values()) for (const c of record.contracts) {
+      for (const record of this.gc ? [] : this.repository.records.values()) for (const c of record.contracts) {
         this.timeline.push({ contract: c.contract, sinceUs: Math.round(c.fromSec * 1e6) });
       }
       this.timeline = this.timeline.filter((r, i, rows) => !rows.some((v, j) => j < i && v.sinceUs === r.sinceUs))
@@ -228,13 +242,13 @@ export class AppLongVp {
         if (prepared && !prepared.gaps.length) {
           const tail = new LongAggregate();
           const state = await this.range(prepared.upToUs / 1e6, dayBounds(date).endUs / 1e6, t => {
-            const contract = contractAt(t.tsUs, this.timeline);
+            const contract = this.contract(t);
             if (contract) tail.add(t, contract);
           });
           built = { aggregate: mergeAggregates(prepared.aggregate, tail),
             gaps: state.gaps.map(g => [g.startSec, g.endSec]) };
         } else built = await this.build(date, dayBounds(date).endUs);
-        const data = serializeDay(date, built.aggregate, this.timeline, built.gaps, this.now());
+        const data = serializeDay(date, built.aggregate, this.timeline, built.gaps, this.now(), false, this.gc);
         const old = this.repository.records.has(date) ? await this.repository.day(date) : null;
         if (!old || improvesDay(old, data)) {
           const size = await this.repository.save(data, this.abort.signal);

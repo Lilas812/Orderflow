@@ -1,3 +1,4 @@
+import { formatInstrumentPrice } from "../instrument.ts";
 export function formatPrice(priceTicks: number): string {
-  return (priceTicks / 4).toFixed(2);
+  return formatInstrumentPrice(priceTicks);
 }

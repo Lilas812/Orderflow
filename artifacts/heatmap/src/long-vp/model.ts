@@ -1,4 +1,6 @@
 import { dayEndSec, dayStartSec, isRthSec, weekEndSec, weekKey, weekStartSec, shiftDate, shiftTradingDays } from "./time.ts";
+import { validContract, UNKNOWN_CONTRACT, type MarketSymbol } from "../../../../lib/market/instruments.ts";
+import { ACTIVE_SYMBOL } from "../instrument.ts";
 
 export type BarRow = [number, number, number, number, number, number, number, number];
 export type VolumeRow = [number, number, number, number, number];
@@ -13,17 +15,16 @@ export interface RollData {
   detail?: Record<string, unknown>;
 }
 
-const CONTRACT = /^NQ[HMUZ]\d{1,4}$/;
 const ints = (row: unknown, n: number) => Array.isArray(row) && row.length === n && row.every(Number.isSafeInteger);
 /** Structural validation of a received day; throws with a short reason. */
-export function parseDay(value: unknown): DayData {
+export function parseDay(value: unknown, symbol: MarketSymbol = ACTIVE_SYMBOL): DayData {
   const d = value as DayData;
   if (!d || typeof d !== "object" || d.version !== 1 || typeof d.tradingDate !== "string"
     || !Number.isFinite(d.startSec) || !Number.isFinite(d.endSec) || !Array.isArray(d.contracts)
     || !Array.isArray(d.bars1m) || !Array.isArray(d.vp30m) || !Array.isArray(d.gaps)) throw Error("日次データの形式が不正です");
   if (!/^\d{4}-\d\d-\d\d$/.test(d.tradingDate) || d.startSec >= d.endSec || typeof d.complete !== "boolean")
     throw Error("日次データの形式が不正です");
-  for (const c of d.contracts) if (!c || !CONTRACT.test(c.contract) || !Number.isFinite(c.fromSec) || !Number.isFinite(c.toSec))
+  for (const c of d.contracts) if (!c || !validContract(c.contract, symbol, true) || !Number.isFinite(c.fromSec) || !Number.isFinite(c.toSec))
     throw Error("限月の形式が不正です");
   for (const r of d.bars1m) if (!ints(r, 8) || r[7] < 0 || r[7] >= d.contracts.length || r[5] < 0 || r[6] < 0
     || r[2] < Math.max(r[1], r[3], r[4]) || r[3] > Math.min(r[1], r[2], r[4])) throw Error("1分足の形式が不正です");
@@ -33,9 +34,9 @@ export function parseDay(value: unknown): DayData {
     throw Error("欠損区間の形式が不正です");
   return d;
 }
-export function parseRolls(value: unknown): RollData[] {
+export function parseRolls(value: unknown, symbol: MarketSymbol = ACTIVE_SYMBOL): RollData[] {
   if (!Array.isArray(value)) throw Error("乗り換え記録の形式が不正です");
-  for (const r of value as RollData[]) if (!r || !CONTRACT.test(r.from) || !CONTRACT.test(r.to)
+  for (const r of value as RollData[]) if (!r || !validContract(r.from, symbol) || !validContract(r.to, symbol)
     || r.from === r.to || !Number.isSafeInteger(r.diffTicks) || !Number.isFinite(r.atSec)) throw Error("乗り換え記録の形式が不正です");
   return value as RollData[];
 }
@@ -48,7 +49,7 @@ export function adjustmentTable(contracts: Iterable<string>, rolls: RollData[], 
   const sorted = rolls.slice().sort((a, b) => a.atSec - b.atSec);
   for (const c of contracts) {
     if (out.has(c)) continue;
-    if (latest === null) { out.set(c, null); continue; }
+    if (latest === null || c === UNKNOWN_CONTRACT || latest === UNKNOWN_CONTRACT) { out.set(c, null); continue; }
     let cur = c, sum = 0, ok = true, after = -Infinity;
     const seen = new Set<string>();
     while (cur !== latest) {
@@ -65,7 +66,7 @@ export function adjustmentTable(contracts: Iterable<string>, rolls: RollData[], 
 /** Front contract: newest of loaded/today contract periods and the newest roll target. */
 export function latestContract(days: DayData[], rolls: RollData[] = []): string | null {
   let best: { contract: string; at: number } | null = null;
-  for (const d of days) for (const c of d.contracts) if (!best || c.toSec >= best.at) best = { contract: c.contract, at: c.toSec };
+  for (const d of days) for (const c of d.contracts) if (c.contract !== UNKNOWN_CONTRACT && (!best || c.toSec >= best.at)) best = { contract: c.contract, at: c.toSec };
   for (const r of rolls) if (!best || r.atSec > best.at) best = { contract: r.to, at: r.atSec };
   return best?.contract ?? null;
 }

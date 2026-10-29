@@ -8,6 +8,7 @@ import type { Column } from "../aggregate/columns.ts";
 import type { Trade, BookSnapshot } from "../types.ts";
 import type { Log } from "../logger.ts";
 import { VolumeProfile } from "../vp/state.ts";
+import { INSTRUMENTS, marketSymbol, type MarketSymbol } from "../../../lib/market/instruments.ts";
 
 export const WS_PATH = "/api/ws";
 export const BOARD_LIMIT = 4 * 1024 * 1024, CLOSE_LIMIT = 16 * 1024 * 1024;
@@ -48,7 +49,9 @@ export class Hub {
   private log: Log;
   private timer: unknown;
   private stopped = false;
-  constructor(source: Source, log: Log, clock: ReplayClock = realClock) {
+  readonly symbol: MarketSymbol;
+  constructor(source: Source, log: Log, clock: ReplayClock = realClock, symbol: MarketSymbol = "NQ") {
+    this.symbol = symbol;
     this.source = source; this.log = log; this.clock = clock;
     const poll = () => {
       if (this.stopped) return;
@@ -173,7 +176,7 @@ export class Hub {
           this.close(p, 1008, "invalid_replay_parameters"); return;
         }
         p.mode = params ? "replay" : "live";
-        this.json(p, { type: "hello", symbol: "NQ", tickSize: 0.25, columnSeconds: 1,
+        this.json(p, { type: "hello", symbol: this.symbol, tickSize: INSTRUMENTS[this.symbol].tickSize, columnSeconds: 1,
           serverTimeUs: this.clock.now() * 1000, mode: p.mode, savedRange: saved });
         const to = params?.fromSec ?? Math.floor(this.clock.now() / 1000);
         const view = await this.range(p, 0, Math.max(0, to - 1800), to);
@@ -304,7 +307,7 @@ export class Hub {
   }
 }
 
-export function attachHub(server: Server, hub: Hub, allows?: (origin?: string) => boolean) {
+export function attachHub(server: Server, hubs: Hub | Map<MarketSymbol, Hub>, allows?: (origin?: string) => boolean) {
   const wss = new WebSocketServer({ noServer: true, perMessageDeflate: {
     zlibDeflateOptions: { level: 3, memLevel: 7 }, threshold: 1024, concurrencyLimit: 1,
     // ws applies threshold only with no-context-takeover. With takeover it
@@ -317,7 +320,13 @@ export function attachHub(server: Server, hub: Hub, allows?: (origin?: string) =
   } });
   server.on("upgrade", (request, socket, head) => {
     const url = new URL(request.url ?? "/", "http://localhost");
+    const symbol = marketSymbol(url.searchParams.get("symbol") ?? "NQ");
+    const hub = symbol && (hubs instanceof Map ? hubs.get(symbol) : symbol === hubs.symbol ? hubs : undefined);
+    if (!hub) { socket.end("HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n"); return; }
     if (url.pathname !== WS_PATH) { socket.end("HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n"); return; }
+    if (hubs instanceof Map && [...hubs.values()].reduce((n, h) => n + h.snapshot().connected, 0) >= 5) {
+      socket.end("HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\n\r\n"); return;
+    }
     let origin: string | undefined;
     try { origin = request.headers.origin ? new URL(request.headers.origin).origin : undefined; } catch { /* invalid origin is not copied */ }
     const metadata: ConnectionOrigin = {

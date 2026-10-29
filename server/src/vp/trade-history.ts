@@ -69,7 +69,7 @@ export async function readTradeRange(options: {
       }
       state.noData.push({ startSec: start, endSec: end, attempts: retry + 1 });
     }
-    const trades = historyTrades(response.rows, start, end, metrics, nextSeq);
+    const trades = historyTrades(response.rows, start, end, metrics, nextSeq, source.symbol);
     if (trades.length !== response.rows.filter(r => inWindow(r, start, end)).length) {
       state.gaps.push({ startSec: start, endSec: end, reason: "invalid_history_tick" }); return;
     }

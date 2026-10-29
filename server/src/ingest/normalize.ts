@@ -1,5 +1,6 @@
 import type { BookLevel, BookSnapshot } from "../types.ts";
 import type { Metrics } from "./metrics.ts";
+import { INSTRUMENTS, type MarketSymbol } from "../../../lib/market/instruments.ts";
 
 /** External units are explicit, never inferred from digit count. */
 export function normalizeTime(ts: unknown, source: "live" | "history"): number | null {
@@ -8,9 +9,14 @@ export function normalizeTime(ts: unknown, source: "live" | "history"): number |
   return Number.isSafeInteger(us) ? us : null;
 }
 
-export function normalizePrice(price: unknown): number | null {
+export function normalizePrice(price: unknown, symbol: MarketSymbol = "NQ"): number | null {
   if (typeof price !== "number" || !Number.isFinite(price)) return null;
-  const ticks = price / 0.25;
+  const ticks = price * INSTRUMENTS[symbol].ticksPerPoint;
+  if (symbol === "GC") {
+    const integer = Math.round(ticks);
+    if (Number.isSafeInteger(integer) && Math.abs(ticks - integer) <= Number.EPSILON * Math.max(1, Math.abs(ticks)) * 2)
+      return integer;
+  }
   return Number.isSafeInteger(ticks) ? ticks : null;
 }
 
@@ -18,10 +24,11 @@ export function normalizePrice(price: unknown): number | null {
 export function normalizeBook(
   message: Record<string, unknown>, recvUs: number, source: "live" | "history",
   metrics: Metrics, rollback: (tsUs: number) => boolean,
+  symbol: MarketSymbol = "NQ",
 ): BookSnapshot | null {
   const tsUs = normalizeTime(message.ts, source);
   let invalid = false;
-  if (tsUs === null || message.symbol !== "NQ") {
+  if (tsUs === null || message.symbol !== symbol) {
     metrics.issue("invalidMessage", { type: "book", reason: "invalid_fields", recvUs });
     invalid = true;
   }
@@ -40,7 +47,7 @@ export function normalizeBook(
         invalid = true;
         continue;
       }
-      const price = normalizePrice(row[0]);
+      const price = normalizePrice(row[0], symbol);
       if (price === null) {
         metrics.issue("offTick", { type: "book", side: name, price: row[0], recvUs });
         invalid = true;

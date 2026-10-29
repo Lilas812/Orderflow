@@ -1,6 +1,7 @@
 import { fitCursorLabel, type CursorPoint, type Rect } from "../chart/crosshair.ts";
 import { formatCrosshairTimeUs } from "../chart/timezone.ts";
 import type { LvView } from "./view-math.ts";
+import { formatInstrumentPrice } from "../instrument.ts";
 
 export interface CvdScale { low: number; high: number; top: number; height: number }
 export interface CursorScene {
@@ -29,7 +30,7 @@ export function longVpCursor(point: CursorPoint, s: CursorScene) {
     ? s.view.priceHigh - y / s.priceH * (s.view.priceHigh - s.view.priceLow)
     : s.cvd.high - (y - s.cvd.top) / s.cvd.height * (s.cvd.high - s.cvd.low);
   const value = Math.round(raw);
-  return { band, x, y, sec, value, label: band === "price" ? (value * .25).toFixed(2) : String(value),
+  return { band, x, y, sec, value, label: band === "price" ? formatInstrumentPrice(value) : String(value),
     time: formatCrosshairTimeUs(sec * 1e6, s.timeZone === "America/Chicago" ? "ct" : "jst") };
 }
 

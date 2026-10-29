@@ -1,6 +1,7 @@
 import { setTimeout as delay } from "node:timers/promises";
 import type { Trade } from "../types.ts";
 import { normalizePrice } from "../ingest/normalize.ts";
+import { validContract, UNKNOWN_CONTRACT, type MarketSymbol } from "../../../lib/market/instruments.ts";
 export interface Roll { contract: string; sinceUs: number; }
 export interface TickPage { trades: Trade[]; truncated: boolean; }
 export interface LongSource {
@@ -18,11 +19,16 @@ export function rollSinceUs(value: unknown): number {
 }
 /** Independent REST client: no upstream socket, no changes to heatmap backfill behavior. */
 export class LongRest implements LongSource {
+  readonly symbol: MarketSymbol;
+  currentContract: string | null = null;
+  private onContract: (contract: string) => void;
   private key: string;
   private request: typeof fetch;
   private wait: (ms: number, signal: AbortSignal) => Promise<void>;
   constructor(key: string, request = fetch,
-    wait = async (ms: number, signal: AbortSignal) => { await delay(ms, undefined, { signal }); }) {
+    wait = async (ms: number, signal: AbortSignal) => { await delay(ms, undefined, { signal }); },
+    symbol: MarketSymbol = "NQ", onContract: (contract: string) => void = () => {}) {
+    this.symbol = symbol; this.onContract = onContract;
     this.key = key; this.request = request; this.wait = wait;
   }
   private async json(path: string, signal: AbortSignal): Promise<Record<string, unknown>> {
@@ -54,14 +60,17 @@ export class LongRest implements LongSource {
   }
   async roll(signal: AbortSignal) {
     const d = await this.json("/symbols", signal);
-    const row = Array.isArray(d.futures) ? d.futures.find(r => r?.symbol === "NQ") : undefined;
-    if (!row || typeof row.contract !== "string" || !/^NQ[HMUZ]\d{1,4}$/.test(row.contract))
+    const row = Array.isArray(d.futures) ? d.futures.find(r => r?.symbol === this.symbol) : undefined;
+    if (!row || !validContract(row.contract, this.symbol))
       throw Error("unverified_contract");
+    this.currentContract = row.contract; this.onContract(row.contract);
+    // No observed-at boundary, no retroactive assignment to the current expiry.
+    if (this.symbol === "GC" && row.contractSince == null) return { contract: UNKNOWN_CONTRACT, sinceUs: 0 };
     return { contract: row.contract, sinceUs: rollSinceUs(row.contractSince) };
   }
   async ticks(startUs: number, endUs: number, signal: AbortSignal): Promise<TickPage> {
     // The REST API takes seconds, rows contain microseconds. Filter to exact half-open bounds.
-    const p = new URLSearchParams({ symbol: "NQ", start: String(Math.floor(startUs / 1e6)),
+    const p = new URLSearchParams({ symbol: this.symbol, start: String(Math.floor(startUs / 1e6)),
       end: String(Math.ceil(endUs / 1e6)), limit: "100000", order: "asc" });
     const d = await this.json("/ticks?" + p, signal);
     if (!Array.isArray(d.ticks) || typeof d.truncated !== "boolean"
@@ -71,10 +80,11 @@ export class LongRest implements LongSource {
     for (const [seq, row] of d.ticks.entries()) {
       if (!row || typeof row !== "object" || !Number.isSafeInteger(row.ts)) throw Error("long_rest_invalid_tick");
       if (row.ts < startUs || row.ts >= endUs) continue;
-      const price = normalizePrice(row.price);
+      const price = normalizePrice(row.price, this.symbol);
       if (price === null || !Number.isSafeInteger(row.size) || row.size <= 0 || !["buy", "sell"].includes(row.side))
         throw Error("long_rest_invalid_tick");
-      trades.push({ tsUs: row.ts, recvUs: row.ts, seq, price, size: row.size, side: row.side });
+      trades.push({ tsUs: row.ts, recvUs: row.ts, seq, price, size: row.size, side: row.side,
+        ...(this.symbol === "GC" && validContract(row.contract, this.symbol) ? { contract: row.contract } : {}) });
     }
     return { trades, truncated: d.truncated };
   }

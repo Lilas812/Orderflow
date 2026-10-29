@@ -10,6 +10,7 @@ import type { BookSnapshot, Trade } from "./types.ts";
 import type { Log } from "./logger.ts";
 import { VolumeProfile } from "./vp/state.ts";
 import { VpHistory, coverageSegments } from "./vp/history.ts";
+import type { MarketSymbol } from "../../lib/market/instruments.ts";
 
 export class Pipeline {
   readonly store: LocalStore;
@@ -33,13 +34,14 @@ export class Pipeline {
   private onColumn: (column: Column) => void;
 
   constructor(apiKey: string, nextSeq: () => number, log: Log, onColumn: (column: Column) => void = () => {},
-    store?: LocalStore) {
+    store?: LocalStore, symbol: MarketSymbol = "NQ", request: typeof fetch = fetch) {
     this.log = log;
     this.onColumn = onColumn;
     // Resolve independently of the workflow's cwd; never under server/data.
-    this.store = store ?? new LocalStore(fileURLToPath(new URL("../../data/", import.meta.url)));
+    this.store = store ?? new LocalStore(fileURLToPath(new URL(
+      symbol === "NQ" ? "../../data/" : "../../data/instruments/GC/", import.meta.url)), Date.now, undefined, symbol);
     this.historyMetrics = new Metrics(log);
-    this.client = new HistoryClient(apiKey, log);
+    this.client = new HistoryClient(apiKey, log, request, undefined, symbol);
     this.backfill = new Backfill(this.client, this.store, this.historyMetrics, nextSeq, log);
     this.vp = new VolumeProfile(Date.now() / 1000);
     this.vpHistory = new VpHistory(this.vp, this.client, this.store, this.historyMetrics, nextSeq, log);

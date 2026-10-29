@@ -1,23 +1,36 @@
 import { Router } from "express";
 import type { AppLongVp } from "./app-service.ts";
 import { datesBetween } from "./day.ts";
+import { marketSymbol, type MarketSymbol } from "../../../lib/market/instruments.ts";
 
-export function longVpRouter(service: AppLongVp | null) {
+export function longVpRouter(service: AppLongVp | null, resolve?: (symbol: MarketSymbol) => AppLongVp | null) {
   const router = Router();
   // Serialize range responses to bound simultaneous decoded-day and output-buffer memory.
   let busy = false;
-  router.use((_req, res, next) => {
+  router.use((req, res, next) => {
+    const symbol = marketSymbol(req.query.symbol ?? "NQ");
+    if (!symbol) { res.status(400).json({ error: "invalid_symbol" }); return; }
+    res.locals.marketService = resolve ? resolve(symbol) : symbol === "NQ" ? service : null;
     res.set("Cache-Control", "no-store");
-    if (!service) { res.status(503).json({ error: "longvp_disabled" }); return; }
+    if (!res.locals.marketService) { res.status(503).json({ error: "longvp_disabled" }); return; }
     next();
   });
   router.get("/today", (_req, res) => {
-    const today = service!.today();
+    const today = (res.locals.marketService as AppLongVp).today();
     if (!today) { res.status(503).json({ error: "longvp_today_not_ready" }); return; }
     res.json(today);
   });
-  router.get("/rolls", (_req, res) => { res.json(service!.rolls()); });
+  router.get("/rolls", (_req, res) => {
+    const current = res.locals.marketService as AppLongVp;
+    // Current identity is NOT an expiry activation boundary or a zero roll gap.
+    if (current.repository?.symbol === "GC") {
+      const front = current.frontContract();
+      if (front) res.set("X-LongVP-Front-Contract", front);
+    }
+    res.json(current.rolls());
+  });
   router.get("/days", async (req, res) => {
+    const service = res.locals.marketService as AppLongVp;
     let dates: string[];
     try {
       dates = datesBetween(typeof req.query.from === "string" ? req.query.from : "",

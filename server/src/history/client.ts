@@ -2,9 +2,10 @@ import { setTimeout as delay } from "node:timers/promises";
 import type { Kind } from "../store/local.ts";
 import type { HistoryRow } from "./decode.ts";
 import type { Log } from "../logger.ts";
+import type { MarketSymbol } from "../../../lib/market/instruments.ts";
 
 export interface HistoryResponse { rows: HistoryRow[]; truncated: boolean; }
-export interface HistorySource { get(kind: Kind, start: number, end: number, signal: AbortSignal): Promise<HistoryResponse>; }
+export interface HistorySource { readonly symbol?: MarketSymbol; get(kind: Kind, start: number, end: number, signal: AbortSignal): Promise<HistoryResponse>; }
 export class WindowUnavailableError extends Error {
   readonly reason: string;
   constructor(reason: string) { super(reason); this.name = "WindowUnavailableError"; this.reason = reason; }
@@ -15,6 +16,7 @@ export interface HistoryNetworkStats {
   waits: number; waitUntilUs: number | null; lastError: string | null;
 }
 export class HistoryClient implements HistorySource {
+  readonly symbol: MarketSymbol;
   readonly stats: HistoryNetworkStats = {
     requests: 0, fetchedBookRows: 0, fetchedTradeRows: 0, errors: 0, retries: 0, exhaustedRequests: 0,
     waits: 0, waitUntilUs: null, lastError: null,
@@ -24,7 +26,9 @@ export class HistoryClient implements HistorySource {
   private request: typeof fetch;
   private wait: (ms: number, signal: AbortSignal) => Promise<void>;
   constructor(apiKey: string, log: Log, request: typeof fetch = fetch,
-    wait = async (ms: number, signal: AbortSignal) => { await delay(ms, undefined, { signal }); }) {
+    wait = async (ms: number, signal: AbortSignal) => { await delay(ms, undefined, { signal }); },
+    symbol: MarketSymbol = "NQ") {
+    this.symbol = symbol;
     this.apiKey = apiKey; this.log = log; this.request = request; this.wait = wait;
   }
   private async pause(ms: number, signal: AbortSignal) {
@@ -34,7 +38,7 @@ export class HistoryClient implements HistorySource {
   }
   async get(kind: Kind, start: number, end: number, signal: AbortSignal): Promise<HistoryResponse> {
     const url = new URL(`https://api.tick-stream.xyz/v1/history/${kind === "book" ? "book" : "ticks"}`);
-    for (const [k, v] of Object.entries({ symbol: "NQ", start, end, limit: 500000 })) url.searchParams.set(k, String(v));
+    for (const [k, v] of Object.entries({ symbol: this.symbol, start, end, limit: 500000 })) url.searchParams.set(k, String(v));
     let failures = 0;
     const retryFailure = async (reason: string) => {
       this.stats.errors++; this.stats.lastError = reason;

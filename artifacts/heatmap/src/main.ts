@@ -27,6 +27,7 @@ import { bindDoubleActivation } from "./chart/double-activation.ts";
 import { isLongVpRoute } from "./long-vp/view-math.ts";
 import { viewSwitchHtml } from "./long-vp/nav.ts";
 import { CrosshairOverlay } from "./chart/crosshair.ts";
+import { ACTIVE_SYMBOL, initializeInstrumentUi } from "./instrument.ts";
 
 declare global {
   interface Window {
@@ -87,33 +88,38 @@ type Point = { x: number; y: number };
 
 const root = document.getElementById("root");
 if (!root) throw new Error("Application root element is missing");
+initializeInstrumentUi();
 
 // Screen switch: ?view=longvp mounts the long-term VP screen only; the heatmap (and its WebSocket) never starts.
 if (isLongVpRoute(window.location.search)) {
-  void import("./long-vp/app.ts").then(m => { m.mountLongVp(root); })
+  void import("./long-vp/app.ts").then(m => {
+    const destroy = m.mountLongVp(root);
+    window.addEventListener("market-switch", destroy, { once: true });
+  })
     .catch(e => { root.textContent = `長期VP画面を読み込めませんでした：${e instanceof Error ? e.message : e}`; });
 } else runHeatmap(root);
 
 function runHeatmap(root: HTMLElement): void {
+document.title = `${ACTIVE_SYMBOL} | Order flow heatmap`;
 
 root.innerHTML = `
   <div class="app-shell">
     <aside class="tool-rail" aria-label="Tools frame">
-      <div class="brand-mark" aria-label="NQ instrument">NQ</div>
+      <div class="brand-mark" aria-label="${ACTIVE_SYMBOL} instrument">${ACTIVE_SYMBOL}</div>
       <span class="rail-caption">Tools · Phase 9</span>
     </aside>
     <main class="workspace">
       <header class="masthead">
-        <div class="instrument"><strong>NQ / DEPTH</strong><span>ONE-SECOND BOOK HISTORY</span></div>
+        <div class="instrument"><strong>${ACTIVE_SYMBOL} / DEPTH</strong><span>ONE-SECOND BOOK HISTORY</span></div>
         ${viewSwitchHtml("heatmap")}
         <div class="market-state" data-testid="connection-state" data-state="connecting" aria-live="polite">
           <i class="state-dot" aria-hidden="true"></i><span id="connection-label">CONNECTING</span>
         </div>
       </header>
-      <section class="board" aria-label="NQ order-flow instrument panels">
+      <section class="board" aria-label="${ACTIVE_SYMBOL} order-flow instrument panels">
         <section class="region heat-region" aria-label="Heatmap">
-          <div class="heat-overlay"><strong>NQ</strong>DEPTH / 1s <span id="scale-value"></span></div>
-          <canvas class="heat-canvas" id="heatmap" aria-label="NQ order-book depth heatmap. Horizontal axis is time; vertical axis is price in quarter-point ticks.">
+          <div class="heat-overlay"><strong>${ACTIVE_SYMBOL}</strong>DEPTH / 1s <span id="scale-value"></span></div>
+          <canvas class="heat-canvas" id="heatmap" aria-label="${ACTIVE_SYMBOL} order-book depth heatmap. Horizontal axis is time; vertical axis is price in instrument ticks.">
             Canvas 2D heatmap. Depth data will be visible when the browser supports Canvas.
           </canvas>
           <canvas class="book-canvas current-book-overlay" id="current-book" aria-label="Current buy and sell quantities overlaid on the rightmost 20%"></canvas>
@@ -897,6 +903,7 @@ async function startWithSettings() {
   await settingsRecovery.read();
   settingsLoaded = true;
   renderTimeAxis(); updateStatus(); scheduleDraw(); client.start();
+  window.addEventListener("market-switch", () => { crosshair.hide(); client.stop(); }, { once: true });
 }
 void startWithSettings();
 }

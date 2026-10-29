@@ -1,4 +1,5 @@
 import "../components/settings-ui.css";
+import { ACTIVE_INSTRUMENT } from "../instrument.ts";
 import { INTEGER_RANGES, defaults, readDocument, validateSettings, type SettingsDocument, type SettingsKey, type SettingsValues } from "./settings-schema.ts";
 
 type Spec = { key: SettingsKey; label: string; group: string } & (
@@ -12,7 +13,7 @@ export const LONGVP_FIELDS: Spec[] = [
   { key: "rthOnly", label: "RTH だけ（CT 8:30〜15:00）", group: "期間VP", kind: "bool" },
   { key: "vpNormalization", label: "横幅の基準", group: "期間VP", kind: "choice", choices: { period: "期間ごとに正規化", global: "全期間共通" } },
   { key: "vpWidthPct", label: "最大の棒の横幅（期間幅の%）", group: "期間VP", kind: "int" },
-  { key: "vpTickGroup", label: "表示の価格刻み（ティック、1 = 0.25pt）", group: "期間VP", kind: "int" },
+  { key: "vpTickGroup", label: `表示の価格刻み（ティック、1 = ${ACTIVE_INSTRUMENT.tickSize}pt）`, group: "期間VP", kind: "int" },
   { key: "showPoc", label: "POC の線とラベル", group: "VAH・POC・VAL", kind: "bool" },
   { key: "showVah", label: "VAH の線とラベル", group: "VAH・POC・VAL", kind: "bool" },
   { key: "showVal", label: "VAL の線とラベル", group: "VAH・POC・VAL", kind: "bool" },

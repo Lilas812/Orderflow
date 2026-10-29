@@ -108,10 +108,10 @@ export class Backfill {
       this.log("history_no_data", noData);
     }
     if (kind === "book") {
-      const columns = historyColumns(response.rows, start, end, this.metrics);
+      const columns = historyColumns(response.rows, start, end, this.metrics, this.source.symbol);
       await this.store.addColumns(columns);
     } else {
-      const trades = historyTrades(response.rows, start, end, this.metrics, this.nextSeq);
+      const trades = historyTrades(response.rows, start, end, this.metrics, this.nextSeq, this.source.symbol);
       await this.store.addTrades(trades);
     }
     this.log("history_range_saved", { kind, startSec: start, endSec: end, empty, attempts: retries + 1 });
