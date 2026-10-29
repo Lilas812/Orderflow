@@ -318,7 +318,19 @@ export class LocalStore implements Store {
   /** Bounded-memory, serialized walk of the unchanged gzip JSONL files. */
   tradeReadSession(signal: AbortSignal): TradeReadSession {
     return {
-      visit: (start, end, visit) => this.visitTrades(start, end, t => { signal.throwIfAborted(); visit(t); }),
+      visit: async (start, end, visit) => {
+        let failure: unknown, failed = false;
+        // A visitor/consumer cancellation is not a failed storage write. Drain
+        // the serialized read, then reject OUTSIDE run() so live writes survive.
+        signal.throwIfAborted();
+        await this.visitTrades(start, end, t => {
+          if (failed) return;
+          try { signal.throwIfAborted(); visit(t); }
+          catch (e) { failure = e; failed = true; }
+        });
+        signal.throwIfAborted();
+        if (failed) throw failure;
+      },
       close: async () => {},
     };
   }

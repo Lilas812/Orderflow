@@ -8,8 +8,9 @@ export const INITIAL_TRADING_DAYS = 10;
 
 /** `?view=longvp` selects the long-term screen; anything else is the heatmap. */
 export const isLongVpRoute = (search: string) => new URLSearchParams(search).get("view") === "longvp";
-export function viewLink(view: "heatmap" | "longvp", base = baseUrl()): string {
-  return view === "longvp" ? `${base}?view=longvp` : base;
+export const isFootprintRoute = (search: string) => new URLSearchParams(search).get("view") === "footprint";
+export function viewLink(view: "heatmap" | "footprint" | "longvp", base = baseUrl()): string {
+  return view === "heatmap" ? base : `${base}?view=${view}`;
 }
 function baseUrl() {
   try { return import.meta.env.BASE_URL ?? "/"; } catch { return "/"; }

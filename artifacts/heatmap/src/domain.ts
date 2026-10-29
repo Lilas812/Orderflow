@@ -21,6 +21,8 @@ export interface Trade {
   price: PriceTicks;
   size: number;
   side: "buy" | "sell";
+  /** Optional contract delivered with the trade (footprint separates series by it). */
+  contract?: string;
 }
 
 export interface Viewport {

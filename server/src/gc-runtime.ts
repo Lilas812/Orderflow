@@ -43,6 +43,8 @@ export function createGcRuntime(options: {
   }
   const hub: Hub = new Hub({
     savedRange: () => pipeline.store.savedRange, read: (a, b) => pipeline.readRange(a, b),
+    readTrades: (a, b, visit, signal) => pipeline.readFootprintRange(a, b, visit, signal),
+    ownsLiveTrade: trade => pipeline.ownsFootprintLive(trade),
     vp: () => pipeline.vp, replayVp: (a, alive) => pipeline.replayVp(a, alive),
     status: () => statusSnapshot(options.upstream(), receiver, options.key, () => {
       const { vp: _vp, ...rest } = pipeline.status(); return rest;

@@ -11,6 +11,7 @@ import type { Log } from "./logger.ts";
 import { VolumeProfile } from "./vp/state.ts";
 import { VpHistory, coverageSegments } from "./vp/history.ts";
 import type { MarketSymbol } from "../../lib/market/instruments.ts";
+import type { FootprintHistory } from "./hub/hub.ts";
 
 export class Pipeline {
   readonly store: LocalStore;
@@ -137,6 +138,42 @@ export class Pipeline {
     return this.store.readView(start, end).then(view => ({
       columns: view.columns, trades: [...view.trades, ...buffered].sort((a, b) => a.seq - b.seq),
     }));
+  }
+  /** Read-only projection of existing trade storage + the unflushed live tail.
+   * Coverage is sampled BEFORE the read; a concurrent import must not certify
+   * rows that this snapshot did not see. No extra REST job or save is started. */
+  async readFootprintRange(start: number, end: number, visit: (trade: Trade) => void,
+    signal: AbortSignal): Promise<FootprintHistory> {
+    const pending = new Map(this.tradeBatch.filter(t => this.ownsFootprintLive(t) && t.tsUs >= start * 1e6 && t.tsUs < end * 1e6)
+      .map(t => [`${t.recvUs}:${t.seq}`, t]));
+    const coverage = (await this.store.recordedTickCoverage()).flatMap(([a, b]): [number, number][] =>
+      Math.max(a, start) < Math.min(b, end) ? [[Math.max(a, start), Math.min(b, end)]] : []);
+    const reader = this.store.tradeReadSession(signal);
+    const present = new Set<number>();
+    try {
+      await reader.visit(start, end, trade => {
+        signal.throwIfAborted();
+        pending.delete(`${trade.recvUs}:${trade.seq}`);
+        present.add(Math.floor(trade.tsUs / 1e6));
+        visit(trade);
+      });
+      for (const trade of pending.values()) {
+        signal.throwIfAborted(); present.add(Math.floor(trade.tsUs / 1e6)); visit(trade);
+      }
+      const gaps = coverageSegments(coverage, start, end).filter(s => !s.covered)
+        .map(s => ({ startSec: s.start, endSec: s.end, reason: "not_recorded" }));
+      gaps.push(...this.backfill.status.gaps.filter(g => g.kind === "tick" && g.startSec < end && g.endSec > start)
+        .map(g => ({ startSec: Math.max(start, g.startSec), endSec: Math.min(end, g.endSec), reason: g.reason })));
+      const noData = this.backfill.status.noData.filter(g => g.kind === "tick" && g.startSec < end && g.endSec > start)
+        .map(g => ({ startSec: Math.max(start, g.startSec), endSec: Math.min(end, g.endSec) }))
+        .filter(g => ![...present].some(s => g.startSec <= s && s < g.endSec)
+          && coverage.some(([a, b]) => a <= g.startSec && b >= g.endSec));
+      // Recorded coverage is not proof of exchange/feed completeness.
+      return { coverage, gaps, noData, quality: "recorded_not_guaranteed" };
+    } finally { await reader.close(); }
+  }
+  ownsFootprintLive(trade: Trade): boolean {
+    return this.seam !== null && trade.tsUs >= this.seam * 1e6;
   }
   async replayVp(from: number, alive: () => boolean) {
     const profile = new VolumeProfile(from);

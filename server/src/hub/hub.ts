@@ -1,4 +1,5 @@
 import type { Server } from "node:http";
+import { randomUUID } from "node:crypto";
 import { WebSocketServer } from "ws";
 import { boardColumn, encodeFrame, parseRange, replayParams } from "./frame.ts";
 import { realClock } from "./replay.ts";
@@ -25,10 +26,19 @@ export interface Source {
   savedRange(): { fromSec: number; toSec: number } | null;
   read(from: number, to: number): Promise<View>;
   status(): unknown;
+  readTrades?(from: number, to: number, visit: (trade: Trade) => void, signal: AbortSignal): Promise<FootprintHistory>;
+  ownsLiveTrade?(trade: Trade): boolean;
   vp?(): VolumeProfile;
   replayVp?(from: number, alive: () => boolean): Promise<VolumeProfile>;
 }
+export interface FootprintHistory {
+  coverage: [number, number][];
+  gaps: { startSec: number; endSec: number; reason: string }[];
+  noData: { startSec: number; endSec: number }[];
+  quality: "recorded_not_guaranteed";
+}
 interface Peer {
+  footprint: boolean; abort: AbortController;
   connectedAtUs: number; origin: ConnectionOrigin;
   id: number; range: { reqId: number; fromSec: number; toSec: number } | null; closeReason?: string;
   socket: Socket; mode: "live" | "replay"; initializing: boolean; closed: boolean;
@@ -40,6 +50,7 @@ interface Peer {
 const tradeId = (t: Trade) => `${t.recvUs}:${t.seq}`;
 
 export class Hub {
+  private readonly generation = randomUUID();
   readonly counts = { totalConnections: 0, rejectedConnections: 0, droppedBoards: 0,
     slowClosed: 0, sendErrors: 0, invalidRequests: 0, rangeRequests: 0 };
   private peers = new Set<Peer>();
@@ -73,7 +84,7 @@ export class Hub {
   private close(p: Peer, code: number, reason: string) {
     if (p.closed) return;
     p.closeReason = reason;
-    p.closed = true; p.replay?.stop(); p.columns = []; p.trades = []; p.queuedBytes = 0;
+    p.closed = true; p.abort.abort(); p.replay?.stop(); p.columns = []; p.trades = []; p.queuedBytes = 0;
     p.socket.close(code, reason);
     // Do not keep a dead/slow peer alive indefinitely waiting for its close handshake.
     const timer = this.clock.later(() => {
@@ -137,7 +148,8 @@ export class Hub {
       socket.on("close", () => this.clock.cancel(t));
       return;
     }
-    const p: Peer = { connectedAtUs: this.clock.now() * 1000, origin,
+    const p: Peer = { footprint: url.searchParams.get("view") === "footprint", abort: new AbortController(),
+      connectedAtUs: this.clock.now() * 1000, origin,
       id: this.counts.totalConnections + 1, range: null, socket, mode: "live", initializing: true, closed: false, columns: [], trades: [],
       queuedBytes: 0, lastStatus: "", lastStatusAt: 0, jobs: Promise.resolve() };
     this.peers.add(p); this.counts.totalConnections++;
@@ -145,7 +157,7 @@ export class Hub {
     socket.on("close", (code: number) => {
       this.log("hub_closed", { ...this.stage(p), connectedAtUs: p.connectedAtUs,
         closedAtUs: this.clock.now() * 1000, ...p.origin, code: code ?? null, reason: p.closeReason ?? "remote" });
-      p.closed = true; p.replay?.stop(); this.peers.delete(p);
+      p.closed = true; p.abort.abort(); p.replay?.stop(); this.peers.delete(p);
     });
     socket.on("error", () => { this.log("hub_socket_error", { ...this.stage(p), reason: "socket_error" }); this.close(p, 1011, "socket_error"); });
     socket.on("message", (bytes: Buffer, binary: boolean) => {
@@ -158,7 +170,8 @@ export class Hub {
           if (typeof value === "object" && value !== null && Number.isInteger((value as any).reqId)) reqId = (value as any).reqId;
           const range = parseRange(value); reqId = range.reqId;
           this.counts.rangeRequests++;
-          await this.range(p, range.reqId, range.fromSec, range.toSec);
+          if (p.footprint) await this.footprintRange(p, range.reqId, range.fromSec, range.toSec);
+          else await this.range(p, range.reqId, range.fromSec, range.toSec);
         } catch (error) {
           this.counts.invalidRequests++;
           this.json(p, { type: "error", reqId, code: error instanceof SyntaxError || (error instanceof Error && error.message === "invalid_range")
@@ -169,6 +182,14 @@ export class Hub {
     const initial = (async () => {
       try {
         const saved = this.source.savedRange();
+        if (p.footprint) {
+          this.json(p, { type: "hello", symbol: this.symbol, tickSize: INSTRUMENTS[this.symbol].tickSize,
+            columnSeconds: 1, serverTimeUs: this.clock.now() * 1000, mode: "live", savedRange: saved,
+            generation: this.generation });
+          p.initializing = false;
+          this.status(p, true);
+          return;
+        }
         let params;
         try { params = replayParams(url, saved); }
         catch {
@@ -273,16 +294,45 @@ export class Hub {
       p.range = null;
     }
   }
+  private async footprintRange(p: Peer, reqId: number, from: number, to: number) {
+    const now = Math.floor(this.clock.now() / 1000);
+    if (from < now - 7200 || to > now + 1 || !this.source.readTrades) throw Error("invalid_range");
+    p.range = { reqId, fromSec: from, toSec: to };
+    let trades = 0, chunks = 0, batch: Trade[] = [];
+    this.log("hub_footprint_range_begin", { ...this.stage(p), fromSec: from, toSec: to });
+    const flush = () => {
+      p.abort.signal.throwIfAborted();
+      if (!batch.length) return;
+      // A synchronous visitor cannot await transport drain. Bound queued bytes
+      // explicitly rather than retaining an unbounded chain of pending batches.
+      if (p.socket.bufferedAmount > CLOSE_LIMIT) throw Error("footprint_slow_consumer");
+      if (!this.json(p, { type: "rangeTrades", reqId, trades: batch })) throw Error("footprint_send_failed");
+      trades += batch.length; chunks++; batch = [];
+    };
+    try {
+      const footprint = await this.source.readTrades(from, to, trade => {
+        p.abort.signal.throwIfAborted();
+        batch.push(trade);
+        if (batch.length >= 512) flush();
+      }, p.abort.signal);
+      flush();
+      this.json(p, { type: "rangeDone", reqId, fromSec: from, toSec: to, columns: 0, trades, chunks, footprint });
+      this.log("hub_footprint_range_done", { ...this.stage(p), fromSec: from, toSec: to, trades, chunks });
+    } finally { batch = []; p.range = null; }
+  }
   book(book: BookSnapshot) { this.latestBook = book; }
   column(column: Column) {
     for (const p of this.peers) {
-      if (p.mode !== "live" || !this.healthy(p)) continue;
+      if (p.footprint || p.mode !== "live" || !this.healthy(p)) continue;
       if (p.initializing) { p.columns.push(column); p.queuedBytes += encodeFrame(1, 0, [column]).length; this.healthy(p); }
       else this.send(p, encodeFrame(1, 0, [column]));
     }
   }
   trade(trade: Trade) {
     for (const p of this.peers) if (p.mode === "live" && this.healthy(p)) {
+      // History owns pre-L trades; unlike delivery IDs, that seam is valid
+      // across independently normalized REST and live records.
+      if (p.footprint && this.source.ownsLiveTrade && !this.source.ownsLiveTrade(trade)) continue;
       p.trades.push(trade);
       if (p.initializing) { p.queuedBytes += Buffer.byteLength(JSON.stringify(trade)); this.healthy(p); }
     }
@@ -291,7 +341,7 @@ export class Hub {
     for (const p of this.peers) {
       if (!this.healthy(p) || p.initializing) continue;
       if (p.mode === "live") {
-        if (this.latestBook) this.send(p, encodeFrame(3, 0, [boardColumn(this.latestBook)]), true);
+        if (!p.footprint && this.latestBook) this.send(p, encodeFrame(3, 0, [boardColumn(this.latestBook)]), true);
         if (p.trades.length) {
           const trades = p.trades; p.trades = [];
           this.json(p, { type: "trades", trades });

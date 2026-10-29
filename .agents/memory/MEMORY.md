@@ -20,3 +20,4 @@
 - [長期VPの運用条件](long-vp-decisions.md) — 新正本優先・開発WS禁止・既存保存保護。CT17:05以降の確定は矛盾解消の例外承認。
 - [Phase 14の表示補足](phase14-display-decisions.md) — 短命板のフェードは積、数字なしは帯もなし、初期値復帰は非表示2項目も含む。
 - [履歴鮮度の隔離検証](history-isolation-evidence.md) — 初期chunkのcoverage変化を後保存の鮮度と分離し、回復操作ごとに新規状態でdraw入力まで確認する。
+- [専用FOOTPRINTの範囲](footprint-decisions.md) — 重ね表示案は撤回。専用タブ・直近2時間・不完全性の明示を維持する。

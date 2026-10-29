@@ -13,6 +13,7 @@ import { clampView, fitPrice, initialView, type LvView } from "./view-math.ts";
 import { viewSwitchHtml } from "./nav.ts";
 import { LongVpCrosshair, cvdScale, cvdY } from "./crosshair.ts";
 import { ACTIVE_SYMBOL, formatInstrumentPrice } from "../instrument.ts";
+import { loadView, saveView } from "../view-memory.ts";
 
 const C = {
   bg: "#000000", grid: "#15141d", sep: "#252431", weekSep: "#3a3850", text: "#8e8c9c", textHi: "#d9d9d9",
@@ -68,6 +69,10 @@ export function mountLongVp(root: HTMLElement): () => void {
   let timeZone: "Asia/Tokyo" | "America/Chicago" = "Asia/Tokyo";
   let view: LvView = initialView(Date.now() / 1000);
   let autoPrice = true, divider = 75 / 95, destroyed = false, frame = 0;
+  const savedView = loadView<{ view: LvView; autoPrice: boolean }>("longvp", ACTIVE_SYMBOL);
+  if (savedView && Number.isFinite(savedView.view?.startSec) && Number.isFinite(savedView.view?.endSec)) {
+    view = clampView(savedView.view, Date.now() / 1000); autoPrice = savedView.autoPrice !== false;
+  }
 
   const store = new LongVpStore(() => { syncData(); request(); });
 
@@ -569,6 +574,7 @@ export function mountLongVp(root: HTMLElement): () => void {
   const destroy = () => {
     if (destroyed) return;
     destroyed = true;
+    saveView("longvp", ACTIVE_SYMBOL, { view, autoPrice });
     if (frame) cancelAnimationFrame(frame);
     resize.disconnect(); store.destroy(); modal.destroy(); cursor.destroy();
     delete debugWindow.__longVpDebug;

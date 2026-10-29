@@ -79,6 +79,8 @@ async function main() {
   const hub: Hub = new Hub({
     savedRange: () => pipeline.store.savedRange,
     read: (from, to) => pipeline.readRange(from, to),
+    readTrades: (from, to, visit, signal) => pipeline.readFootprintRange(from, to, visit, signal),
+    ownsLiveTrade: trade => pipeline.ownsFootprintLive(trade),
     vp: () => pipeline.vp,
     replayVp: (from, alive) => pipeline.replayVp(from, alive),
     // Keep the existing WS status shape; VP progress is an HTTP diagnostic.

@@ -24,7 +24,8 @@ import { LIVE_RESET_SEC, REPLAY_RESET_SEC, resetViewport } from "./chart/view-re
 import { boardGridTemplate } from "./chart/layout.ts";
 import { AutoPriceScale, resetTimeViewport } from "./chart/axis-view.ts";
 import { bindDoubleActivation } from "./chart/double-activation.ts";
-import { isLongVpRoute } from "./long-vp/view-math.ts";
+import { isFootprintRoute, isLongVpRoute } from "./long-vp/view-math.ts";
+import { loadView, saveView } from "./view-memory.ts";
 import { viewSwitchHtml } from "./long-vp/nav.ts";
 import { CrosshairOverlay } from "./chart/crosshair.ts";
 import { ACTIVE_SYMBOL, initializeInstrumentUi } from "./instrument.ts";
@@ -97,6 +98,13 @@ if (isLongVpRoute(window.location.search)) {
     window.addEventListener("market-switch", destroy, { once: true });
   })
     .catch(e => { root.textContent = `長期VP画面を読み込めませんでした：${e instanceof Error ? e.message : e}`; });
+} else if (isFootprintRoute(window.location.search)) {
+  // ?view=footprint: dedicated footprint screen with its own socket; heatmap never starts.
+  void import("./footprint/app.ts").then(m => {
+    const destroy = m.mountFootprint(root);
+    window.addEventListener("market-switch", destroy, { once: true });
+  })
+    .catch(e => { root.textContent = `フットプリント画面を読み込めませんでした：${e instanceof Error ? e.message : e}`; });
 } else runHeatmap(root);
 
 function runHeatmap(root: HTMLElement): void {
@@ -225,6 +233,14 @@ let viewport: Viewport = {
 const crosshair = new CrosshairOverlay(board, canvas, axisCanvas, timeAxis, () => viewport, () => displayZone,
   () => !document.querySelector("dialog[open]"));
 let follow = true;
+// Independent per-screen view memory: a paused (non-follow) heatmap view is restored; follow keeps today's reset.
+const savedHeatView = loadView<{ viewport: Viewport; follow: boolean }>("heatmap", ACTIVE_SYMBOL);
+if (savedHeatView && !savedHeatView.follow && Number.isFinite(savedHeatView.viewport?.startUs)
+  && new URLSearchParams(window.location.search).get("mode") !== "replay"
+  && savedHeatView.viewport.startUs > Date.now() * 1_000 - 7_000 * US_PER_SECOND) {
+  viewport = clampViewport(savedHeatView.viewport); follow = false;
+}
+window.addEventListener("pagehide", () => saveView("heatmap", ACTIVE_SYMBOL, { viewport, follow }));
 const autoPrice = new AutoPriceScale();
 let autoPriceTimer: ReturnType<typeof setTimeout> | null = null;
 let centeredOnData = false;
@@ -269,7 +285,8 @@ const client = new RealtimeClient(cache, {
     replayHeadUs = message.mode === "replay" ? initialCutoffUs + 1 : null;
     lastDataError = "";
     if (!hasHello && message.mode === "replay") viewport = { ...viewport, durationSec: REPLAY_RESET_SEC };
-    if (!hasHello || follow) {
+    if (!hasHello && !follow) hasHello = true;
+    else if (!hasHello || follow) {
       const replayFrom = replayFromSec();
       const endUs = message.mode === "replay" && replayFrom !== null
         ? replayFrom * US_PER_SECOND

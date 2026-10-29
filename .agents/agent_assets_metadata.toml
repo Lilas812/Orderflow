@@ -364,3 +364,17 @@ mtime_ms = 1793305561350
 storage_uri = "gcs://replit-rams-assets-pike/rams/assets/repl:c326af06-2355-4bfb-a52e-f433587c4cd9/638f6f70-dc9c-4487-92d9-31880cdc3191/8771c40d-666e-466c-9aed-ad8cedd5a1b5"
 storage_version_token = "1793305629248905"
 content_type = "text/markdown"
+
+[[outputs]]
+id = "hd4SYEPWbem8R-bsN-JtN"
+uri = "file://docs/FOOTPRINT_IMPLEMENTATION_REPORT.md"
+type = "text"
+title = "FOOTPRINT 実装・隔離検証報告"
+description = "変更内容、数量・画素照合、負荷比較、仕様書SHA-256、未確認事項、終了と再ビルドの結果。稼働中サーバーへの反映操作は未実施。"
+logical_id = "1133f3f0-a377-45ec-8b3b-59710fb0f2af"
+content_hash = "sha256:01dbc28e34f999f3db16aa1a8e6f785408613d4f03a9cb1f307cfe7041309e7d"
+size = 18036
+mtime_ms = 1793309941880
+storage_uri = "gcs://replit-rams-assets-pike/rams/assets/repl:c326af06-2355-4bfb-a52e-f433587c4cd9/1133f3f0-a377-45ec-8b3b-59710fb0f2af/68ffd8ca-86fc-4d67-9d2f-045e6b2c0311"
+storage_version_token = "1793309982933203"
+content_type = "text/markdown"

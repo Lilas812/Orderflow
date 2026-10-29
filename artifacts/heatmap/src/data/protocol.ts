@@ -90,6 +90,8 @@ export function decodeTrades(value: unknown): Trade[] {
       || !Number.isInteger(trade.size) || trade.size < 1 || trade.size > 0xffffffff) {
       throw new Error("invalid_trade_values");
     }
+    // Optional contract (GC/NQ standard or UNKNOWN); absent stays absent.
+    if (typeof record.contract === "string" && record.contract.length > 0 && record.contract.length <= 16) trade.contract = record.contract;
     return trade;
   });
 }
