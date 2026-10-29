@@ -29,13 +29,13 @@ test("ダミー：v1を補ってv2応答、元ファイル不変・退避なし�
     await fs.writeFile(file, bytes);
     const store = new LocalSettings(file, event => events.push(event));
     const got = await store.get();
-    assert.equal(got.version, 3); assert.equal(got.updatedAt, legacy.updatedAt);
-    assert.deepEqual(got.values, { ...defaults, ...legacy.values });
+    assert.equal(got.version, 4); assert.equal(got.updatedAt, legacy.updatedAt);
+    assert.deepEqual(got.values, { ...defaults, heatLowerMode: "off", heatLowerPct: 20, heatGamma: 1, ...legacy.values });
     assert.deepEqual(await fs.readFile(file), bytes);
     assert.deepEqual(await fs.readdir(dir), ["settings.json"]);
     assert.equal(store.snapshot().readError, null); assert.deepEqual(events, []);
     const saved = await store.put(got.values);
-    assert.equal(saved.version, 3);
+    assert.equal(saved.version, 4);
     assert.deepEqual(JSON.parse(await fs.readFile(file, "utf8")), saved);
     assert.deepEqual(await fs.readdir(dir), ["settings.json"]);
     assert.deepEqual(events.filter(e => e === "settings_corrupt_preserved"), []);

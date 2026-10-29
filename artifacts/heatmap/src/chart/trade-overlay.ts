@@ -2,7 +2,7 @@ import type { Viewport } from "../domain.ts";
 import type { TradeAggregator } from "../data/trade-aggregate.ts";
 import { priceTicksToY } from "./coordinates.ts";
 import { formatPrice } from "./format.ts";
-import { BUBBLE_COLORS, tradeGeometry } from "./trade-geometry.ts";
+import { BUBBLE_COLORS, BUBBLE_EDGE_WIDTH, BUBBLE_FILL_OPACITY, PRICE_LINE, tradeGeometry } from "./trade-geometry.ts";
 
 function prepare(canvas: HTMLCanvasElement, dpr: number) {
   const { width, height } = canvas.getBoundingClientRect();
@@ -35,7 +35,7 @@ export class TradeOverlayRenderer {
     const geometry = tradeGeometry(aggregation, view, width, height, dpr, minimum, cutoffUs, bubbleScale);
     this.geometry = geometry;
     const geometryMs = performance.now() - geometryStart, lineStart = performance.now();
-    ctx.strokeStyle = "#b9a7ff"; ctx.lineWidth = 1.5; ctx.beginPath();
+    ctx.beginPath();
     let previous: { x: number; last: number } | null = null;
     for (const bin of geometry.priceBins) {
       const y = priceTicksToY(bin.last, view, height);
@@ -47,12 +47,16 @@ export class TradeOverlayRenderer {
       }
       previous = bin;
     }
-    ctx.stroke();
+    // Black underlay first, then the teal line on the same path (SPEC 7.1, Phase 14).
+    ctx.lineJoin = "round"; ctx.lineCap = "round";
+    ctx.strokeStyle = PRICE_LINE.underColor; ctx.lineWidth = PRICE_LINE.underWidth; ctx.stroke();
+    ctx.strokeStyle = PRICE_LINE.color; ctx.lineWidth = PRICE_LINE.width; ctx.stroke();
+    ctx.lineJoin = "miter"; ctx.lineCap = "butt";
     const lineMs = performance.now() - lineStart, bubbleStart = performance.now();
     for (const b of geometry.bubbles) {
       ctx.beginPath(); ctx.arc(b.x, b.y, b.radius, 0, Math.PI * 2);
-      ctx.fillStyle = BUBBLE_COLORS[b.side].fill; ctx.globalAlpha = 0.8; ctx.fill();
-      ctx.globalAlpha = 1; ctx.strokeStyle = BUBBLE_COLORS[b.side].edge; ctx.lineWidth = 1; ctx.stroke();
+      ctx.fillStyle = BUBBLE_COLORS[b.side].fill; ctx.globalAlpha = BUBBLE_FILL_OPACITY; ctx.fill();
+      ctx.globalAlpha = 1; ctx.strokeStyle = BUBBLE_COLORS[b.side].edge; ctx.lineWidth = BUBBLE_EDGE_WIDTH; ctx.stroke();
     }
     const bubbleMs = performance.now() - bubbleStart;
     if (currentPrice !== null) {

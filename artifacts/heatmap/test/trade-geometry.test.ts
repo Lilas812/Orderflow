@@ -30,8 +30,8 @@ test("ダミー：閾値9は出さず10は半径3CSSpx、3色と濃い縁", () =
   assert.deepEqual(bubbles.map(b => b.y), [100, 100, 100]);
   assert.equal(bubbles[0]!.x, 15, "center of second 11 in CSS pixels, independent of DPR");
   assert.deepEqual(BUBBLE_COLORS, {
-    buy: { fill: "#3ddc84", edge: "#2a9a5c" }, sell: { fill: "#a64dff", edge: "#7436b3" },
-    tie: { fill: "#d9d9d9", edge: "#989898" },
+    buy: { fill: "#ece9f5", edge: "rgba(0,0,0,0.9)" }, sell: { fill: "#b13cff", edge: "rgba(0,0,0,0.9)" },
+    tie: { fill: "#808080", edge: "rgba(0,0,0,0.9)" },
   });
 });
 test("ダミー：半径は平方根比例、上限14、DPR非依存", () => {

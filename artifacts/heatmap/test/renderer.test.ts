@@ -55,6 +55,10 @@ function withFakeCanvas(run: (renderer: HeatmapRenderer, heat: FakeCanvas, axis:
     const heat = new FakeCanvas();
     const axis = new FakeCanvas();
     const renderer = new HeatmapRenderer(heat as unknown as HTMLCanvasElement, axis as unknown as HTMLCanvasElement);
+    // Explicit legacy options: these regression tests pin the Phase 10c block drawing.
+    renderer.setStyle("block");
+    renderer.setScaleOptions({ heatTopPct: 1, heatUpperMode: "auto", heatUpperSize: 100, heatLowerMode: "off",
+      heatLowerPct: 20, heatLowerSize: 5, heatGamma: 1 });
     run(renderer, heat, axis);
   } finally {
     if (originalWindow) Object.defineProperty(globalThis, "window", originalWindow);

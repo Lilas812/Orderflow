@@ -1,30 +1,17 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { colorize } from "../src/chart/renderer.ts";
+import { COLOR_LUT } from "../src/chart/palette.ts";
 
-const stops = [
-  { at: 0, rgb: [11, 26, 74] }, { at: 0.2, rgb: [59, 42, 143] },
-  { at: 0.4, rgb: [138, 60, 255] }, { at: 0.6, rgb: [233, 227, 255] },
-  { at: 0.8, rgb: [255, 154, 60] }, { at: 1, rgb: [255, 59, 48] },
-];
-const lut = new Uint8Array(1024 * 3);
-for (let i = 0; i < 1024; i++) {
-  const position = i / 1023;
-  let stop = 0;
-  while (stop < stops.length - 2 && position > stops[stop + 1]!.at) stop++;
-  const a = stops[stop]!, b = stops[stop + 1]!;
-  const amount = (position - a.at) / (b.at - a.at);
-  for (let channel = 0; channel < 3; channel++) {
-    lut[i * 3 + channel] = Math.round(a.rgb[channel]! + (b.rgb[channel]! - a.rgb[channel]!) * amount);
-  }
-}
+// Phase 14: nine-stop palette sampled into the 256-step lookup table (UI_SPEC 3.11).
+const lut = COLOR_LUT;
 function legacy(values: Uint32Array, threshold: number) {
   const output = new Uint8ClampedArray(values.length * 4);
   for (let i = 0; i < values.length; i++) {
     const size = values[i]!;
     output[i * 4 + 3] = 255;
     if (size < 1) continue;
-    const index = Math.min(1023, Math.round(size / Math.max(1, threshold) * 1023)) * 3;
+    const index = Math.min(255, Math.round(size / Math.max(1, threshold) * 255)) * 3;
     output[i * 4] = lut[index]!;
     output[i * 4 + 1] = lut[index + 1]!;
     output[i * 4 + 2] = lut[index + 2]!;
@@ -43,4 +30,14 @@ test("ダミー：same-size color buffers are reused and opaque zero cells fully
   assert.equal(colorize(values, 5, target), target);
   assert.deepEqual(target, legacy(values, 5));
   assert.notEqual(colorize(values, 5, new Uint8ClampedArray(4)), target);
+});
+
+test("Phase 14 palette: 256 entries hit each of the nine stops exactly", () => {
+  assert.equal(COLOR_LUT.length, 256 * 3);
+  const at = (p: number) => Array.from(COLOR_LUT.slice(Math.round(p * 255) * 3, Math.round(p * 255) * 3 + 3));
+  assert.deepEqual(at(0), [0, 0, 0]);
+  assert.deepEqual(at(1), [0xff, 0x3d, 0x2e]);
+  // 0.84 * 255 = 214.2 -> index 214 is within one step of white
+  assert.ok(at(0.84).every(c => c >= 250));
+  assert.deepEqual(Array.from(COLOR_LUT.slice(255 * 3 - 3, 255 * 3)).length, 3);
 });

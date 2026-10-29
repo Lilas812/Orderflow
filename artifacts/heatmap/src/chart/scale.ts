@@ -25,14 +25,8 @@ export function viewportPositivePercentile(columns: readonly HeatColumn[], view:
   return positiveVisibleP99(visible, Math.floor(bottom - 0.5) + 1, Math.ceil(top + 0.5) - 1, percentile);
 }
 
-export const HEAT_STOPS: readonly { at: number; color: string }[] = [
-  { at: 0, color: "#0b1a4a" },
-  { at: 0.2, color: "#3b2a8f" },
-  { at: 0.4, color: "#8a3cff" },
-  { at: 0.6, color: "#e9e3ff" },
-  { at: 0.8, color: "#ff9a3c" },
-  { at: 1, color: "#ff3b30" },
-];
+import { HEAT_STOPS } from "./palette.ts";
+export { HEAT_STOPS };
 
 export function positiveVisibleSizes(columns: readonly HeatColumn[], minTick: number, maxTick: number): number[] {
   const values: number[] = [];

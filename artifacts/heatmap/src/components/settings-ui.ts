@@ -1,6 +1,6 @@
 import "./settings-ui.css";
 import type { SettingsDocument, SettingsKey, SettingsValues } from "../data/settings.ts";
-import { FIELD_SPECS, SettingsForm, ZONE_LABELS, rangeText, fieldVisible } from "./settings-form.ts";
+import { FIELD_SPECS, SettingsForm, ZONE_LABELS, rangeText, fieldVisible, type VisibleKey } from "./settings-form.ts";
 
 export interface SettingsUiOptions {
   load: () => Promise<SettingsDocument>;
@@ -64,9 +64,9 @@ export function mountSettingsUi(rail: HTMLElement, options: SettingsUiOptions) {
   dialog.append(panel);
   document.body.append(dialog);
 
-  const controls = new Map<SettingsKey, HTMLInputElement | HTMLSelectElement>();
-  const errorEls = new Map<SettingsKey, HTMLElement>();
-  const rows = new Map<SettingsKey, HTMLElement>();
+  const controls = new Map<VisibleKey, HTMLInputElement | HTMLSelectElement>();
+  const errorEls = new Map<VisibleKey, HTMLElement>();
+  const rows = new Map<VisibleKey, HTMLElement>();
   let lastGroup = "";
   for (const spec of FIELD_SPECS) {
     if (spec.group !== lastGroup) { fields.append(el("h3", "su-group", spec.group)); lastGroup = spec.group; }
@@ -74,7 +74,7 @@ export function mountSettingsUi(rail: HTMLElement, options: SettingsUiOptions) {
     const id = `su-${spec.key}`;
     const label = el("label", "su-label", spec.label); label.htmlFor = id;
     let control: HTMLInputElement | HTMLSelectElement;
-    if (spec.kind === "zone" || spec.kind === "choice") {
+    if (spec.kind === "zone" || spec.kind === "choice" || spec.kind === "toggle") {
       const s = el("select", "su-input");
       for (const [v, t] of Object.entries(spec.choices ?? ZONE_LABELS)) { const o = el("option", undefined, t); o.value = v; s.append(o); }
       control = s;

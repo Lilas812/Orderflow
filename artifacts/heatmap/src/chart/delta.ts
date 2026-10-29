@@ -15,6 +15,9 @@ function prepare(canvas: HTMLCanvasElement) {
   return { context, width, height };
 }
 
+/** Phase 14 (UI_SPEC 3.11): positive white-lavender, negative purple. */
+export const DELTA_COLORS = { positive: "#ece9f5", negative: "#b13cff" } as const;
+
 /** Owns only the lower histogram and its scale, never another chart's canvas. */
 export class DeltaRenderer {
   private readonly canvas: HTMLCanvasElement;
@@ -34,7 +37,7 @@ export class DeltaRenderer {
     this.bars = geometry.bars;
     for (const bar of geometry.bars) {
       if (bar.delta === 0) continue;
-      ctx.fillStyle = bar.delta > 0 ? "#ffffff" : "#a64dff";
+      ctx.fillStyle = bar.delta > 0 ? DELTA_COLORS.positive : DELTA_COLORS.negative;
       ctx.fillRect(bar.x, bar.y, bar.width, bar.height);
     }
     ctx.strokeStyle = "#252431"; ctx.lineWidth = 1;

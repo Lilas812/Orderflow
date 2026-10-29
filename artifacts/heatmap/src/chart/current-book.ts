@@ -1,6 +1,8 @@
 import type { HeatColumn, Viewport } from "../domain.ts";
 import { priceTicksToY, timeUsToX } from "./coordinates.ts";
 import { colorize } from "./renderer.ts";
+import { glowBookColumn } from "./glow.ts";
+import { BOOK_NUMBER_RIGHT_INSET, bookBandEnd, bookNumberFont, bookNumberRows, type BookNumberRow } from "./book-numbers.ts";
 
 /** Confirmed column's right edge, not the timestamp of the provisional book. */
 export function bookBandStart(rightEdgeUs: number | null, view: Viewport, width: number): number | null {
@@ -33,12 +35,18 @@ export function currentBookRows(book: HeatColumn | null, view: Viewport, height:
   return rows;
 }
 
+export interface CurrentBookOptions { lower?: number; gamma?: number; style?: "glow" | "block"; }
+
+/** Phase 14: colour band + numeric quantities (no bars; bookBarPct / bookBarOpacity are unused). */
 export class CurrentBookRenderer {
   private readonly canvas: HTMLCanvasElement;
   private readonly context: CanvasRenderingContext2D;
+  private scratch: HTMLCanvasElement | null = null;
   private samples: number[] = [];
   metrics = { drawMs: 0, meanMs: 0, maxMs: 0, drawCount: 0, paintedRows: 0, timeUs: null as number | null, p99: 1,
-    bandStart: null as number | null };
+    bandStart: null as number | null, bandEnd: null as number | null, numbers: 0, groupTicks: 1,
+    style: "glow" as "glow" | "block" };
+  lastNumbers: BookNumberRow[] = [];
 
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas;
@@ -48,7 +56,8 @@ export class CurrentBookRenderer {
   }
 
   draw(book: HeatColumn | null, view: Viewport, p99: number, rightEdgeUs: number | null = null,
-    barPct = 10, opacity = .5, lower = 0, gamma = 1): void {
+    options: CurrentBookOptions = {}): void {
+    const lower = options.lower ?? 0, gamma = options.gamma ?? 1, style = options.style ?? "glow";
     const start = performance.now();
     const rect = this.canvas.getBoundingClientRect(), dpr = window.devicePixelRatio || 1;
     if (rect.width < 1 || rect.height < 1) return;
@@ -59,39 +68,59 @@ export class CurrentBookRenderer {
     }
     const ctx = this.context;
     ctx.clearRect(0, 0, width, height);
-    const sellRows = new Uint8Array(height);
-    const rows = currentBookRows(book, view, height, sellRows);
+    const scale = { upper: p99, lower, gamma };
+    const numbers = bookNumberRows(book, view, rect.height, scale);
+    // Measure each drawn number with its own (bold or regular) font: the band stops 5px before the widest.
+    let widest = 0;
+    for (const row of numbers) {
+      ctx.font = bookNumberFont(row.bold);
+      widest = Math.max(widest, ctx.measureText(String(row.total)).width); // CSS px: font is 10 CSS px
+    }
     const bandStart = book ? bookBandStart(rightEdgeUs, view, width) : null;
-    // Use the very same LUT, saturation and rounding as historical heatmap cells.
-    if (bandStart !== null) {
-      const colors = colorize(rows, p99, undefined, lower, gamma);
+    const bandEnd = Math.round(bookBandEnd(rect.width, widest) * dpr);
+    let paintedRows = 0;
+    if (bandStart !== null && bandEnd > bandStart) {
       ctx.globalAlpha = 1;
       ctx.fillStyle = "#000000";
-      ctx.fillRect(bandStart, 0, width - bandStart, height);
-      for (let y = 0; y < height; y++) {
-        if (rows[y]! < 1 || rows[y]! <= lower) continue;
-        const i = y * 4;
-        ctx.fillStyle = `rgb(${colors[i]},${colors[i + 1]},${colors[i + 2]})`;
-        ctx.fillRect(bandStart, y, width - bandStart, 1);
+      ctx.fillRect(bandStart, 0, bandEnd - bandStart, height);
+      if (style === "block") {
+        const rows = currentBookRows(book, view, height);
+        const colors = colorize(rows, p99, undefined, lower, gamma);
+        for (let y = 0; y < height; y++) {
+          if (rows[y]! < 1 || rows[y]! <= lower) continue;
+          const i = y * 4;
+          ctx.fillStyle = `rgb(${colors[i]},${colors[i + 1]},${colors[i + 2]})`;
+          ctx.fillRect(bandStart, y, bandEnd - bandStart, 1);
+          paintedRows++;
+        }
+      } else {
+        const column = glowBookColumn(book, view, height, scale);
+        this.scratch ??= document.createElement("canvas");
+        this.scratch.width = 1; this.scratch.height = column.rgba.length / 4;
+        const sctx = this.scratch.getContext("2d")!;
+        sctx.putImageData(new ImageData(column.rgba as Uint8ClampedArray<ArrayBuffer>, 1, column.rgba.length / 4), 0, 0);
+        const yTop = priceTicksToY(column.topPrice + 0.5, view, height);
+        ctx.imageSmoothingEnabled = true;
+        ctx.drawImage(this.scratch, 0, 0, 1, column.rgba.length / 4, bandStart, yTop, bandEnd - bandStart,
+          column.priceCount * height / view.priceSpanTicks);
+        paintedRows = height;
       }
     }
-    ctx.globalAlpha = opacity;
-    let paintedRows = 0;
-    for (let y = 0; y < height; y++) {
-      const size = rows[y]!;
-      if (size < 1) continue;
-      ctx.fillStyle = sellRows[y] ? "#8a3cff" : "#d9d9d9";
-      const length = Math.min(size / p99, 1) * width * barPct / 100;
-      ctx.fillRect(width - length, y, length, 1);
-      paintedRows++;
-    }
-    ctx.globalAlpha = 1;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.textAlign = "right"; ctx.textBaseline = "middle";
+    numbers.forEach(row => {
+      ctx.font = bookNumberFont(row.bold);
+      ctx.fillStyle = row.color;
+      ctx.fillText(String(row.total), rect.width - BOOK_NUMBER_RIGHT_INSET, row.y);
+    });
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    this.lastNumbers = numbers;
     const drawMs = performance.now() - start;
-    // Same last-30-draw window as the existing frame debug metrics.
     this.samples.push(drawMs);
     this.samples = this.samples.slice(-30);
     this.metrics = { drawMs, meanMs: this.samples.reduce((a, b) => a + b, 0) / this.samples.length,
       maxMs: Math.max(...this.samples), drawCount: this.metrics.drawCount + 1, paintedRows,
-      timeUs: book?.timeUs ?? null, p99, bandStart };
+      timeUs: book?.timeUs ?? null, p99, bandStart, bandEnd: bandStart === null ? null : bandEnd,
+      numbers: numbers.length, groupTicks: numbers[0]?.ticks ?? 1, style };
   }
 }

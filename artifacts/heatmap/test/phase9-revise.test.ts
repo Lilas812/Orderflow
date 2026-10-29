@@ -21,9 +21,11 @@ test("ダミー：起動GET失敗→実接続回復時に再取得、成功ま�
   await recovery.connected(); assert.equal(reads, 2);
 });
 
-test("ダミー：追加設定・フォーム14項目と既存の0.05刻みの案内", () => {
+test("ダミー：追加設定・フォーム14項目（棒の2項目は画面に出さない）", () => {
   assert.equal(FIELD_SPECS.length, 14);
-  assert.match(rangeText(FIELD_SPECS.find(f => f.key === "bookBarOpacity")!), /0.05刻み/);
+  // Phase 14: the two bar settings stay valid in the file but are no longer form fields.
+  assert.ok(FIELD_SPECS.every(f => (f.key as string) !== "bookBarPct" && (f.key as string) !== "bookBarOpacity"));
+  assert.match(rangeText(FIELD_SPECS.find(f => f.key === "bubbleScale")!), /0.1刻み/);
   for (const [key, good, bad] of [
     ["bubbleScale", [.5, 3, 1.1], [.4, 3.1, .55, "1", NaN]],
     ["bookBarPct", [5, 20, 11], [4, 21, 5.1, "5", NaN]],
@@ -42,7 +44,7 @@ test("ダミー：倍率下限/上限で半径の下限/上限・平方根比例
   }
 });
 
-test("ダミー：色の帯は最新列の右だけ・過去なし・同一最大行/LUT/P99・空白外を塗らない・帯→棒", t => {
+test("ダミー：色の帯は最新列の右だけ・過去なし・同一最大行/LUT/P99・空白外を塗らない・棒なし", t => {
   const old = Object.getOwnPropertyDescriptor(globalThis, "window");
   Object.defineProperty(globalThis, "window", { value: { devicePixelRatio: 1 }, configurable: true });
   t.after(() => old ? Object.defineProperty(globalThis, "window", old) : Reflect.deleteProperty(globalThis, "window"));
@@ -51,24 +53,25 @@ test("ダミー：色の帯は最新列の右だけ・過去なし・同一最�
     bids: { prices: Int32Array.of(99, 95), sizes: Uint32Array.of(10, 5) },
     asks: { prices: Int32Array.of(101, 104), sizes: Uint32Array.of(20, 15) } };
   const events: { color: string; alpha: number; x: number; y: number; w: number }[] = [];
-  const ctx = { fillStyle: "", globalAlpha: 1, clearRect() { events.length = 0; },
-    fillRect(x: number, y: number, w: number) { events.push({ color: this.fillStyle, alpha: this.globalAlpha, x, y, w }); } };
+  const ctx = { fillStyle: "", globalAlpha: 1, font: "", textAlign: "", textBaseline: "", clearRect() { events.length = 0; },
+    fillRect(x: number, y: number, w: number) { events.push({ color: this.fillStyle, alpha: this.globalAlpha, x, y, w }); },
+    measureText: () => ({ width: 0 }), setTransform() {}, fillText() {} };
   const canvas = { width: 0, height: 0, getContext: () => ctx, getBoundingClientRect: () => ({ width: 100, height: 40 }) };
   const renderer = new CurrentBookRenderer(canvas as unknown as HTMLCanvasElement);
   for (const height of [1, 3, 40]) assert.deepEqual(currentBookRows(book, view, height),
     computePixelMax([book], view, 1, height).values);
-  renderer.draw(book, view, 20, 8e6, 20, 1);
-  const band = events.filter(e => e.color.startsWith("rgb(")),
-    bars = events.filter(e => e.color === "#8a3cff" || e.color === "#d9d9d9");
-  assert.ok(band.length); assert.ok(bars.length);
-  assert.ok(band.every(e => e.x === 80 && e.w === 20 && e.alpha === 1));
-  assert.ok(events.indexOf(band.at(-1)!) < events.indexOf(bars[0]!));
+  // Numbers measure 0 wide here, so the band is bounded by the band-end rule only.
+  renderer.draw(book, view, 20, 8e6, { style: "block" });
+  const band = events.filter(e => e.color.startsWith("rgb("));
+  assert.ok(band.length);
+  const end = renderer.metrics.bandEnd!;
+  assert.ok(band.every(e => e.x === 80 && e.w === end - 80 && e.alpha === 1));
   const rows = currentBookRows(book, view, 40), rgba = colorize(rows, 20);
   for (const row of band) assert.equal(row.color, `rgb(${rgba[row.y * 4]},${rgba[row.y * 4 + 1]},${rgba[row.y * 4 + 2]})`);
   assert.deepEqual(band.map(e => e.y), [...rows.keys()].filter(y => rows[y]! > 0), "outside supplied levels remains transparent/black");
-  assert.ok(bars.every(e => e.w <= 20 && e.alpha === 1));
-  renderer.draw(book, view, 20, 12e6, 5, .1);
-  assert.ok(events.every(e => !e.color.startsWith("rgb(") && e.w <= 5 && e.alpha === .1));
+  assert.ok(events.every(e => e.color !== "#8a3cff" && e.color !== "#d9d9d9"), "Phase 14: no bars");
+  renderer.draw(book, view, 20, 12e6, { style: "block" });
+  assert.ok(events.every(e => !e.color.startsWith("rgb(")));
   assert.equal(bookBandStart(12e6, view, 100), null);
   assert.equal(bookBandStart(-1e6, view, 100), 0);
 });

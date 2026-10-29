@@ -3,11 +3,16 @@ import { US_PER_SECOND } from "../domain.ts";
 import type { TradeAggregator } from "../data/trade-aggregate.ts";
 import { priceTicksToY, timeUsToX } from "./coordinates.ts";
 
+/** Phase 14 (SPEC 7.1): fills white / purple / grey, all with a black rim. */
 export const BUBBLE_COLORS = {
-  buy: { fill: "#3ddc84", edge: "#2a9a5c" },
-  sell: { fill: "#a64dff", edge: "#7436b3" },
-  tie: { fill: "#d9d9d9", edge: "#989898" },
+  buy: { fill: "#ece9f5", edge: "rgba(0,0,0,0.9)" },
+  sell: { fill: "#b13cff", edge: "rgba(0,0,0,0.9)" },
+  tie: { fill: "#808080", edge: "rgba(0,0,0,0.9)" },
 } as const;
+/** Fill opacity is constant until the Phase 11 bubbleOpacity setting exists. */
+export const BUBBLE_FILL_OPACITY = 0.92;
+export const BUBBLE_EDGE_WIDTH = 1.6;
+export const PRICE_LINE = { color: "#86d9cf", width: 1.25, underColor: "rgba(0,0,0,0.85)", underWidth: 3.4 } as const;
 export function parseBubbleMin(search: string): { value: number; invalid: boolean } {
   const raw = new URLSearchParams(search).get("bubbleMin");
   if (raw === null) return { value: 10, invalid: false };

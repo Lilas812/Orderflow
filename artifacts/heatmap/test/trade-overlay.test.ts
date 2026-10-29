@@ -37,9 +37,10 @@ test("ダミー：独立overlayの描画順、CSSの太さ/半径/点線、白�
     renderer.draw(a, view, 10, 100);
     const events = heat.context.events;
     assert.deepEqual(events.filter(e => e[0] === "stroke"), [
-      ["stroke", "#b9a7ff", 1.5], ["stroke", "#2a9a5c", 1], ["stroke", "#ffffff", 1],
+      ["stroke", "rgba(0,0,0,0.85)", 3.4], ["stroke", "#86d9cf", 1.25], ["stroke", "rgba(0,0,0,0.9)", 1.6],
+      ["stroke", "#ffffff", 1],
     ]);
-    assert.deepEqual(events.find(e => e[0] === "fill"), ["fill", "#3ddc84", 0.8]);
+    assert.deepEqual(events.find(e => e[0] === "fill"), ["fill", "#ece9f5", 0.92]);
     assert.deepEqual(events.find(e => e[0] === "arc"), ["arc", 5, 100, 3]);
     assert.deepEqual(events.find(e => e[0] === "dash"), ["dash", 4, 4]);
     assert.deepEqual(events.filter(e => e[0] === "line").at(-1), ["line", 100, 100],

@@ -8,6 +8,7 @@ import { currentBookRows, CurrentBookRenderer } from "../src/chart/current-book.
 import { vpPriceRow, vpBandBounds, vpGuides, drawVpGuides, drawVpLabels } from "../src/chart/vp-decoration.ts";
 import type { HeatColumn, Viewport } from "../src/domain.ts";
 
+const LEGACY_10C = { ...DEFAULT_SETTINGS, heatTopPct: 1, heatLowerMode: "off" as const, heatLowerPct: 20, heatGamma: 1 };
 const view: Viewport = { startUs: 0, durationSec: 2, centerPriceTicks: 100, priceSpanTicks: 10 };
 const column: HeatColumn = { timeUs: 0, source: "live",
   bids: { prices: new Int32Array([100, 99, 98, 97]), sizes: new Uint32Array([1, 2, 10, 0]) },
@@ -22,12 +23,12 @@ test("ダミー：U自動は可視の正の値だけ、固定枚数は相場で�
 });
 
 test("ダミー：Loなし・下位20%・固定・U以上の調整（U=1を含む）", () => {
-  assert.deepEqual(heatThresholds([column], view, DEFAULT_SETTINGS), { upper: 100, lower: 0, lowerAdjusted: false });
-  assert.equal(heatThresholds([column], view, { ...DEFAULT_SETTINGS, heatLowerMode: "pct" }).lower, 1);
-  assert.equal(heatThresholds([column], view, { ...DEFAULT_SETTINGS, heatLowerMode: "size", heatLowerSize: 5 }).lower, 5);
+  assert.deepEqual(heatThresholds([column], view, LEGACY_10C), { upper: 100, lower: 0, lowerAdjusted: false });
+  assert.equal(heatThresholds([column], view, { ...LEGACY_10C, heatLowerMode: "pct" }).lower, 1);
+  assert.equal(heatThresholds([column], view, { ...LEGACY_10C, heatLowerMode: "size", heatLowerSize: 5 }).lower, 5);
   for (const size of [100, 200]) assert.deepEqual(heatThresholds([column], view,
-    { ...DEFAULT_SETTINGS, heatLowerMode: "size", heatLowerSize: size }), { upper: 100, lower: 99, lowerAdjusted: true });
-  assert.deepEqual(heatThresholds([], view, { ...DEFAULT_SETTINGS, heatUpperMode: "size", heatUpperSize: 1,
+    { ...LEGACY_10C, heatLowerMode: "size", heatLowerSize: size }), { upper: 100, lower: 99, lowerAdjusted: true });
+  assert.deepEqual(heatThresholds([], view, { ...LEGACY_10C, heatUpperMode: "size", heatUpperSize: 1,
     heatLowerMode: "size", heatLowerSize: 10 }), { upper: 1, lower: 0, lowerAdjusted: true });
 });
 
@@ -48,6 +49,8 @@ test("ダミー：Lo以下は黒、gamma1は既存LUT、0.5と2は指定の色�
 class Context {
   fillStyle = ""; strokeStyle = ""; globalAlpha = 1; lineWidth = 0; font = ""; textAlign = ""; textBaseline = "";
   events: any[][] = [];
+  measureText(text: string) { return { width: text.length * 6 }; }
+  setTransform() {}
   clearRect(...args: number[]) { this.events.push(["clear", ...args]); }
   fillRect(...args: number[]) { this.events.push(["fill", this.fillStyle, this.globalAlpha, ...args]); }
   fillText(...args: unknown[]) { this.events.push(["text", this.fillStyle, this.font, ...args]); }
@@ -61,23 +64,21 @@ function canvas(width = 100, height = 100) {
   const ctx = new Context();
   return { width: 0, height: 0, getContext: () => ctx, getBoundingClientRect: () => ({ width, height }), ctx };
 }
-test("ダミー：現在板の帯は同じLo/gamma、棒はLo/gammaに依存せずUだけ", t => {
+test("ダミー：現在板の帯（block）は同じLo/gamma、横棒は描かない（Phase 14）", t => {
   const descriptor = Object.getOwnPropertyDescriptor(globalThis, "window");
   Object.defineProperty(globalThis, "window", { value: { devicePixelRatio: 1 }, configurable: true });
   t.after(() => descriptor ? Object.defineProperty(globalThis, "window", descriptor) : Reflect.deleteProperty(globalThis, "window"));
   const c = canvas(), renderer = new CurrentBookRenderer(c as unknown as HTMLCanvasElement);
-  renderer.draw(column, view, 100, 1_000_000, 10, .5, 5, 2);
+  renderer.draw(column, view, 100, 1_000_000, { lower: 5, gamma: 2, style: "block" });
   const rows = currentBookRows(column, view, 100), expected = colorize(rows, 100, undefined, 5, 2);
-  for (const e of c.ctx.events.filter(e => e[0] === "fill" && String(e[1]).startsWith("rgb"))) {
+  const band = c.ctx.events.filter(e => e[0] === "fill" && String(e[1]).startsWith("rgb"));
+  assert.ok(band.length > 0);
+  for (const e of band) {
     const y = e[4], i = y * 4;
     assert.ok(rows[y] > 5);
     assert.equal(e[1], `rgb(${expected[i]},${expected[i + 1]},${expected[i + 2]})`);
   }
-  const bars = c.ctx.events.filter(e => e[0] === "fill" && e[2] === .5);
-  assert.ok(bars.some(e => e[5] < .5)); // Low-size bars are still present.
-  const lengths = bars.map(e => e[5]);
-  c.ctx.events = []; renderer.draw(column, view, 100, 1_000_000, 10, .5, 0, .5);
-  assert.deepEqual(c.ctx.events.filter(e => e[0] === "fill" && e[2] === .5).map(e => e[5]), lengths);
+  assert.ok(c.ctx.events.every(e => e[1] !== "#8a3cff" && e[1] !== "#d9d9d9"), "no bars");
 });
 
 test("ダミー：VAの帯と線は拡大・縮小時の同じ価格行、画面端をclip", () => {
@@ -111,8 +112,8 @@ test("ダミー：線の全幅・色・dash・透明度、ラベルはPOCが最�
   assert.ok(labels.ctx.events.filter(e => e[0] === "text").every(e => e[2].startsWith("11px")));
 });
 
-test("6設定の範囲・刻み・mode、非表示値は保持して全14項目を送る", () => {
-  assert.equal(Object.keys(DEFAULT_SETTINGS).length, 14);
+test("6設定の範囲・刻み・mode、非表示値は保持して全16項目を送る", () => {
+  assert.equal(Object.keys(DEFAULT_SETTINGS).length, 16);
   for (const [key, good, bad] of [
     ["heatUpperSize", [1, 100000], [0, 100001, 1.5, "10"]],
     ["heatLowerPct", [.1, 90], [0, 90.1, .15, NaN]],
@@ -132,8 +133,8 @@ test("6設定の範囲・刻み・mode、非表示値は保持して全14項目�
   assert.equal(fieldVisible("heatLowerSize", f.inputs), false);
   const saved = f.startSave()!;
   assert.equal(saved.heatUpperSize, 777); assert.equal(saved.heatLowerSize, 88);
-  assert.equal(Object.keys(saved).length, 14);
-  for (const [key, value] of [["heatGamma", .5], ["heatUpperMode", "size"], ["heatLowerMode", "pct"]] as const) {
+  assert.equal(Object.keys(saved).length, 16);
+  for (const [key, value] of [["heatGamma", 2], ["heatUpperMode", "size"], ["heatLowerMode", "size"]] as const) {
     const changes = settingsChanges(DEFAULT_SETTINGS, { ...DEFAULT_SETTINGS, [key]: value });
     assert.deepEqual(Object.entries(changes).filter(([, yes]) => yes).map(([k]) => k), ["heat"]);
   }

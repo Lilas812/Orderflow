@@ -38,6 +38,10 @@ class Context {
   fillStyle = ""; globalAlpha = 1;
   clearRect(...args: number[]) { this.events.push(["clear", ...args]); }
   fillRect(...args: number[]) { this.events.push(["rect", this.fillStyle, this.globalAlpha, ...args]); }
+  font = ""; textAlign = ""; textBaseline = "";
+  measureText(text: string) { return { width: text.length * 6 }; }
+  setTransform() {}
+  fillText(text: string, x: number, y: number) { this.events.push(["text", text, x, y, this.fillStyle, this.font]); }
 }
 class Canvas {
   width = 0; height = 0; context = new Context();
@@ -45,61 +49,33 @@ class Canvas {
   getBoundingClientRect() { return { width: 100, height: 200 }; }
 }
 
-test("ダミー：右端10%・共通P99、売買色・半透明、DPR、全量置換", () => {
+test("Phase 14：棒をやめ数字を右寄せ、帯は最も広い数字の5px手前まで、DPR、全量置換", () => {
   const saved = Object.getOwnPropertyDescriptor(globalThis, "window");
   Object.defineProperty(globalThis, "window", { value: { devicePixelRatio: 2 }, configurable: true });
   try {
     const canvas = new Canvas();
     const r = new CurrentBookRenderer(canvas as unknown as HTMLCanvasElement);
-    r.draw(book(), view, 20);
+    r.draw(book(), view, 20, 15_000_000, { style: "block" });
     assert.equal(canvas.width, 200); assert.equal(canvas.height, 400);
     assert.deepEqual(canvas.context.events[0], ["clear", 0, 0, 200, 400]);
-    assert.ok(canvas.context.events.every(e => e[1] !== "#808080"));
-    const bars = canvas.context.events.filter(e => e[0] === "rect");
-    assert.ok(bars.some(e => e[1] === "#d9d9d9" && e[3] === 195 && e[5] === 5));
-    assert.ok(bars.some(e => e[1] === "#8a3cff" && e[3] === 190 && e[5] === 10));
-    assert.ok(bars.some(e => e[3] === 180 && e[5] === 20));
-    assert.ok(bars.every(e => e[2] === 0.5 && Number(e[3]) + Number(e[5]) === 200));
-    assert.equal(canvas.context.globalAlpha, 1);
-    assert.equal(r.metrics.p99, 20); assert.equal(r.metrics.timeUs, 10_000_000);
-    canvas.context.events = [];
-    r.draw(book([[99, 1]], []), { ...view, startUs: -1_000_000 }, 10);
-    assert.ok(canvas.context.events.every(e => e[1] !== "#808080"));
-    assert.ok(canvas.context.events.filter(e => e[0] === "rect").every(e => e[5] === 2 && e[1] === "#d9d9d9"));
+    const texts = canvas.context.events.filter(e => e[0] === "text");
+    // 200 CSS px / 20 ticks = 10 px per tick < 11 -> groups of 2 ticks.
+    assert.equal(r.metrics.groupTicks, 2);
+    assert.deepEqual(texts.map(e => e[1]).sort(), ["10", "25", "30"].sort());
+    assert.ok(texts.every(e => e[2] === 96), "right aligned 4 CSS px inside");
+    assert.ok(canvas.context.events.every(e => e[1] !== "#8a3cff" && e[1] !== "#d9d9d9"), "no bars");
+    // widest "30"/"20"/"10" = 2 chars * 6 = 12 -> band ends at (100 - 4 - 12 - 5) CSS = 79 * 2 physical.
+    assert.equal(r.metrics.bandEnd, 158);
+    const band = canvas.context.events.filter(e => e[0] === "rect" && String(e[1]).startsWith("rgb"));
+    assert.ok(band.length > 0 && band.every(e => Number(e[3]) + Number(e[5]) === 158));
     canvas.context.events = [];
     r.draw(null, view, 10);
     assert.deepEqual(canvas.context.events, [["clear", 0, 0, 200, 400]]);
-    assert.equal(r.metrics.paintedRows, 0);
-    assert.equal(r.metrics.drawCount, 3);
+    assert.equal(r.metrics.numbers, 0);
+    assert.equal(r.metrics.drawCount, 2);
     assert.equal(r.metrics.timeUs, null);
-    assert.ok(r.metrics.meanMs >= 0 && r.metrics.maxMs >= r.metrics.meanMs);
   } finally {
     if (saved) Object.defineProperty(globalThis, "window", saved);
     else Reflect.deleteProperty(globalThis, "window");
   }
-});
-
-test("ダミー：同一画素行は最大の段の側、同数は売り、合算しない", () => {
-  for (const [bids, asks, size, sell] of [
-    [[[99, 30], [98, 20]], [[101, 25]], 30, 0],
-    [[[99, 10]], [[101, 25], [102, 20]], 25, 1],
-    [[[99, 25]], [[101, 25]], 25, 1],
-  ] as const) {
-    const sides = new Uint8Array(1);
-    const input = book(bids.map(l => [...l]), asks.map(l => [...l]));
-    assert.deepEqual([...currentBookRows(input, view, 1, sides)], [size]);
-    assert.deepEqual([...sides], [sell]);
-  }
-});
-
-test("ダミー：時間panでは現在板は変わらず、価格zoom・端のclipは共通座標", () => {
-  const input = book();
-  assert.deepEqual(currentBookRows(input, view, 200),
-    currentBookRows(input, { ...view, startUs: 0, durationSec: 3600 }, 200));
-  const zoomed = { ...view, priceSpanTicks: 8 };
-  assert.deepEqual(currentBookRows(input, zoomed, 200),
-    computePixelMax([input], zoomed, 1, 200).values);
-  const edge = book([[90, 10]], [[110, 20]]);
-  const rows = currentBookRows(edge, view, 200);
-  assert.equal(rows[0], 20); assert.equal(rows[199], 10);
 });

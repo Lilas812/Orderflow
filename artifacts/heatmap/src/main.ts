@@ -20,7 +20,8 @@ import { defaultDocument, fetchSettings, putSettings, resolveSettings, settingsC
 import { SettingsRecovery } from "./data/settings-recovery.ts";
 import type { SettingsDocument } from "./data/settings.ts";
 import { mountSettingsUi } from "./components/settings-ui.ts";
-import { resetViewport } from "./chart/view-reset.ts";
+import { LIVE_RESET_SEC, REPLAY_RESET_SEC, resetViewport } from "./chart/view-reset.ts";
+import { boardGridTemplate } from "./chart/layout.ts";
 import { AutoPriceScale, resetTimeViewport } from "./chart/axis-view.ts";
 import { bindDoubleActivation } from "./chart/double-activation.ts";
 import { isLongVpRoute } from "./long-vp/view-math.ts";
@@ -152,6 +153,12 @@ root.innerHTML = `
   </div>
 `;
 
+const board = document.querySelector<HTMLElement>(".board")!;
+function applyLayout(): void {
+  const visible = activeSettings.values.bigOrdersVisible;
+  board.classList.toggle("big-hidden", !visible);
+  board.style.gridTemplateColumns = boardGridTemplate(visible);
+}
 const canvas = required<HTMLCanvasElement>("heatmap");
 const axisCanvas = required<HTMLCanvasElement>("price-axis");
 const autoPriceLabel = document.createElement("span");
@@ -175,6 +182,7 @@ let settingsGeneration = 0;
 let appliedUpdatedAt: number | null = null;
 let settingsWarning = "";
 let activeSettings = resolveSettings(defaultDocument(), window.location.search);
+applyLayout();
 let bigOptions = { top: { value: activeSettings.values.bigTopPct, invalid: activeSettings.invalid.includes("bigTop 無効") },
   minSec: { value: activeSettings.values.bigMinSec, invalid: activeSettings.invalid.includes("bigMinSec 無効") } };
 const bigFeed = new BigOrderFeed(bigOptions.top.value);
@@ -201,8 +209,8 @@ let displayZone: DisplayZone = "jst";
 const debugMode = new URLSearchParams(window.location.search).get("debug") === "1";
 
 let viewport: Viewport = {
-  startUs: (Date.now() * 1_000) - 600 * US_PER_SECOND,
-  durationSec: 600,
+  startUs: (Date.now() * 1_000) - LIVE_RESET_SEC * US_PER_SECOND,
+  durationSec: LIVE_RESET_SEC,
   centerPriceTicks: 0,
   priceSpanTicks: 160,
 };
@@ -250,6 +258,7 @@ const client = new RealtimeClient(cache, {
     bigFeed.beginInitial(initialCutoffUs);
     replayHeadUs = message.mode === "replay" ? initialCutoffUs + 1 : null;
     lastDataError = "";
+    if (!hasHello && message.mode === "replay") viewport = { ...viewport, durationSec: REPLAY_RESET_SEC };
     if (!hasHello || follow) {
       const replayFrom = replayFromSec();
       const endUs = message.mode === "replay" && replayFrom !== null
@@ -450,13 +459,15 @@ function resetTimeView(): void {
 const drawScheduler = new LayerScheduler(draw => requestAnimationFrame(draw), {
   depth: (redrawAxes) => {
       const columns = cache.columns;
+      renderer.setTrades(cache.tradeAggregation);
       renderer.draw(columns, viewport, receivedColumnRevision, displayZone, columns.length > 0, redrawAxes);
       depthDrawCount++;
   },
   book: () => bookRenderer.draw(cache.latestBook, viewport, renderer.metrics.p99,
     cache.latestTimeUs === null ? null : cache.latestTimeUs + US_PER_SECOND,
-    activeSettings.values.bookBarPct, activeSettings.values.bookBarOpacity, renderer.metrics.lower ?? 0, renderer.metrics.gamma ?? 1),
-  big: () => bigRenderer.draw(bigFeed.tracker.snapshot(), viewport, bigOptions.minSec.value),
+    { lower: renderer.metrics.lower ?? 0, gamma: renderer.metrics.gamma ?? 1, style: renderer.heatStyle }),
+  // Hidden column: tracking continues in bigFeed, only the drawing is skipped (SPEC 7.3).
+  big: () => { if (activeSettings.values.bigOrdersVisible) bigRenderer.draw(bigFeed.tracker.snapshot(), viewport, bigOptions.minSec.value); },
   vp: () => vpRenderer.draw(vpState, viewport),
   delta: () => deltaRenderer.draw(cache.tradeAggregation, viewport,
     replayHeadUs ?? Math.max((cache.latestTimeUs ?? 0) + US_PER_SECOND, currentTrade.trade?.tsUs ?? 0),
@@ -858,7 +869,13 @@ function applySettings(doc: SettingsDocument): void {
   settingsWarning = "";
   if (change.heat) { renderer.setScaleOptions(next.values); if (settingsLoaded) drawScheduler.request("heat"); }
   if (change.bubbles && settingsLoaded) drawScheduler.request("trades");
-  if (change.book && settingsLoaded) drawScheduler.request("book");
+  if (change.style) { renderer.setStyle(next.values.heatStyle); if (settingsLoaded) drawScheduler.request("heat"); }
+  if (change.layout) {
+    applyLayout();
+    if (follow) alignFollowToPhysicalPixel();
+    renderTimeAxis();
+    if (settingsLoaded) drawScheduler.request("all");
+  }
   if (change.big) { bigFeed.reconfigure(next.values.bigTopPct); if (settingsLoaded) drawScheduler.request("big"); }
   if (change.time) renderTimeAxis();
   updateStatus(); updateDebugPanel();

@@ -260,7 +260,7 @@ test("ダミー：公開prod/のversion2設定はGETで退避・書換せず、�
   try {
     const app = new AppSettings(path.join(dir, "settings.json"), cloud, "prod/", event => events.push(event));
     const doc = await app.get();
-    assert.equal(doc.version, 3); assert.equal(doc.values.bubbleScale, 2);
+    assert.equal(doc.version, 4); assert.equal(doc.values.bubbleScale, 2);
     assert.equal(doc.values.heatUpperSize, 100); assert.equal(doc.updatedAt, 1000000);
     assert.deepEqual(cloud.files.get("prod/settings.json"), original);
     assert.equal(app.snapshot().readError, null);
@@ -268,7 +268,7 @@ test("ダミー：公開prod/のversion2設定はGETで退避・書換せず、�
     assert.equal(cloud.uploads.length, 0);
     await app.put({ ...doc.values, heatUpperMode: "size", heatUpperSize: 42, heatLowerSize: 88 });
     const saved = JSON.parse(cloud.files.get("prod/settings.json")!.toString());
-    assert.equal(saved.version, 3); assert.equal(saved.values.heatUpperSize, 42); assert.equal(saved.values.heatLowerSize, 88);
+    assert.equal(saved.version, 4); assert.equal(saved.values.heatUpperSize, 42); assert.equal(saved.values.heatLowerSize, 88);
     assert.ok(!events.includes("settings_corrupt_preserved"));
   } finally { await fs.rm(dir, { recursive: true, force: true }); }
 });

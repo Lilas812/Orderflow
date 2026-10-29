@@ -6,9 +6,9 @@ const oldKeys = ["heatTopPct", "bubbleMin", "bigTopPct", "bigMinSec", "timeZone"
 test("ダミー：version1/2をv3へ補完、原本とupdatedAtを維持、不正旧版は拒否", () => {
   for (const version of [1, 2]) {
     const keys = [...oldKeys, ...(version === 2 ? ["bubbleScale", "bookBarPct", "bookBarOpacity"] : [])];
-    const doc = { version, updatedAt: 123000, values: Object.fromEntries(keys.map(k => [k, defaults[k as keyof typeof defaults]])) };
+    const doc = { version, updatedAt: 123000, values: Object.fromEntries(keys.map(k => [k, k === "heatTopPct" ? 1 : defaults[k as keyof typeof defaults]])) };
     const before = JSON.stringify(doc), normalized = readDocument(doc)!;
-    assert.equal(normalized.version, 3);
+    assert.equal(normalized.version, 4);
     assert.equal(normalized.updatedAt, doc.updatedAt);
     assert.deepEqual(normalized.values, defaults);
     assert.equal(JSON.stringify(doc), before);

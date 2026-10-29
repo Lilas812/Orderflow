@@ -35,7 +35,7 @@ export class LocalSettings implements SettingsPersistence {
     return next;
   }
   private stamp(): number { return this.lastStamp = Math.max(this.now() * 1000, this.lastStamp + 1); }
-  private defaultDoc(): SettingsDocument { return { version: 3, values: { ...defaults }, updatedAt: null }; }
+  private defaultDoc(): SettingsDocument { return { version: 4, values: { ...defaults }, updatedAt: null }; }
   private async read() {
     try {
       const names = await fs.readdir(path.dirname(this.file));
@@ -92,7 +92,7 @@ export class LocalSettings implements SettingsPersistence {
           this.diag.preservedFiles.push(name);
           this.log("settings_corrupt_preserved", { file: name, bytes: corrupt.length });
         }
-        const doc: SettingsDocument = { version: 3, values: input, updatedAt: this.stamp() };
+        const doc: SettingsDocument = { version: 4, values: input, updatedAt: this.stamp() };
         temporary = this.file + `.${doc.updatedAt}.tmp`;
         const handle = await fs.open(temporary, "wx", 0o600);
         try { await handle.writeFile(JSON.stringify(doc) + "\n"); await handle.sync(); } finally { await handle.close(); }

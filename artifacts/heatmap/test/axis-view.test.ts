@@ -61,8 +61,9 @@ test("AUTO coalesces updates at most once a second, and manual/reset disable sto
 test("time reset preserves both price coordinates and returns to live/replay anchor at initial duration", () => {
   for (const mode of ["live", "replay"] as const) {
     const reset = resetTimeViewport(view, 900_000_000, 1_000, mode);
-    assert.equal(reset.durationSec, 600);
-    assert.equal(reset.startUs, followStartUs(mode === "live" ? 900_000_000 : 899_000_000, 600, 1_000));
+    const duration = mode === "live" ? 3600 : 600;
+    assert.equal(reset.durationSec, duration);
+    assert.equal(reset.startUs, followStartUs(mode === "live" ? 900_000_000 : 899_000_000, duration, 1_000));
     assert.equal(reset.centerPriceTicks, view.centerPriceTicks);
     assert.equal(reset.priceSpanTicks, view.priceSpanTicks);
   }

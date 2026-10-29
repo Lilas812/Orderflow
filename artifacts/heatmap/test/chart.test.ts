@@ -22,7 +22,7 @@ test("positive nearest-rank P99 excludes zeros and clamps the highest one percen
   assert.equal(positiveNearestRank(values), 99);
   assert.equal(positiveNearestRank([0, 0]), 1);
   assert.deepEqual(heatColor(0, 10), [0, 0, 0]);
-  assert.deepEqual(heatColor(100, 10), [255, 59, 48]);
+  assert.deepEqual(heatColor(100, 10), [255, 61, 46]);
 });
 
 test("physical pixel aggregation takes the maximum over both time and price axes", () => {

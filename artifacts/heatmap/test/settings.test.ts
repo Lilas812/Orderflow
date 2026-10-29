@@ -53,10 +53,13 @@ test("ダミー：設定ごとの層だけを要求、色更新は価格軸/約�
   s.request("trades"); queued!(); assert.deepEqual(seen, ["trades"]); seen.length = 0;
   s.request("big"); queued!(); assert.deepEqual(seen, ["big"]);
   for (const [key, expected] of [["heatTopPct", "heat"], ["bubbleMin", "bubbles"], ["bubbleScale", "bubbles"],
-    ["bookBarPct", "book"], ["bookBarOpacity", "book"], ["bigTopPct", "big"], ["bigMinSec", "big"], ["timeZone", "time"]] as const) {
-    const next = { ...DEFAULT_SETTINGS, [key]: key === "timeZone" ? "America/Chicago" : 3 };
+    ["heatStyle", "style"], ["bigOrdersVisible", "layout"], ["bigTopPct", "big"], ["bigMinSec", "big"], ["timeZone", "time"]] as const) {
+    const next = { ...DEFAULT_SETTINGS, [key]: key === "timeZone" ? "America/Chicago" : key === "heatStyle" ? "block"
+      : key === "bigOrdersVisible" ? true : 3 };
     assert.deepEqual(Object.entries(settingsChanges(DEFAULT_SETTINGS, next as typeof DEFAULT_SETTINGS)).filter(([, v]) => v).map(([k]) => k), [expected]);
   }
+  for (const key of ["bookBarPct", "bookBarOpacity"] as const) assert.ok(Object.values(settingsChanges(DEFAULT_SETTINGS,
+    { ...DEFAULT_SETTINGS, [key]: .7 })).every(v => !v), "hidden legacy keys redraw nothing");
 });
 
 test("ダミー：再構築用の最新列と表示列は同一オブジェクト、過去閲覧でも最新位置、2時間上限", () => {
@@ -80,7 +83,7 @@ test("ダミー：再構築用の最新列と表示列は同一オブジェク�
 test("ダミー：ライブ/リプレイのリセット位置、現在約定中心、時刻表示だけ切替", () => {
   for (const mode of ["live", "replay"] as const) for (const anchor of [1000e6, 1000.5e6]) {
     const v = resetViewport(anchor, 119001, 800, mode);
-    assert.equal(v.durationSec, 600); assert.equal(v.priceSpanTicks, 160); assert.equal(v.centerPriceTicks, 119001);
+    assert.equal(v.durationSec, mode === "live" ? 3600 : 600); assert.equal(v.priceSpanTicks, 160); assert.equal(v.centerPriceTicks, 119001);
     assert.ok(Math.abs(timeUsToX(anchor + (mode === "live" ? 1e6 : 0), v, 800) - 640) <= 1);
   }
   const time = Date.parse("2026-10-27T13:00:00Z") * 1000;

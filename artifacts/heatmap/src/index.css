@@ -99,6 +99,7 @@ button, input { font: inherit; }
   background: #000000;
   border: 1px solid var(--line);
 }
+.board.big-hidden .large-region, .board.big-hidden .large-lower-region { display: none; }
 .heat-region { grid-column: 1; grid-row: 1; overflow: visible; }
 .price-region { grid-column: 2; grid-row: 1; background: #000000; touch-action: none; }
 .auto-price-label { position: absolute; top: 2px; left: 2px; z-index: 3; color: #8e8c9c; background: #000; font: 9px var(--font-mono); pointer-events: none; }

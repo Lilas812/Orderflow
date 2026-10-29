@@ -152,7 +152,7 @@ test("ダミー：DPR2でもCSS寸法・白/紫・中央線・目盛り・空デ
   renderer.draw(a, view(), Infinity, Infinity);
   assert.equal(canvas.width, 600); assert.equal(canvas.height, 200);
   assert.deepEqual(fills.map(b => [b.color, b.y, b.width, b.height]), [
-    ["#ffffff", 0, 3, 50], ["#a64dff", 50, 3, 25],
+    ["#ece9f5", 0, 3, 50], ["#b13cff", 50, 3, 25],
   ]);
   assert.deepEqual(lines, [[0, 50], [300, 50]]);
   assert.equal(ctx.strokeStyle, "#252431"); assert.equal(ctx.lineWidth, 1);
