@@ -5,9 +5,10 @@ import { decodeColumns } from "./binary.ts";
 import type { Column } from "../aggregate/columns.ts";
 import type { Trade } from "../types.ts";
 
-function input(file: string, signal?: AbortSignal) {
+function input(file: string, signal?: AbortSignal, observe?: (bytes: Buffer) => void) {
   signal?.throwIfAborted();
   const raw = createReadStream(file, { signal });
+  if (observe) raw.on("data", bytes => observe(Buffer.isBuffer(bytes) ? bytes : Buffer.from(bytes)));
   if (!file.endsWith(".gz")) return raw;
   const inflated = createGunzip();
   raw.on("error", error => inflated.destroy(error));
@@ -96,8 +97,9 @@ export async function* columnFileRange(file: string, start: number, end: number)
   if (bytes.length) throw Error("incomplete_column_record");
 }
 
-export async function* tradeFileEntries(file: string, signal?: AbortSignal): AsyncGenerator<{ line: string; trade: Trade }> {
-  const stream = input(file, signal);
+export async function* tradeFileEntries(file: string, signal?: AbortSignal,
+  observe?: (bytes: Buffer) => void): AsyncGenerator<{ line: string; trade: Trade }> {
+  const stream = input(file, signal, observe);
   const lines = createInterface({ input: stream, crlfDelay: Infinity });
   let failure: Error | null = null;
   const fail = (error: Error) => { failure = error; lines.close(); };

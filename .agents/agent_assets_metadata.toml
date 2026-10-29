@@ -350,3 +350,17 @@ mtime_ms = 1793299279598
 storage_uri = "gcs://replit-rams-assets-pike/rams/assets/repl:c326af06-2355-4bfb-a52e-f433587c4cd9/b05a95d2-f6d7-4dc7-9718-176e8b9880cc/bf8efc0b-50de-4938-9ebf-e22a790c2f16"
 storage_version_token = "1793299288307849"
 content_type = "text/markdown"
+
+[[outputs]]
+id = "gJ3PT54SAc_yuomN1zNHu"
+uri = "file://server/TRADE_READ_OPTIMIZATION_REPORT.md"
+type = "text"
+title = "約定読取共有の実装・隔離検証報告"
+description = "4区間の取得・展開を各1回へ削減。結果一致、通信と照合の別計上、CPU・メモリ増減、並行・中断・失敗試験を記録。本番反映なし。"
+logical_id = "638f6f70-dc9c-4487-92d9-31880cdc3191"
+content_hash = "sha256:f59c142a1067979edcd7ffdc525666a155163d352f2fbb31191f0dda2f20ed5e"
+size = 14713
+mtime_ms = 1793305561350
+storage_uri = "gcs://replit-rams-assets-pike/rams/assets/repl:c326af06-2355-4bfb-a52e-f433587c4cd9/638f6f70-dc9c-4487-92d9-31880cdc3191/8771c40d-666e-466c-9aed-ad8cedd5a1b5"
+storage_version_token = "1793305629248905"
+content_type = "text/markdown"

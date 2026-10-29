@@ -38,6 +38,7 @@ export async function readTradeRange(options: {
 }) {
   const { store, source, metrics, nextSeq, signal, visit } = options;
   const state = options.state ?? historyProgress();
+  const reader = store.tradeReadSession(signal);
   const schedule = options.schedule ?? { now: Date.now,
     wait: async (ms: number, s: AbortSignal) => { await delay(ms, undefined, { signal: s }); } };
   async function take(start: number, end: number, retry = 0): Promise<void> {
@@ -76,24 +77,26 @@ export async function readTradeRange(options: {
     signal.throwIfAborted();
     // Live writes may have completed during the request. Split/recheck rather than overwrite.
     await store.insertUncoveredTradeRange(start, end, trades);
-    await store.visitTrades(start, end, visit);
+    await reader.visit(start, end, visit);
     state.apiSeconds += end - start;
     state.importedTrades += trades.length;
   }
-  for (let a = options.start; a < options.end; a += 900) {
-    signal.throwIfAborted();
-    const b = Math.min(a + 900, options.end);
-    await locked(store, async () => {
+  try {
+    for (let a = options.start; a < options.end; a += 900) {
       signal.throwIfAborted();
-      for (const segment of coverageSegments(await store.recordedTickCoverage(), a, b)) {
-        if (segment.covered) {
-          const before = schedule.now();
-          await store.visitTrades(segment.start, segment.end, t => { visit(t); state.importedTrades++; });
-          state.fileReadMs += schedule.now() - before; state.fileWindows++;
-          state.fileSeconds += segment.end - segment.start;
-        } else await take(segment.start, segment.end);
-      }
-    });
-  }
-  return state;
+      const b = Math.min(a + 900, options.end);
+      await locked(store, async () => {
+        signal.throwIfAborted();
+        for (const segment of coverageSegments(await store.recordedTickCoverage(), a, b)) {
+          if (segment.covered) {
+            const before = schedule.now();
+            await reader.visit(segment.start, segment.end, t => { visit(t); state.importedTrades++; });
+            state.fileReadMs += schedule.now() - before; state.fileWindows++;
+            state.fileSeconds += segment.end - segment.start;
+          } else await take(segment.start, segment.end);
+        }
+      });
+    }
+    return state;
+  } finally { await reader.close(); }
 }

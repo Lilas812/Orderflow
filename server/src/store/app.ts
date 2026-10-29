@@ -11,6 +11,8 @@ import type { Log } from "../logger.ts";
 import { columnFileRange } from "./records.ts";
 import { digest, uploadVerified } from "./objects.ts";
 import type { Objects } from "./objects.ts";
+import { TradeReadPool } from "./trade-read.ts";
+import type { TradeReadSource } from "./trade-read.ts";
 
 const empty = (): Coverage => ({ book: [], tick: [] });
 function parseCoverage(bytes: string): Coverage {
@@ -34,6 +36,7 @@ export class AppStore extends LocalStore {
   private cloud = empty();
   private confirmed = new Map<string, string>();
   private temporary = new Map<string, string>();
+  private tradeReads: TradeReadPool;
   private pins = new Map<string, number>();
   private publisher: Promise<void> | null = null;
   private attempts = new Map<string, number>();
@@ -53,6 +56,44 @@ export class AppStore extends LocalStore {
   constructor(root: string, objects: Objects, prefix: string, log: Log, now = Date.now, symbol: MarketSymbol = "NQ") {
     super(root, now, fs.rename, symbol); this.objects = objects; this.prefix = prefix; this.log = log; this.clock = now;
     this.cloudStatus.prefix = prefix;
+    this.tradeReads = new TradeReadPool(path.join(root, ".trade-read-temporary"), () =>
+      this.log("trade_read_cleanup_failed", { symbol: this.symbol }));
+  }
+  get tradeReadStats() { return { ...this.tradeReads.stats }; }
+  async tradeReadsSettled() { await this.tradeReads.settled(); }
+  override tradeReadSession(signal: AbortSignal) {
+    return this.tradeReads.session(signal, async hour => {
+      let source: TradeReadSource | null = null;
+      await this.run(async () => {
+      // Only fully durable, closed, cold hours. Partial/unconfirmed/writable files stay on the old path.
+      const coverage = intersect(this.cloud.tick, hour);
+      if (hour + 3600 > this.clock() / 1000 - 48 * 3600 || this.held.has(hour)
+        || coverage.length !== 1 || coverage[0]![0] !== hour || coverage[0]![1] !== hour + 3600) return;
+      const name = this.object("tick", hour), base = this.file("tick", hour);
+      const cached = await this.exists(base), stamp = this.confirmed.get(name);
+      if (cached && stamp !== await this.fingerprint(base)) return;
+      // Each active scope pins one immutable downloaded version. Last release removes it;
+      // later scopes download anew. Local replacement gets a distinct confirmation identity.
+      source = { key: `${this.symbol}:${name}:${stamp ?? "cloud"}`, cached,
+        download: async (file: string) => {
+          if (cached) {
+            let readFailure: unknown;
+            await this.run(async () => {
+              try {
+                if (stamp !== await this.fingerprint(base)) throw Error("trade_read_source_changed");
+                await fs.copyFile(base, file);
+              } catch (error) { readFailure = error; }
+            });
+            if (readFailure) throw readFailure;
+            return;
+          }
+          await this.objects.download(name, file);
+          this.cloudStatus.downloads++;
+        } };
+      });
+      return source;
+    }, (hour, start, end, visit) => this.withRange(hour, hour + 3600,
+      () => this.run(() => this.visitTradeHour(hour, start, end, visit)), ["tick"]));
   }
   private key(kind: Kind, hour: number) { return `${kind}:${hour}`; }
   private object(kind: Kind, hour: number) {

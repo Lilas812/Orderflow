@@ -11,6 +11,7 @@ import { encodeColumns, decodeColumns } from "./binary.ts";
 import { scanColumnFile, tradeFileRows, tradeFileEntries, decodeColumnRange, mergeColumnRecords } from "./records.ts";
 import type { Column } from "../aggregate/columns.ts";
 import type { Trade } from "../types.ts";
+import type { TradeReadSession } from "./trade-read.ts";
 
 const gzip = promisify(gzipCallback);
 const gunzip = promisify(gunzipCallback);
@@ -315,14 +316,21 @@ export class LocalStore implements Store {
     return (JSON.parse(await fs.readFile(file, "utf8")) as Coverage).tick;
   }
   /** Bounded-memory, serialized walk of the unchanged gzip JSONL files. */
+  tradeReadSession(signal: AbortSignal): TradeReadSession {
+    return {
+      visit: (start, end, visit) => this.visitTrades(start, end, t => { signal.throwIfAborted(); visit(t); }),
+      close: async () => {},
+    };
+  }
+  protected async visitTradeHour(hour: number, start: number, end: number, visit: (trade: Trade) => void) {
+    const file = this.tradeInputPath(hour);
+    if (await this.exists(file)) for await (const t of tradeFileRows(file)) {
+      if (t.tsUs >= start * 1e6 && t.tsUs < end * 1e6) visit(t);
+    }
+  }
   visitTrades(start: number, end: number, visit: (trade: Trade) => void): Promise<void> {
     return this.run(async () => {
-      for (let h = hourOf(start); h < end; h += 3600) {
-        const file = this.tradeInputPath(h);
-        if (await this.exists(file)) for await (const t of tradeFileRows(file)) {
-          if (t.tsUs >= start * 1e6 && t.tsUs < end * 1e6) visit(t);
-        }
-      }
+      for (let h = hourOf(start); h < end; h += 3600) await this.visitTradeHour(h, start, end, visit);
     });
   }
   replaceTradeRange(start: number, end: number, trades: Trade[]): Promise<void> {
