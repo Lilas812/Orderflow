@@ -38,17 +38,21 @@ export async function digest(file: string): Promise<string> {
   for await (const chunk of createReadStream(file)) hash.update(chunk);
   return hash.digest("hex");
 }
-export async function uploadVerified(objects: Objects, name: string, file: string, signal?: AbortSignal): Promise<void> {
+export type UploadObservation = <T>(phase: "source_hash" | "upload" | "verification", work: () => Promise<T>) => Promise<T>;
+export async function uploadVerified(objects: Objects, name: string, file: string, signal?: AbortSignal,
+  observe: UploadObservation = (_phase, work) => work()): Promise<void> {
   const check = file + "." + randomUUID() + ".verify";
   try {
     signal?.throwIfAborted();
-    const before = await digest(file);
+    const before = await observe("source_hash", () => digest(file));
     signal?.throwIfAborted();
-    await objects.upload(name, file);
+    await observe("upload", () => objects.upload(name, file));
     signal?.throwIfAborted();
-    await objects.download(name, check);
-    signal?.throwIfAborted();
-    if (await digest(check) !== before) throw Error("object_verification_failed");
+    await observe("verification", async () => {
+      await objects.download(name, check);
+      signal?.throwIfAborted();
+      if (await digest(check) !== before) throw Error("object_verification_failed");
+    });
     signal?.throwIfAborted();
   } finally { await fs.rm(check, { force: true }); }
 }

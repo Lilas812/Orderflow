@@ -7,6 +7,7 @@ import { readDocument } from "./schema.ts";
 import type { Log } from "../logger.ts";
 import { uploadVerified } from "../store/objects.ts";
 import type { Objects } from "../store/objects.ts";
+import { settingsQueue, settingsStage } from "./trace.ts";
 
 /** Cloud is authoritative; local settings is only a staging file, never a fallback. */
 export class AppSettings implements SettingsPersistence {
@@ -23,7 +24,9 @@ export class AppSettings implements SettingsPersistence {
     this.local = new LocalSettings(file, log);
   }
   private serial<T>(work: () => Promise<T>): Promise<T> {
-    const next = this.tail.then(work); this.tail = next.catch(() => {}); return next;
+    const dequeued = settingsQueue("app");
+    const next = this.tail.then(() => { dequeued(); return work(); });
+    this.tail = next.catch(() => {}); return next;
   }
   private async fetch() {
     await fs.mkdir(path.dirname(this.file), { recursive: true });
@@ -36,14 +39,17 @@ export class AppSettings implements SettingsPersistence {
   }
   get() {
     return this.serial(async () => {
-      try { await this.fetch(); this.error = null; return await this.local.get(); }
+      try {
+        await settingsStage("cloud_fetch", () => this.fetch());
+        this.error = null; return await this.local.get();
+      }
       catch { this.error = "settings_read_failed"; this.log("settings_read_error", { reason: this.error }); throw Error(this.error); }
     });
   }
   put(values: SettingsValues) {
     return this.serial(async () => {
       try {
-        await this.fetch();
+        await settingsStage("cloud_fetch", () => this.fetch());
         let corrupt = false;
         try {
           const bytes = await fs.readFile(this.file);
@@ -51,11 +57,12 @@ export class AppSettings implements SettingsPersistence {
         } catch (e) { if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e; }
         if (corrupt) {
           const name = this.prefix + `settings.corrupt-${Date.now() * 1000}.json`;
-          await uploadVerified(this.objects, name, this.file);
+          await uploadVerified(this.objects, name, this.file, undefined,
+            (phase, work) => settingsStage(`backup_${phase}`, work));
           this.backups.push(name); this.log("settings_corrupt_preserved", { object: name, sha256Verified: true });
         }
         const doc = await this.local.put(values);
-        await uploadVerified(this.objects, this.prefix + "settings.json", this.file);
+        await uploadVerified(this.objects, this.prefix + "settings.json", this.file, undefined, settingsStage);
         this.error = null;
         return doc;
       } catch {

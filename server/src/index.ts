@@ -20,6 +20,7 @@ import { LongRest } from "./long-vp/rest.ts";
 import { LongObjects } from "./long-vp/objects.ts";
 import { setTimeout as delay } from "node:timers/promises";
 import type { Server } from "node:http";
+import { SettingsTrace } from "./settings/trace.ts";
 
 async function main() {
   const config = readConfig(process.env);
@@ -77,11 +78,16 @@ async function main() {
       const { vp: _vp, ...existing } = pipeline.status(); return existing;
     }, () => hub.snapshot()),
   }, log);
+  const settingsTrace = process.env.HEATMAP_SETTINGS_TRACE === "1" ? new SettingsTrace(log, () => ({
+    backfill: pipeline.backfill.status.state, vpHistory: pipeline.vpHistory.snapshot().state,
+    requests: pipeline.client.stats.requests, errors: pipeline.client.stats.errors, retries: pipeline.client.stats.retries,
+    waiting: pipeline.client.stats.waitUntilUs !== null && pipeline.client.stats.waitUntilUs > Date.now() * 1000,
+  }), productionAccumulation(process.env) ? "published" : "development", objects ? "app-storage" : "local") : undefined;
   const app = createStatusApp(upstream, receiver, config.apiKey, () => ({ ...pipeline.status(), longVp: longStatus() }),
     () => ({ ...hub.snapshot(), connections: hub.connections() }),
     () => memory.snapshot(), () => isolation.snapshot(), settings,
     process.env.HEATMAP_SERVE_FRONTEND === "1"
-      ? fileURLToPath(new URL("../../artifacts/heatmap/dist/public/", import.meta.url)) : undefined, longVp, longVpSettings);
+      ? fileURLToPath(new URL("../../artifacts/heatmap/dist/public/", import.meta.url)) : undefined, longVp, longVpSettings, settingsTrace);
   let http: Server | null = null;
   let wss: ReturnType<typeof attachHub> | null = null;
   const startup = new AbortController();
@@ -118,6 +124,7 @@ async function main() {
     await initialization?.catch(() => {});
     if (initialized) await pipeline.stop();
     await httpClosed;
+    settingsTrace?.stop();
     await memory.stop();
     log("server_stopped", { upstream: upstream.status.state, httpClosed: true,
       storageInitialized: initialized, elapsedMs: performance.now() - started, uploadDeadlineReached: budget.signal.aborted });
@@ -151,6 +158,7 @@ async function main() {
   if (shuttingDown) return;
   log("storage_initialized", { elapsedMs: performance.now() - started });
   activity = () => ({ delivery: hub.snapshot(), backfill: pipeline.backfill.snapshot().state });
+  settingsTrace?.start();
   // Neither HTTP readiness nor WS rangeDone can be exposed before full recovery.
   http = app.listen(config.port, "0.0.0.0");
   wss = attachHub(http, hub, origin => isolation.allows(origin));

@@ -3,6 +3,7 @@ import path from "node:path";
 import type { Log } from "../logger.ts";
 import { defaults, readDocument, validateSettings } from "./schema.ts";
 import type { SettingsDocument, SettingsValues } from "./schema.ts";
+import { settingsQueue, settingsStage } from "./trace.ts";
 
 export interface SettingsDiagnostics {
   source: "saved" | "defaults"; updatedAt: number | null;
@@ -30,7 +31,8 @@ export class LocalSettings implements SettingsPersistence {
   }
   snapshot(): SettingsDiagnostics { return { ...this.diag, preservedFiles: [...this.diag.preservedFiles] }; }
   private serial<T>(work: () => Promise<T>): Promise<T> {
-    const next = this.tail.then(work);
+    const dequeued = settingsQueue("local");
+    const next = this.tail.then(() => { dequeued(); return work(); });
     this.tail = next.then(() => {}, () => {});
     return next;
   }
@@ -61,19 +63,19 @@ export class LocalSettings implements SettingsPersistence {
     }
   }
   get(): Promise<SettingsDocument> {
-    return this.serial(async () => {
+    return this.serial(() => settingsStage("local_read", async () => {
       try { return (await this.read()).document; }
       catch {
         this.diag.source = "defaults"; this.diag.updatedAt = null; this.diag.readError = "settings_read_failed";
         this.log("settings_read_error", { reason: "settings_read_failed" });
         return this.defaultDoc();
       }
-    });
+    }));
   }
   put(values: SettingsValues): Promise<SettingsDocument> {
     // Clone now: a caller cannot mutate its object while queued.
     const input = { ...values };
-    return this.serial(async () => {
+    return this.serial(() => settingsStage("local_save", async () => {
       if (Object.keys(validateSettings(input)).length) throw Error("invalid_settings");
       let temporary: string | null = null;
       try {
@@ -112,6 +114,6 @@ export class LocalSettings implements SettingsPersistence {
           this.log("settings_temp_cleanup_error", { reason: "temporary_remove_failed" });
         });
       }
-    });
+    }));
   }
 }
