@@ -73,7 +73,12 @@ export class SettingsForm {
   loadOk(v: SettingsValues) { this.inputs = toInputs(v); this.hidden = { bookBarPct: v.bookBarPct, bookBarOpacity: v.bookBarOpacity }; this.status = "ready"; this.loaded = true; this.message = ""; }
   loadFail(reason: string) { this.status = "load-error"; this.loaded = false; this.message = `設定を読み込めませんでした：${reason}`; }
   set(key: VisibleKey, value: string) { this.inputs = { ...this.inputs, [key]: value }; }
-  resetDefaults() { if (this.loaded) this.inputs = toInputs(DEFAULT_SETTINGS as SettingsValues); }
+  resetDefaults() {
+    if (this.loaded) {
+      this.inputs = toInputs(DEFAULT_SETTINGS as SettingsValues);
+      this.hidden = { bookBarPct: DEFAULT_SETTINGS.bookBarPct, bookBarOpacity: DEFAULT_SETTINGS.bookBarOpacity };
+    }
+  }
   errors(): Partial<Record<SettingsKey, string>> {
     return validateSettings(parseInputs(this.inputs, this.hidden)) as Partial<Record<SettingsKey, string>>;
   }

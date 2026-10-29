@@ -74,6 +74,13 @@ test("Phase 14：棒をやめ数字を右寄せ、帯は最も広い数字の5px
     assert.equal(r.metrics.numbers, 0);
     assert.equal(r.metrics.drawCount, 2);
     assert.equal(r.metrics.timeUs, null);
+    canvas.context.events = [];
+    // Price 110 is at the top edge and is excluded by the 6 CSS px label margin.
+    r.draw(book([[110, 20]], []), view, 20, 15_000_000, { style: "block" });
+    assert.equal(r.metrics.numbers, 0);
+    assert.equal(r.metrics.bandStart, null);
+    assert.equal(r.metrics.bandEnd, null);
+    assert.equal(canvas.context.events.some(e => e[0] === "rect" || e[0] === "text"), false);
   } finally {
     if (saved) Object.defineProperty(globalThis, "window", saved);
     else Reflect.deleteProperty(globalThis, "window");

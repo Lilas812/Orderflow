@@ -39,6 +39,11 @@ test("Phase14: fade appear / cancel / eaten / unknown edge", () => {
   assert.equal(fadeFactor(o => known(o - 3), no), 4 / 5);
   // eaten: a trade at that price cancels the cancel fade
   assert.equal(fadeFactor(known, o => o === 0), 1);
+  assert.equal(fadeFactor(known, o => o === 1), 1 / 5, "消えた列の約定だけでは食われた判定にしない");
+  const short = states([NOT_PAINTED, PAINTED, PAINTED, NOT_PAINTED], 1);
+  assert.equal(fadeFactor(short, no), (1 / 7) * (2 / 5), "短命な板は出現と取消の倍率を掛ける");
+  assert.equal(fadeFactor(short, o => o === 1), 1 / 7, "食われた板も出現倍率だけは適用");
+  assert.equal(fadeFactor(states([NOT_PAINTED, PAINTED, PAINTED, NOT_PAINTED], 3), no), 0);
   assert.equal(fadeFactor(o => cancel[8 + o] === undefined ? UNKNOWN : PAINTED, no), 1);
   assert.equal(fadeFactor(() => NOT_PAINTED, no), 0);
 });
@@ -97,4 +102,7 @@ test("Phase14: layout, live reset width, settings v4 with 16 keys", () => {
   assert.equal(Object.keys(saved).length, 16);
   assert.equal(saved.bigOrdersVisible, true); assert.equal(saved.heatStyle, "block");
   assert.equal(saved.bookBarPct, 13); assert.equal(saved.bookBarOpacity, .35);
+  f.loadOk({ ...d, bookBarPct: 17, bookBarOpacity: .75 });
+  f.resetDefaults();
+  assert.deepEqual(f.startSave(), d, "非表示2項目を含む全16項目を初期値へ戻す");
 });

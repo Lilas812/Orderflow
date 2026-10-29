@@ -238,3 +238,17 @@ mtime_ms = 1793215481357
 storage_uri = "gcs://replit-rams-assets-pike/rams/assets/repl:c326af06-2355-4bfb-a52e-f433587c4cd9/34ca0b5f-688f-4fc8-8f68-945d7cbc4951/f27165ed-9d92-4bf6-a22b-b565969c567d"
 storage_version_token = "1793215596256414"
 content_type = "text/html"
+
+[[outputs]]
+id = "qHweFM_X9iY22L5O9CZz5"
+uri = "file://data/phase14/comparison.html"
+type = "html"
+title = "Phase 14 描画比較"
+description = "同時刻のglow/block・10分/1時間、現在板の数字、実保存データのフェード拡大。性能と未完了項目は報告書参照。"
+logical_id = "9805b187-84a2-4bbe-a6c6-f5c57773eeee"
+content_hash = "sha256:632799c4e0f9750ed0cdd2ca9c1e5a1e51ac683600fd7f9c40769c66b701b38d"
+size = 3995063
+mtime_ms = 1793277074701
+storage_uri = "gcs://replit-rams-assets-pike/rams/assets/repl:c326af06-2355-4bfb-a52e-f433587c4cd9/9805b187-84a2-4bbe-a6c6-f5c57773eeee/604cdbe2-454f-4267-bafc-c9bb40fffe4c"
+storage_version_token = "1793277212508388"
+content_type = "text/html"

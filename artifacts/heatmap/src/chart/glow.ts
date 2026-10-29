@@ -57,7 +57,7 @@ export const NOT_PAINTED = 0, PAINTED = 1, UNKNOWN = 2;
  * Appearance: (k+1)/7 for the first 6 painted columns after a not-painted column; a run that
  * reaches back to unknown data (left edge of held data or a >=3s gap) does not fade.
  * Cancel: (k+1)/5 for the 4 columns before the first not-painted column, unless eaten.
- * Both apply -> the smaller factor wins.
+ * Both apply -> multiply appearance and cancellation (user-approved Phase 14 rule).
  */
 export function fadeFactor(state: (offset: number) => number, eaten: (offset: number) => boolean): number {
   if (state(0) !== PAINTED) return 0;
@@ -75,7 +75,7 @@ export function fadeFactor(state: (offset: number) => number, eaten: (offset: nu
     if (next === NOT_PAINTED && !eatenAtVanish(eaten, k)) cancel = (k + 1) / (CANCEL_COLUMNS + 1);
     break;
   }
-  return Math.min(appear, cancel);
+  return appear * cancel;
 }
 
 /** SPEC 7: only a trade in the last painted column before disappearance counts as eaten. */

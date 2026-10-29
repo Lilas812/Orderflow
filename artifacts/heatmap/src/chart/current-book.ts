@@ -76,7 +76,7 @@ export class CurrentBookRenderer {
       ctx.font = bookNumberFont(row.bold);
       widest = Math.max(widest, ctx.measureText(String(row.total)).width); // CSS px: font is 10 CSS px
     }
-    const bandStart = book ? bookBandStart(rightEdgeUs, view, width) : null;
+    const bandStart = book && numbers.length ? bookBandStart(rightEdgeUs, view, width) : null;
     const bandEnd = Math.round(bookBandEnd(rect.width, widest) * dpr);
     let paintedRows = 0;
     if (bandStart !== null && bandEnd > bandStart) {

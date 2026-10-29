@@ -18,3 +18,4 @@
 - [App Storageの運用指定](app-storage-decisions.md) — 再試行・再DL照合、古い範囲のディスク一時保存、破損設定の退避を維持する。
 - [artifactの経路検証](artifact-routing-cautions.md) — TOML検証成功だけでは環境別pathsのサポートや実際の転送を確認できない。
 - [長期VPの運用条件](long-vp-decisions.md) — 新正本優先・開発WS禁止・既存保存保護。CT17:05以降の確定は矛盾解消の例外承認。
+- [Phase 14の表示補足](phase14-display-decisions.md) — 短命板のフェードは積、数字なしは帯もなし、初期値復帰は非表示2項目も含む。
