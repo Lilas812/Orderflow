@@ -274,11 +274,7 @@ const client = new RealtimeClient(cache, {
     scheduleDraw();
   },
   onStatus: (message) => {
-    const previousBackfill = backfillState(latestStatus);
     latestStatus = message;
-    if (previousBackfill === "running" && backfillState(message) === "complete" && hello?.mode === "live" && follow) {
-      refreshVisibleRange();
-    }
     updateStatus();
   },
   onColumns: (_columns, _kind, reqId) => {
@@ -362,7 +358,9 @@ function replayFromSec(): number | null {
 }
 
 function positionPriceFromData(): void {
-  if (centeredOnData) return;
+  // A paused user may already have positioned/zoomed an initially empty view.
+  // A later history response must not silently recenter that view.
+  if (centeredOnData || !follow) return;
   const midpoint = bestMidpoint(cache.latestBook ?? cache.columns.at(-1));
   if (midpoint === null) return;
   viewport = { ...viewport, centerPriceTicks: midpoint };
@@ -771,13 +769,6 @@ function refreshVisibleRange(): void {
   const toUs = viewport.startUs + viewport.durationSec * US_PER_SECOND;
   cache.removeCoverage(Math.floor(viewport.startUs / US_PER_SECOND), Math.ceil(toUs / US_PER_SECOND));
   syncRetentionAndRequests();
-}
-
-function backfillState(status: SocketStatus | null): unknown {
-  const phase = status?.status?.phase2a;
-  if (!phase || typeof phase !== "object") return null;
-  const backfill = (phase as Record<string, unknown>).backfill;
-  return backfill && typeof backfill === "object" ? (backfill as Record<string, unknown>).state : null;
 }
 
 function wheel(event: WheelEvent): void {

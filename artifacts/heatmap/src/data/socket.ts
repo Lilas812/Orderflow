@@ -2,6 +2,7 @@ import type { HeatColumn, Trade } from "../domain.ts";
 import { US_PER_SECOND } from "../domain.ts";
 import { ColumnCache, type TimeRange } from "./cache.ts";
 import { decodeFrame, decodeTrades } from "./protocol.ts";
+import { HistoryFreshness } from "./history-freshness.ts";
 
 export type ConnectionState = "connecting" | "connected" | "reconnecting" | "error" | "replay-ended";
 
@@ -105,6 +106,8 @@ export class RealtimeClient {
   private initialElapsedMs: number | null = null;
   private rangeBytes = 0;
   private readonly deliveries = new WeakMap<HeatColumn, string>();
+  private readonly historyFreshness = new HistoryFreshness();
+  private mode: "live" | "replay" | null = null;
 
   get initialLoading(): boolean { return this.pending?.reqId === 0; }
   get loadingRangeCount(): number { return (this.pending ? 1 : 0) + this.queue.length; }
@@ -150,6 +153,12 @@ export class RealtimeClient {
     this.retryVisible = { fromSec, toSec };
     for (const queued of this.queue) this.cache.removeCoverage(queued.fromSec, queued.toSec);
     this.queue = [];
+    this.historyFreshness.retain(this.cache.getCoverage());
+    // An in-flight read may predate completion. Keep its optimistic coverage
+    // until rangeDone, then revalidate it once rather than overlap the requests.
+    for (const range of this.historyFreshness.visible({ fromSec, toSec }, this.pending)) {
+      this.cache.removeCoverage(range.fromSec, range.toSec);
+    }
     const missing = this.cache.planMissingRanges(fromSec, toSec, 3_600);
     for (const range of missing) {
       this.cache.markCovered(range.fromSec, range.toSec);
@@ -258,6 +267,8 @@ export class RealtimeClient {
       const endSec = hello.mode === "replay" && replayFrom !== null ? replayFrom : Math.floor(hello.serverTimeUs / US_PER_SECOND);
       this.clearPendingRanges();
       this.cache.reset();
+      this.historyFreshness.reset();
+      this.mode = hello.mode;
       if (hello.mode === "live") this.cache.startLiveTradeRetention(endSec);
       this.cache.markCovered(endSec - 1_800, endSec);
       this.pending = { reqId: 0, fromSec: Math.max(0, endSec - 1800), toSec: endSec,
@@ -299,11 +310,18 @@ export class RealtimeClient {
       this.pending = null;
       if (reqId === 0) this.initialElapsedMs = this.env.now() - this.initialStartedAt;
       this.listeners.onRangeComplete?.(reqId);
+      if (this.retryVisible && this.historyFreshness.visible(this.retryVisible, this.pending).length > 0) {
+        this.requestVisible(this.retryVisible.fromSec, this.retryVisible.toSec);
+      }
       this.pumpRangeQueue();
       return;
     }
     if (message.type === "status") {
       const status = message as unknown as SocketStatus;
+      if (this.mode === "live" && this.historyFreshness.observe(status.status, this.cache.getCoverage())
+        && this.retryVisible) {
+        this.requestVisible(this.retryVisible.fromSec, this.retryVisible.toSec);
+      }
       this.listeners.onStatus(status);
       if (status.replay?.state === "ended") {
         this.ended = true;
@@ -338,6 +356,10 @@ export class RealtimeClient {
     this.reqId = this.reqId >= 0xffff_ffff ? 1 : this.reqId + 1;
     const pending: PendingRange = { ...range, reqId: this.reqId, columns: 0, trades: 0, chunks: 0, tradeChunks: 0 };
     this.pending = pending;
+    // Consume only when actually dispatched, not when queued. Pan cancellation
+    // must not make a never-read interval look fresh. Failed requests use the
+    // existing missing-coverage recovery, with no automatic freshness retry loop.
+    this.historyFreshness.dispatched(range);
     this.cache.tradeAggregation.beginRange(pending.reqId, pending.fromSec * US_PER_SECOND, pending.toSec * US_PER_SECOND);
     try {
       this.listeners.onRangeRequest(range);

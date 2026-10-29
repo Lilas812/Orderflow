@@ -252,3 +252,59 @@ mtime_ms = 1793277074701
 storage_uri = "gcs://replit-rams-assets-pike/rams/assets/repl:c326af06-2355-4bfb-a52e-f433587c4cd9/9805b187-84a2-4bbe-a6c6-f5c57773eeee/604cdbe2-454f-4267-bafc-c9bb40fffe4c"
 storage_version_token = "1793277212508388"
 content_type = "text/html"
+
+[[outputs]]
+id = "380LZmofs9_qQiOuxc_bL"
+uri = "file://data/history-browser-verification/follow-before.png"
+type = "image"
+title = "自動追従：後取得前"
+description = "隔離データ。追加対象の90秒帯は空白。Chromium 1280×800。"
+logical_id = "b8345da8-e36a-4845-8c0a-8b3036441230"
+content_hash = "sha256:35167bcb4dd0b32271d11000f4be7cf4517c97a8ba14f50f53b98f63330bf3c0"
+size = 91128
+mtime_ms = 1793280367057
+storage_uri = "gcs://replit-rams-assets-pike/rams/assets/repl:c326af06-2355-4bfb-a52e-f433587c4cd9/b8345da8-e36a-4845-8c0a-8b3036441230/6c6e68c8-301e-499e-b067-84262a379672"
+storage_version_token = "1793280685617893"
+content_type = "image/png"
+
+[[outputs]]
+id = "EMfxHlLUabolry8mIvJNz"
+uri = "file://data/history-browser-verification/follow-after.png"
+type = "image"
+title = "自動追従：後取得後"
+description = "再読み込みなしで板を表示。対象領域の色付き画素0→6,936。follow=trueを維持。"
+logical_id = "f8e7f806-c738-4f45-9baf-80dfc762c53e"
+content_hash = "sha256:de646bd2571dd8dbc3cffa684066aabcc5189bae8b42a1def21abb861e3f9c37"
+size = 90946
+mtime_ms = 1793280397712
+storage_uri = "gcs://replit-rams-assets-pike/rams/assets/repl:c326af06-2355-4bfb-a52e-f433587c4cd9/f8e7f806-c738-4f45-9baf-80dfc762c53e/6c681bc6-9e23-42ed-abf9-ac68465786aa"
+storage_version_token = "1793280686941852"
+content_type = "image/png"
+
+[[outputs]]
+id = "8ZdzQGZJLWY6q5pGw91kZ"
+uri = "file://data/history-browser-verification/browse-before.png"
+type = "image"
+title = "過去閲覧：後取得前"
+description = "マウス操作で過去へ移動・時間ズーム後。follow=false、追加対象帯は空白。"
+logical_id = "eac5bed1-7226-4ec4-bedd-635e7238544c"
+content_hash = "sha256:d64f582ac9cc5f1946a3dd2f1cd04020e479f17e07a3237b6971c339f56259b8"
+size = 90479
+mtime_ms = 1793280452756
+storage_uri = "gcs://replit-rams-assets-pike/rams/assets/repl:c326af06-2355-4bfb-a52e-f433587c4cd9/eac5bed1-7226-4ec4-bedd-635e7238544c/8461708a-1698-4db1-a7fb-aff0d887173d"
+storage_version_token = "1793280688225145"
+content_type = "image/png"
+
+[[outputs]]
+id = "JpxlYyfLN5liHWBuuLKaA"
+uri = "file://data/history-browser-verification/browse-after.png"
+type = "image"
+title = "過去閲覧：後取得後"
+description = "位置・時間幅・価格中心・価格幅・follow=falseが完全一致。色付き画素0→13,583。"
+logical_id = "80a474a7-b32b-4a95-94d8-596874ce9217"
+content_hash = "sha256:2de0bbc808bdf9c943be3d0c0b0e14cf51ad852c4bb73210ff86eac22395df9f"
+size = 90220
+mtime_ms = 1793280461692
+storage_uri = "gcs://replit-rams-assets-pike/rams/assets/repl:c326af06-2355-4bfb-a52e-f433587c4cd9/80a474a7-b32b-4a95-94d8-596874ce9217/310881b4-b8fb-4596-a5be-6eb282eec694"
+storage_version_token = "1793280689494915"
+content_type = "image/png"
