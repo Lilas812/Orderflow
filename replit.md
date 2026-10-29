@@ -46,6 +46,8 @@ Agent が更新してよいのは、下の Current Status 節だけ。
 
 ## Current Status
 
+- 2026-10-29：承認されたUI 5.1・LONGVP 4.8をCRLF→LFのみで配置し、両画面に独立Canvasの十字カーソルを実装。価格/時刻/CVDの座標照合、操作・表示切替・消去、100移動→1描画と重い層/通信の不増を隔離実ブラウザで確認。画面150/150・型検査・本番ビルド成功。検証ブラウザ終了・専用Chrome残存0、下流0/上流stoppedを確認。既存受信プロセス・公開・保存形式・設定version・依存は未変更。Safari実機・実上流ライブは未確認。詳細artifacts/heatmap/CROSSHAIR_REPORT.md。
+
 - 2026-10-29：Phase 14のglow/block・9段パレット・現在板数字・大口板列出し入れ・設定v4を実装。承認されたフェード積/数字なしなら帯なし/全16項目初期値復帰を反映。画面133/133、サーバー直列160/160、両型検査・ビルド成功。通常並列は既存期限テスト1件失敗、追加リプレイ切替確認はconnection_limitで中断のため全完了扱いにはしない。価格ズーム平均/最大glow52.77/350.70ms・block15.23/50.90msで性能懸念、追加最適化なし。1倍保存リプレイ同時刻4画像と固定描画測定を保存。全16初期値保存・検証ブラウザ残存0/検証WS0確認、21:30:19.650 JST SIGTERM、19.970 HTTP/上流stopped、411ms後PID消滅。開発上流WS・再Publish・Phase 11/15なし。詳細artifacts/heatmap/PHASE14_REPORT.md。
 
 - 2026-10-29：保存ありの起動を改善。LocalStoreの復旧被覆を行ごとではなく一括統合し、VPの完全取得記録と分離を維持。初期化中のSIGTERMを受理し、完了前はHTTP/WSを待ち受けず、中断・破損時は部分状態をflushしない。サーバー151試験・両型検査・ビルド成功。既存保存89ファイル35,050,830Bで初期化4.86秒／4.72秒、画面・healthz成功。coverageを含む90ファイルのSHA-256が調査前・起動後・停止後で一致。直接SIGTERMのupstream_stopped／server_stopped（26.55ms）、PID・LISTEN・検証Chromium残存0と下流0を確認。開発上流未接続、受信は停止済み。本番・形式・依存・設定・仕様正本は変更なし。詳細はserver/STARTUP_REPORT.md。

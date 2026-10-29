@@ -11,6 +11,7 @@ import {
 import { dayEndSec, dayStartSec, latestTradingDate, nextTradingDate, shiftDate, tradingDatesBetween, weekKey, weekStartSec } from "./time.ts";
 import { clampView, fitPrice, initialView, type LvView } from "./view-math.ts";
 import { viewSwitchHtml } from "./nav.ts";
+import { LongVpCrosshair, cvdScale, cvdY } from "./crosshair.ts";
 
 const C = {
   bg: "#000000", grid: "#15141d", sep: "#252431", weekSep: "#3a3850", text: "#8e8c9c", textHi: "#d9d9d9",
@@ -72,6 +73,7 @@ export function mountLongVp(root: HTMLElement): () => void {
   /* ---------- derived data, memoized on store revision ---------- */
   let seriesKey = "", series: Series | null = null, dates: string[] = [], loadedDays: DayData[] = [];
   let profilesKey = "", profiles: Profile[] = [];
+  let baseDraws = 0, seriesBuilds = 0, profileBuilds = 0;
   function neededDates(): string[] {
     const upper = latestTradingDate(Date.now() / 1000);
     const first = nextTradingDate(view.startSec);
@@ -90,6 +92,7 @@ export function mountLongVp(root: HTMLElement): () => void {
   function derive() {
     const key = `${store.revision}|${dates[0]}|${dates.at(-1)}`;
     if (key !== seriesKey) {
+      seriesBuilds++;
       seriesKey = key;
       loadedDays = store.loaded(dates);
       const all = store.today ? [...loadedDays, store.today] : loadedDays;
@@ -98,6 +101,7 @@ export function mountLongVp(root: HTMLElement): () => void {
     }
     const pk = `${seriesKey}|${settings.vpPeriod}|${settings.rthOnly}`;
     if (pk !== profilesKey && series) {
+      profileBuilds++;
       profilesKey = pk;
       profiles = buildProfiles(series, settings.vpPeriod, settings.rthOnly, loadedDays.map(d => d.tradingDate));
     }
@@ -115,10 +119,18 @@ export function mountLongVp(root: HTMLElement): () => void {
   }
   const xOf = (t: number, plotW: number) => (t - view.startSec) / (view.endSec - view.startSec) * plotW;
   const yOf = (p: number, h: number) => (view.priceHigh - p) / (view.priceHigh - view.priceLow) * h;
+  let cvdAxis = cvdScale([], 0, 10);
+  const cursor = new LongVpCrosshair(canvas, () => ({ ...layout(), width: W, height: H, view: { ...view }, cvd: cvdAxis, timeZone }));
+  const debugWindow = window as Window & { __longVpDebug?: unknown };
+  if (new URLSearchParams(location.search).get("debug") === "1") Object.defineProperty(debugWindow, "__longVpDebug", {
+    configurable: true, get: () => ({ cursor: cursor.snapshot(), view: { ...view }, layout: layout(), timeZone,
+      cvdAxis: { ...cvdAxis }, baseDraws, seriesBuilds, profileBuilds, settings: { ...settings } }),
+  });
 
   function request() { if (!frame && !destroyed) frame = requestAnimationFrame(draw); }
 
   function draw() {
+    baseDraws++;
     frame = 0;
     const rect = canvas.getBoundingClientRect();
     dpr = window.devicePixelRatio || 1;
@@ -146,6 +158,7 @@ export function mountLongVp(root: HTMLElement): () => void {
     if (settings.showWeeklyCvd) drawCvd(L);
     drawTimeAxis(L);
     updateOverlay();
+    cursor.request();
   }
 
   function drawGrid(L: ReturnType<typeof layout>) {
@@ -346,11 +359,10 @@ export function mountLongVp(root: HTMLElement): () => void {
   function drawCvd(L: ReturnType<typeof layout>) {
     if (!series || L.cvdH < 10) return;
     const pts = series.cvd.filter(p => p.t >= view.startSec && p.t <= view.endSec + 60);
-    let lo = 0, hi = 0;
-    for (const p of pts) { lo = Math.min(lo, p.v); hi = Math.max(hi, p.v); }
-    if (hi === lo) hi = lo + 1;
-    const pad = (hi - lo) * .08, top = L.cvdTop + 4, h = L.cvdH - 8;
-    const y = (v: number) => top + (hi + pad - v) / (hi - lo + 2 * pad) * h;
+    cvdAxis = cvdScale(pts, L.cvdTop, L.cvdH);
+    const pad = (cvdAxis.high - cvdAxis.low) / 1.16 * .08;
+    const lo = cvdAxis.low + pad, hi = cvdAxis.high - pad;
+    const y = (v: number) => cvdY(v, cvdAxis);
     ctx.strokeStyle = C.sep; ctx.beginPath(); ctx.moveTo(0, Math.round(y(0)) + .5); ctx.lineTo(L.plotW, Math.round(y(0)) + .5); ctx.stroke();
     ctx.save(); ctx.beginPath(); ctx.rect(0, L.cvdTop, L.plotW, L.cvdH); ctx.clip();
     ctx.strokeStyle = C.cvd; ctx.lineWidth = 1.25; ctx.beginPath();
@@ -540,7 +552,7 @@ export function mountLongVp(root: HTMLElement): () => void {
   const modal = mountLongVpSettings({
     button: root.querySelector<HTMLButtonElement>("#lv-settings")!,
     onSaved: applySettings,
-    onOpenChange: open => { if (open) { pointers.clear(); drag = null; pinch = null; } },
+    onOpenChange: open => { if (open) { cursor.hide(); pointers.clear(); drag = null; pinch = null; } },
   });
   async function loadZone() {
     try { const doc = await fetchSettings(); timeZone = doc.values.timeZone; zoneWarning = ""; }
@@ -555,7 +567,8 @@ export function mountLongVp(root: HTMLElement): () => void {
     if (destroyed) return;
     destroyed = true;
     if (frame) cancelAnimationFrame(frame);
-    resize.disconnect(); store.destroy(); modal.destroy();
+    resize.disconnect(); store.destroy(); modal.destroy(); cursor.destroy();
+    delete debugWindow.__longVpDebug;
     root.replaceChildren();
     window.removeEventListener("pagehide", destroy);
   };

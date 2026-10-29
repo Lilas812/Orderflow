@@ -308,3 +308,17 @@ mtime_ms = 1793280461692
 storage_uri = "gcs://replit-rams-assets-pike/rams/assets/repl:c326af06-2355-4bfb-a52e-f433587c4cd9/80a474a7-b32b-4a95-94d8-596874ce9217/310881b4-b8fb-4596-a5be-6eb282eec694"
 storage_version_token = "1793280689494915"
 content_type = "image/png"
+
+[[outputs]]
+id = "ib-xDADopmuaJMZmV-I1S"
+uri = "file://data/crosshair/comparison.html"
+type = "html"
+title = "十字カーソルの確認画像"
+description = "ヒートマップとLONG VPの表示・消去・週CVD切替の比較。画像内に隔離データであることを明示しています。"
+logical_id = "3e12f4b0-437b-488e-945d-d605f23d0ffd"
+content_hash = "sha256:f03c07b63cd20d4f2108a00bcc4d10dfdad45d7cab5333dd498b8fb920ce9e5f"
+size = 845693
+mtime_ms = 1793282814004
+storage_uri = "gcs://replit-rams-assets-pike/rams/assets/repl:c326af06-2355-4bfb-a52e-f433587c4cd9/3e12f4b0-437b-488e-945d-d605f23d0ffd/b1b8d12b-5bf9-4767-bff0-ffb045c5a0e7"
+storage_version_token = "1793283008444976"
+content_type = "text/html"
