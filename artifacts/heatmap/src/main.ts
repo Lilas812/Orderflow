@@ -194,7 +194,8 @@ const emptyState = required<HTMLDivElement>("empty-state");
 const statusBanner = required<HTMLDivElement>("status-banner");
 const debugPanel = required<HTMLPreElement>("debug-panel");
 const scaleValue = required<HTMLSpanElement>("scale-value");
-const renderer = new HeatmapRenderer(canvas, axisCanvas, () => drawScheduler.request("heat"));
+const renderer = new HeatmapRenderer(canvas, axisCanvas, () => drawScheduler.request("heat"),
+  { onRendererChange: () => { drawScheduler.request("all"); updateDebugPanel(); } });
 let smoothingOptions = readSmoothing(sessionStorage, ACTIVE_SYMBOL);
 renderer.setSmoothing(smoothingOptions);
 const smoothingLegend = document.createElement("span");
@@ -240,6 +241,17 @@ for (const key of ["vwap", "cvd"] as const) {
   });
 }
 const bookRenderer = new CurrentBookRenderer(required<HTMLCanvasElement>("current-book"));
+bookRenderer.bandSink = renderer.bandSink;
+if (new URLSearchParams(window.location.search).get("debug") === "1") Object.defineProperty(window, "__heatmapGpu", {
+  configurable: true,
+  value: Object.freeze({
+    mode: () => renderer.rendererMode,
+    metrics: () => renderer.gpuMetrics,
+    readBackground: () => renderer.readBackground(),
+    loseContext: () => renderer.loseGpuContext(),
+    restoreContext: () => renderer.restoreGpuContext(),
+  }),
+});
 let settingsLoaded = false;
 let settingsGeneration = 0;
 let appliedUpdatedAt: number | null = null;
@@ -426,8 +438,10 @@ const client = new RealtimeClient(cache, {
         // Shift the existing depth bitmap only; no P99, recolor or history scan.
         // Its confirmed columns keep their actual time while trades lead it.
         const ctx = canvas.getContext("2d");
-        if (ctx && canvas.width && canvas.height) {
-          const dx = (oldStart - viewport.startUs) / (viewport.durationSec * US_PER_SECOND) * canvas.width;
+        const shiftDx = (oldStart - viewport.startUs) / (viewport.durationSec * US_PER_SECOND) * canvas.width;
+        if (renderer.shiftGpu(shiftDx)) { /* GPU layer re-composited with the shift. */ }
+        else if (ctx && canvas.width && canvas.height) {
+          const dx = shiftDx;
           ctx.save(); ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.globalCompositeOperation = "copy";
           ctx.drawImage(canvas, dx, 0); ctx.restore();
         }
@@ -726,6 +740,14 @@ function extractUpstreamStatus(status: SocketStatus | null): string {
   return "";
 }
 
+function gpuDebugLine(): string {
+  const g = renderer.gpuMetrics;
+  if (g.mode !== "webgl") return `renderer canvas${g.reason ? ` (${g.reason})` : ""}`;
+  const tex = (g.textures ?? []).map(t => `${t.name} ${t.width}x${t.height}`).join(", ");
+  return `renderer webgl · ${g.gpuName ?? "unknown GPU"} · cpu ${(g.cpuMs ?? 0).toFixed(2)} ms · gpu ${
+    g.gpuMs == null ? (g.timer ? "pending" : "n/a") : `${g.gpuMs.toFixed(2)} ms`}
+gpu tex ${tex} · est ${((g.estimatedBytes ?? 0) / 1_048_576).toFixed(1)} MiB · data ${g.uploadedColumns ?? 0}/${g.uploadedColumnsTotal ?? 0} col · mask ${g.eatenColumns ?? 0}/${g.eatenColumnsTotal ?? 0} col (frame/total)`;
+}
 function updateDebugPanel(): void {
   if (!debugMode) return;
   bytesPerMinute = client.bytesPerMinute;
@@ -740,6 +762,7 @@ ${cache.size.toLocaleString()} columns · steady ${(bytesPerMinute / 1_024).toFi
 initial ${(client.traffic.initialBytes / 1_024).toFixed(1)} KiB · ${client.traffic.initialElapsedMs ?? "loading"} ms
 range ${(client.traffic.rangeBytes / 1_024).toFixed(1)} KiB · ${client.traffic.extensions || "no compression"} · expanded bytes
 ${connection.toUpperCase()} · ${follow ? "FOLLOW" : "BROWSE"} · ${requestCount} range
+${gpuDebugLine()}
 ${lastMetrics.lowerAdjusted ? "下限を上限の手前に合わせた" : ""}
 ${overlayRenderer.metrics.bubbleCount} bubbles · min ${bubbleMinimum.value}${bubbleMinimum.invalid ? " · bubbleMin 無効" : ""}
 line ${overlayRenderer.metrics.lineMs.toFixed(2)} / bubble ${overlayRenderer.metrics.bubbleMs.toFixed(2)} ms

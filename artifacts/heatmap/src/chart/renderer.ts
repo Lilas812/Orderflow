@@ -11,6 +11,21 @@ import type { TradeAggregator } from "../data/trade-aggregate.ts";
 import { DEFAULT_SETTINGS } from "../data/settings.ts";
 import { SmoothingRaster, DEFAULT_SMOOTHING, type SmoothingOptions } from "./smoothing.ts";
 import { backgroundDpr } from "./coordinates.ts";
+import { GpuHeatmap, type GpuBandRequest, type GpuInfo } from "./gpu-heatmap.ts";
+
+export type RendererPreference = "auto" | "webgl" | "canvas";
+export interface HeatmapRendererOptions {
+  /** Default: ?renderer=canvas|webgl from the URL, otherwise auto. */
+  renderer?: RendererPreference;
+  /** Explicit WebGL canvas (harness). Default: created next to the heatmap canvas. */
+  glCanvas?: HTMLCanvasElement;
+  onRendererChange?: (mode: "webgl" | "canvas") => void;
+}
+export interface GpuMetrics extends Partial<GpuInfo> { mode: "webgl" | "canvas"; preference: RendererPreference; reason: string }
+export function rendererPreference(search: string): RendererPreference {
+  const value = new URLSearchParams(search).get("renderer");
+  return value === "canvas" || value === "webgl" ? value : "auto";
+}
 
 export type HeatStyle = "glow" | "block";
 
@@ -32,6 +47,7 @@ export interface DrawMetrics extends Partial<TileCacheMetrics> {
   axisMs?: number;
   style?: HeatStyle;
   glow?: GlowMetrics;
+  gpu?: GpuMetrics;
 }
 
 export class HeatmapRenderer {
@@ -82,13 +98,87 @@ export class HeatmapRenderer {
     tileCount: 0,
   };
 
-  constructor(canvas: HTMLCanvasElement, axis: HTMLCanvasElement, invalidateScaleDraw: () => void = () => {}) {
+  private gpu: GpuHeatmap | null = null;
+  private gpuInUse = false;
+  private gpuReason = "";
+  private readonly preference: RendererPreference;
+  private readonly onRendererChange: (mode: "webgl" | "canvas") => void;
+  private lastDraw: Parameters<HeatmapRenderer["draw"]> | null = null;
+
+  constructor(canvas: HTMLCanvasElement, axis: HTMLCanvasElement, invalidateScaleDraw: () => void = () => {},
+    options: HeatmapRendererOptions = {}) {
     const context = canvas.getContext("2d", { alpha: false });
     if (!context) throw new Error("Canvas 2D is unavailable");
     this.canvas = canvas;
     this.axis = axis;
     this.context = context;
     this.invalidateScaleDraw = invalidateScaleDraw;
+    this.onRendererChange = options.onRendererChange ?? (() => {});
+    this.preference = options.renderer ?? rendererPreference(globalThis.location?.search ?? "");
+    if (this.preference === "canvas") { this.gpuReason = "forced canvas"; return; }
+    try {
+      let gl = options.glCanvas ?? null;
+      if (!gl && typeof document !== "undefined" && canvas.parentElement) {
+        gl = document.createElement("canvas");
+        gl.className = "heat-gl-canvas";
+        gl.setAttribute("aria-hidden", "true");
+        Object.assign(gl.style, { position: "absolute", left: "0", top: "0", width: "100%", height: "100%",
+          pointerEvents: "none", zIndex: "0", visibility: "hidden" });
+        canvas.after(gl);
+      }
+      if (!gl) { this.gpuReason = "no WebGL canvas"; return; }
+      this.gpu = new GpuHeatmap(gl, state => this.contextChanged(state));
+      if (!this.gpu.ready) this.gpuReason = this.gpu.failure;
+    } catch (error) {
+      this.gpuReason = error instanceof Error ? error.message : String(error);
+      this.gpu = null;
+    }
+  }
+
+  /** "webgl" while the GPU layer is the visible background. */
+  get rendererMode(): "webgl" | "canvas" { return this.gpuInUse ? "webgl" : "canvas"; }
+  get gpuMetrics(): GpuMetrics {
+    return { ...(this.gpu?.info ?? {}), textures: this.gpu?.info.textures.map(t => ({ ...t })),
+      mode: this.rendererMode, preference: this.preference, reason: this.gpuReason };
+  }
+
+  private setGpuInUse(next: boolean): void {
+    if (next === this.gpuInUse) return;
+    this.gpuInUse = next;
+    if (this.gpu) this.gpu.canvas.style.visibility = next ? "visible" : "hidden";
+    // The retained CPU image was not painted while the GPU layer was visible.
+    if (!next) this.smoothingRaster.invalidateImage();
+    this.onRendererChange(this.rendererMode);
+  }
+
+  private contextChanged(state: "lost" | "restored"): void {
+    this.gpuReason = state === "lost" ? "context lost" : "";
+    if (state === "lost") {
+      this.setGpuInUse(false);
+      // Immediate fallback: redraw the currently held state on Canvas 2D, not a blank frame.
+      if (this.lastDraw) this.draw(...this.lastDraw);
+    } else if (this.lastDraw) this.draw(...this.lastDraw);
+  }
+
+  /** Current-book colour band sink: true when the GPU layer painted it (2D must skip the band). */
+  readonly bandSink = (band: GpuBandRequest | null): boolean => this.gpuInUse && !!this.gpu?.setBand(band);
+  /** Trade-follow bitmap shift for the GPU layer; false when Canvas 2D must shift instead. */
+  shiftGpu(dx: number): boolean { return this.gpuInUse && !!this.gpu?.shift(dx); }
+  /** Harness: background pixels of the active renderer, RGBA top-down at background resolution. */
+  readBackground(): { mode: "webgl" | "canvas"; width: number; height: number; rgba: Uint8Array } | null {
+    if (this.gpuInUse) { const r = this.gpu?.readPixels(); return r ? { mode: "webgl", ...r } : null; }
+    const w = this.canvas.width, h = this.canvas.height;
+    if (!w || !h) return null;
+    return { mode: "canvas", width: w, height: h, rgba: new Uint8Array(this.context.getImageData(0, 0, w, h).data.buffer) };
+  }
+  /** Harness: lose / restore the WebGL context via WEBGL_lose_context. */
+  loseGpuContext(): void { this.gpu?.loseContext(); }
+  restoreGpuContext(): void { this.gpu?.restoreContext(); }
+  destroy(): void {
+    if (this.scaleTimer !== null) window.clearTimeout(this.scaleTimer);
+    this.gpu?.destroy();
+    if (this.gpu && this.gpu.canvas.className === "heat-gl-canvas") this.gpu.canvas.remove();
+    this.gpu = null; this.gpuInUse = false;
   }
 
   get metrics(): DrawMetrics { return { ...this.metricsValue }; }
@@ -112,6 +202,7 @@ export class HeatmapRenderer {
   setTrades(trades: TradeAggregator | null): void { this.trades = trades; }
 
   draw(columns: readonly HeatColumn[], view: Viewport, _revision: number, _zone: DisplayZone, hasPriceData = true, redrawAxis = true, cutoffUs = Infinity): void {
+    this.lastDraw = [columns, view, _revision, _zone, hasPriceData, redrawAxis, cutoffUs];
     if (Number.isFinite(cutoffUs)) columns = columns.filter(c => c.timeUs + 1_000_000 <= cutoffUs);
     const drawStart = performance.now();
     const rect = this.canvas.getBoundingClientRect();
@@ -140,7 +231,25 @@ export class HeatmapRenderer {
         && [c.bids, c.asks].some(side => side.prices.some((p, i) => p + .5 > bottom && p - .5 < top && side.sizes[i]! > 0)));
       const { scaleMs } = this.refreshScale(columns, view, hasPriceData, hasVisible);
       const start = performance.now();
-      if (hasPriceData && this.threshold !== null) {
+      const gpu = this.gpu;
+      const gpuOk = !!gpu && gpu.ready && width <= gpu.maxTexture && height <= gpu.maxTexture;
+      if (gpu && !gpuOk) this.gpuReason = !gpu.ready ? gpu.failure || "context lost" : "exceeds MAX_TEXTURE_SIZE";
+      let gpuDrawn = false;
+      if (gpuOk) {
+        if (hasPriceData && this.threshold !== null) {
+          const frame = this.smoothingRaster.profiles(columns, view, width, height, this.smoothing, this.style, this.trades);
+          gpuDrawn = gpu!.render(frame, width, height, { upper: this.threshold, lower: this.lower, gamma: this.options.heatGamma }, this.style);
+          if (gpuDrawn) this.smoothingRaster.metrics = { ...this.smoothingRaster.metrics, recomputedColumns: frame.recomputed,
+            cachedBytes: frame.cachedBytes };
+        } else {
+          gpuDrawn = gpu!.renderEmpty(width, height);
+          if (gpuDrawn) this.smoothingRaster.reset();
+        }
+        if (gpuDrawn) this.gpuReason = "";
+      }
+      this.setGpuInUse(gpuDrawn);
+      if (gpuDrawn) { /* GPU layer is the visible background. */ }
+      else if (hasPriceData && this.threshold !== null) {
         const image = this.smoothingRaster.frame(columns, view, width, height, this.smoothing,
           { upper: this.threshold, lower: this.lower, gamma: this.options.heatGamma }, this.style, this.trades);
         if (this.imageData?.data !== image)
@@ -165,10 +274,13 @@ export class HeatmapRenderer {
         rasterRebuilt: this.smoothingRaster.metrics.recomputedColumns > 0,
         recomputedColumns: this.smoothingRaster.metrics.recomputedColumns,
         cachedProfileBytes: this.smoothingRaster.metrics.cachedBytes,
-        partialRaster: !this.smoothingRaster.fullRepaint,
-        repaintPixels: this.smoothingRaster.dirtyRanges.reduce((n, [a, b]) => n + (b - a) * height, 0) };
+        partialRaster: gpuDrawn ? undefined : !this.smoothingRaster.fullRepaint,
+        repaintPixels: gpuDrawn ? (this.gpu!.info.uploadedColumns ?? 0) * height
+          : this.smoothingRaster.dirtyRanges.reduce((n, [a, b]) => n + (b - a) * height, 0),
+        gpu: this.gpuMetrics };
       return;
     }
+    this.setGpuInUse(false);
     if (this.style === "glow") {
       this.drawGlow(columns, view, width, height, hasPriceData, redrawAxis, drawStart, tileSyncMs);
       return;

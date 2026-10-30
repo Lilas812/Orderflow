@@ -560,3 +560,17 @@ mtime_ms = 1793381843977
 storage_uri = "gcs://replit-rams-assets-pike/rams/assets/repl:c326af06-2355-4bfb-a52e-f433587c4cd9/ed0a75dd-7cf9-434a-a000-4f3d957e1da1/5b35c87d-d211-4807-80b1-cb2d7e390e5e"
 storage_version_token = "1793381933566676"
 content_type = "text/csv"
+
+[[outputs]]
+id = "Y5bfujXgBMuKrx8MyItLs"
+uri = "file://data/gpu-heatmap/gallery.html"
+type = "html"
+title = "GPU / Canvas 比較画像"
+description = "同じ入力・色基準の背景比較。左WebGL2、右Canvas。DPR1の帯だけ4/255、それ以外3/255。未公開。"
+logical_id = "4863f3c8-a09f-45fe-88ef-763006b537fa"
+content_hash = "sha256:449d3305c19623a970ce40a01e2391140f2eae7cfc847618929415a7a0062760"
+size = 123828
+mtime_ms = 1793388806925
+storage_uri = "gcs://replit-rams-assets-pike/rams/assets/repl:c326af06-2355-4bfb-a52e-f433587c4cd9/4863f3c8-a09f-45fe-88ef-763006b537fa/38126457-7811-4992-b8c9-1a527ac5b770"
+storage_version_token = "1793389876041621"
+content_type = "text/html"

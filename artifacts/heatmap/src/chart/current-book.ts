@@ -1,7 +1,8 @@
 import type { HeatColumn, Viewport } from "../domain.ts";
 import { backgroundDpr, priceTicksToY, timeUsToX } from "./coordinates.ts";
 import { colorize } from "./renderer.ts";
-import { glowBookColumn, type BookGlowBuffers } from "./glow.ts";
+import { glowBookColumn, glowK, glowRadius, type BookGlowBuffers } from "./glow.ts";
+import type { GpuBandRequest } from "./gpu-heatmap.ts";
 import { BOOK_NUMBER_RIGHT_INSET, bookBandEnd, bookNumberFont, bookNumberRows, type BookNumberRow } from "./book-numbers.ts";
 
 /** Confirmed column's right edge, not the timestamp of the provisional book. */
@@ -53,6 +54,10 @@ export class CurrentBookRenderer {
     bandStart: null as number | null, bandEnd: null as number | null, numbers: 0, groupTicks: 1,
     style: "glow" as "glow" | "block", backgroundDpr: 1 };
   lastNumbers: BookNumberRow[] = [];
+  /** WebGL band sink (HeatmapRenderer.bandSink). Returns true when the GPU layer painted the band. */
+  bandSink: ((band: GpuBandRequest | null) => boolean) | null = null;
+  private gpuSizes = new Float32Array(0);
+  gpuBand = false;
 
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas;
@@ -99,7 +104,12 @@ export class CurrentBookRenderer {
     const paintStart = book && numbers.length ? bookBandStart(rightEdgeUs, view, bandWidth) : null;
     const paintEnd = Math.round(bookBandEnd(rect.width, widest) * bandDpr);
     let paintedRows = 0;
-    if (paintStart !== null && paintEnd > paintStart) {
+    const hasBand = paintStart !== null && paintEnd > paintStart;
+    const gpuBand = this.bandSink ? this.bandSink(hasBand
+      ? this.gpuRequest(book, view, bandWidth, bandHeight, paintStart!, paintEnd, style, scale) : null) : false;
+    this.gpuBand = gpuBand;
+    if (gpuBand && hasBand) paintedRows = bandHeight;
+    if (!gpuBand && hasBand && paintStart !== null) {
       bandContext.globalAlpha = 1;
       bandContext.fillStyle = "#000000";
       bandContext.fillRect(paintStart, 0, paintEnd - paintStart, bandHeight);
@@ -132,7 +142,7 @@ export class CurrentBookRenderer {
         paintedRows = bandHeight;
       }
     }
-    if (bandContext !== ctx) {
+    if (bandContext !== ctx && !gpuBand) {
       ctx.imageSmoothingEnabled = false;
       ctx.drawImage(this.band!, 0, 0, bandWidth, bandHeight, 0, 0, width, height);
     }
@@ -152,5 +162,26 @@ export class CurrentBookRenderer {
       maxMs: Math.max(...this.samples), drawCount: this.metrics.drawCount + 1, paintedRows,
       timeUs: book?.timeUs ?? null, p99, bandStart, bandEnd: bandStart === null ? null : bandEnd,
       numbers: numbers.length, groupTicks: numbers[0]?.ticks ?? 1, style, backgroundDpr: bandDpr };
+  }
+
+  /** Latest book only: rows = one size per physical row (block), sizes = max size per price (glow). */
+  private gpuRequest(book: HeatColumn | null, view: Viewport, width: number, height: number, paintStart: number,
+    paintEnd: number, style: "glow" | "block", scale: { upper: number; lower: number; gamma: number }): GpuBandRequest {
+    // Both derived vectors of the ONE latest book are always provided; style only selects the shader path.
+    this.rows = currentBookRows(book, view, height, undefined, this.rows);
+    // Same geometry as glowBookColumn.
+    const k = glowK(height / view.priceSpanTicks);
+    const margin = Math.ceil(glowRadius(k) / k) + 1;
+    const top = view.centerPriceTicks + view.priceSpanTicks / 2, bottom = top - view.priceSpanTicks;
+    const topPrice = Math.ceil(top + 0.5) - 1 + margin;
+    const priceCount = Math.max(1, topPrice - (Math.floor(bottom - 0.5) + 1 - margin) + 1);
+    if (this.gpuSizes.length !== priceCount) this.gpuSizes = new Float32Array(priceCount);
+    const sizes = this.gpuSizes; sizes.fill(0);
+    if (book) for (const side of [book.bids, book.asks]) for (let i = 0; i < side.prices.length; i++) {
+      const row = topPrice - side.prices[i]!;
+      if (row >= 0 && row < priceCount) sizes[row] = Math.max(sizes[row]!, side.sizes[i]!);
+    }
+    return { style, width, height, paintStart, paintEnd, scale, rows: this.rows, sizes, k,
+      yTop: priceTicksToY(topPrice + 0.5, view, height), destHeight: priceCount * height / view.priceSpanTicks };
   }
 }

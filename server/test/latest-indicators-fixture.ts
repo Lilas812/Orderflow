@@ -22,9 +22,26 @@ const ProfileClass: typeof VolumeProfile = legacyProfile
 const front = arg("front") ?? (before ? path.join(before, "artifacts/heatmap/dist/public") : path.resolve("artifacts/heatmap/dist/public"));
 const now = Math.floor(Date.now() / 1000), start = sessionStartSec(now);
 const smoothing = arg("smoothing") === "1";
+// Optional isolated verification input: preserved quantities/prices, an explicitly
+// virtual clock for replay through the real live delivery handler. No disk writes.
+const replayInput = arg("replay-input")
+  ? JSON.parse(await readFile(arg("replay-input")!, "utf8")) as {
+    startSec: number; boards: Record<MarketSymbol, Column[]>; trades: Record<MarketSymbol, Trade[]>;
+  } : null;
+const replaySeedSeconds = Number(arg("seed-seconds") ?? 3540), replayOrigin = now - replaySeedSeconds - 1;
+const replayCursor = new Map<MarketSymbol, number>();
+const replayCounts = new Map<MarketSymbol, { count: number; quantity: number; bookSecond: number }>();
+const mapReplayTrade = (t: Trade): Trade => ({ ...t,
+  tsUs: replayOrigin * 1e6 + t.tsUs - replayInput!.startSec * 1e6, recvUs: Date.now() * 1000 });
 let settingsGets = 0, settingsPuts = 0;
 const books = new Map<MarketSymbol, Column[]>();
 function book(symbol: MarketSymbol, tsSec: number, size = tsSec % 10 === 0 ? 100 : 10): Column {
+  const saved = replayInput?.boards[symbol];
+  if (saved?.length) {
+    const offset = tsSec - replayOrigin;
+    const c = saved[((offset % saved.length) + saved.length) % saved.length]!;
+    return { ...c, tsSec };
+  }
   const base = symbol === "NQ" ? 84000 : 27000;
   return { tsSec, source: "history",
     bids: Array.from({ length: 40 }, (_, i) => ({ price: base - i - 1, size })),
@@ -39,13 +56,26 @@ const wsSockets = new Set<Socket>();
 let closedWsSent = 0;
 const stages: { symbol: string; seq: number; recvUs: number; normalizedAtUs: number; normalizationMs: number }[] = [];
 for (const symbol of ["NQ", "GC"] as const) {
-  if (smoothing) books.set(symbol, Array.from({ length: 1800 }, (_, i) => book(symbol, now - 1801 + i))
-    .filter(c => c.tsSec < now - 303 || c.tsSec > now - 300));
-  const base = symbol === "NQ" ? 84000 : 27000, profile = new ProfileClass(now);
-  const data: Trade[] = [
+  if (smoothing) {
+    const saved = replayInput?.boards[symbol];
+    // Preserve absent source seconds rather than turning a saved gap into a column.
+    books.set(symbol, saved?.length ? saved.filter(c => c.tsSec < replayInput!.startSec + replaySeedSeconds)
+      .map(c => ({ ...c, tsSec: replayOrigin + c.tsSec - replayInput!.startSec }))
+      : Array.from({ length: 1800 }, (_, i) => book(symbol, now - 1801 + i))
+        .filter(c => c.tsSec < now - 303 || c.tsSec > now - 300));
+  }
+  const base = replayInput?.boards[symbol]?.length ? book(symbol, now).bids[0]!.price + 1
+    : symbol === "NQ" ? 84000 : 27000, profile = new ProfileClass(now);
+  const synthetic: Trade[] = [
     { tsUs: (start + 60) * 1e6, recvUs: (start + 60) * 1e6, seq: 100000, price: base, size: 40, side: "buy", contract: `${symbol}Z26` },
     { tsUs: (now - 60) * 1e6, recvUs: (now - 60) * 1e6, seq: 100001, price: base + 4, size: 10, side: "sell", contract: `${symbol}Z26` },
   ];
+  const original = replayInput?.trades[symbol];
+  let seedEnd = original?.findIndex(t => t.tsUs >= (replayInput!.startSec + replaySeedSeconds) * 1e6) ?? 0;
+  if (seedEnd < 0) seedEnd = original!.length;
+  const data: Trade[] = original ? original.slice(0, seedEnd).map(mapReplayTrade) : synthetic;
+  replayCursor.set(symbol, seedEnd);
+  replayCounts.set(symbol, { count: 0, quantity: 0, bookSecond: -1 });
   data.forEach(t => profile.add(t)); profile.complete(start);
   rows.set(symbol, data); profiles.set(symbol, profile);
   const source: Source = {
@@ -80,6 +110,31 @@ for (const symbol of ["NQ", "GC"] as const) {
 const server = createServer(async (req, res) => {
   const u = new URL(req.url ?? "/", "http://dummy");
   const json = (body: unknown, status = 200) => { res.writeHead(status, { "Content-Type": "application/json", "Cache-Control": "no-store" }); res.end(JSON.stringify(body)); };
+  if (u.pathname === "/__dummy/replay-step" && replayInput) {
+    const symbol: MarketSymbol = u.searchParams.get("symbol") === "GC" ? "GC" : "NQ";
+    const quarter = Number(u.searchParams.get("quarter"));
+    if (!Number.isInteger(quarter) || quarter < 0 || quarter > 240) return json({ error: "invalid_quarter" }, 400);
+    const end = Math.min(3600, replaySeedSeconds + (quarter + 1) / 4);
+    const source = replayInput.trades[symbol], counts = replayCounts.get(symbol)!;
+    let i = replayCursor.get(symbol)!;
+    while (i < source.length && source[i]!.tsUs < (replayInput.startSec + end) * 1e6) {
+      const t = mapReplayTrade(source[i++]!);
+      rows.get(symbol)!.push(t); profiles.get(symbol)!.advance(t.tsUs / 1e6); profiles.get(symbol)!.add(t);
+      hubs.get(symbol)!.trade(t); counts.count++; counts.quantity += t.size;
+    }
+    replayCursor.set(symbol, i);
+    const offset = Math.min(3599, replaySeedSeconds + Math.floor(quarter / 4));
+    if (offset > counts.bookSecond) {
+      counts.bookSecond = offset;
+      const sourceColumn = replayInput.boards[symbol].find(c => c.tsSec === replayInput.startSec + offset);
+      if (sourceColumn) {
+        const c = { ...sourceColumn, tsSec: replayOrigin + offset };
+        books.get(symbol)!.push(c); hubs.get(symbol)!.column(c);
+        hubs.get(symbol)!.book({ tsUs: c.tsSec * 1e6, recvUs: Date.now() * 1000, source: c.source, bids: c.bids, asks: c.asks });
+      }
+    }
+    return json({ dummy: true, replay: true, counts });
+  }
   if (u.pathname === "/__dummy/delay") { delayMs = Number(u.searchParams.get("ms") ?? 0); return json({ dummy: true, delayMs }); }
   if (smoothing && u.pathname === "/__dummy/column") {
     const symbol = u.searchParams.get("symbol") === "GC" ? "GC" : "NQ";
@@ -110,6 +165,8 @@ const server = createServer(async (req, res) => {
     rows.get(symbol)!.push(t); profiles.get(symbol)!.add(t); return json({ dummy: true });
   }
   if (u.pathname === "/__dummy/status") return json({ dummy: true, smoothing, settingsGets, settingsPuts, pid: process.pid, now, start, stages,
+    replay: replayInput ? { origin: replayOrigin, sourceStart: replayInput.startSec, seedSeconds: replaySeedSeconds,
+      counts: Object.fromEntries(replayCounts), seedColumns: Object.fromEntries([...books].map(([s,c])=>[s,c.length])) } : null,
     cpu: process.cpuUsage(), rss: process.memoryUsage().rss,
     wsWireSent: closedWsSent + [...wsSockets].reduce((sum, socket) => sum + socket.bytesWritten, 0),
     hubs: [...hubs.values()].map(h => h.snapshot()), profiles: [...profiles].map(([s, p]) => [s, p.summary()]) });

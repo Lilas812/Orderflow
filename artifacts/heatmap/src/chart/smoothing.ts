@@ -25,6 +25,12 @@ export function temporalQuantities(columns: readonly HeatColumn[], from: number,
   }
   return ticks;
 }
+export interface ProfileColumn { readonly id: number; readonly values: Float32Array; readonly coverage: Float32Array }
+export interface ProfileFrame {
+  list: readonly ProfileColumn[]; start: number; dx: number; aligned: boolean; firstPixel: number; top: number;
+  step: number; k: number; kernel: Float32Array; strength: Float64Array; strengthKey: string;
+  eaten: ReadonlyMap<number, { mask: Uint8Array; signature: string }>; eatenVersion: number; recomputed: number; cachedBytes: number;
+}
 export function projectQuantities(ticks: ReadonlyMap<number, WeightedQuantity>, duration: number,
   top: number, span: number, height: number, options: SmoothingOptions) {
   const values = new Float32Array(height), weights = new Float32Array(height);
@@ -81,9 +87,17 @@ export class SmoothingRaster {
   fullRepaint = true;
   metrics = { recomputedColumns: 0, cachedBytes: 0, coreColumns: 0, paintColumns: 0 };
   reset() { this.entries.clear(); this.bytes = 0; this.geometry = ""; this.tradeRevision = -1; this.imageValid = false; }
-  frame(columns: readonly HeatColumn[], view: Viewport, width: number, height: number,
-    options: SmoothingOptions, scale: { upper: number; lower: number; gamma: number },
-    style: "block" | "glow", trades: TradeAggregator | null) {
+  /** Forces the next CPU frame() to repaint fully (its retained image may be stale after GPU frames). */
+  invalidateImage() { this.imageValid = false; }
+  private eatenVersion = 0;
+  private strengthKey = "";
+  private strengthRows = new Float64Array(0);
+  /**
+   * Shared profile stage: cached per physical column quantity/coverage (exact existing sufficient
+   * statistics), eaten masks and glow geometry. Used by both frame() (Canvas) and the WebGL renderer.
+   */
+  profiles(columns: readonly HeatColumn[], view: Viewport, width: number, height: number,
+    options: SmoothingOptions, style: "block" | "glow", trades: TradeAggregator | null): ProfileFrame {
     const start = view.startUs / 1e6, dx = view.durationSec / width;
     // followStartUs rounds the epoch-aligned pixel grid to integer microseconds.
     // Round each edge from its absolute grid index, not from the rounded first
@@ -101,7 +115,7 @@ export class SmoothingRaster {
     for (const c of columns) bySecond.set(Math.floor(c.timeUs / 1e6), c);
     const top = view.centerPriceTicks + view.priceSpanTicks / 2;
     const list = this.list; list.length = 0;
-    let recomputed = 0, cores = 0, paints = 0;
+    let recomputed = 0;
     for (let x = 0; x < width; x++) {
       const from = edge(x), to = edge(x + 1);
       const refs = this.refs; refs.length = 0;
@@ -143,16 +157,32 @@ export class SmoothingRaster {
         const rows: number[] = []; for (let y = 0; y < height; y++) if (e.mask[y]) rows.push(y);
         e.signature = rows.join(",");
       }
-      this.tradeRevision = trades.revision; this.tradeKey = tradeKey;
+      this.tradeRevision = trades.revision; this.tradeKey = tradeKey; this.eatenVersion++;
     }
     const step = Math.max(1, Math.round(1 / dx)), k = glowK(height / view.priceSpanTicks);
     if (this.kernelK !== k) { this.kernel = gaussianKernel(k); this.kernelK = k; }
-    const kernel = this.kernel;
-    const strength = (y: number) => {
-      if (height < view.priceSpanTicks) return 1;
-      const p = top - (y + .5) * view.priceSpanTicks / height;
-      return rowStrength(Math.min(k - 1, Math.floor((Math.round(p) + .5 - p) * k)), k);
-    };
+    const strengthKey = `${height}|${top}|${view.priceSpanTicks}|${k}`;
+    if (strengthKey !== this.strengthKey) {
+      this.strengthKey = strengthKey;
+      this.strengthRows = new Float64Array(height);
+      for (let y = 0; y < height; y++) {
+        if (height < view.priceSpanTicks) { this.strengthRows[y] = 1; continue; }
+        const p = top - (y + .5) * view.priceSpanTicks / height;
+        this.strengthRows[y] = rowStrength(Math.min(k - 1, Math.floor((Math.round(p) + .5 - p) * k)), k);
+      }
+    }
+    return { list, start, dx, aligned, firstPixel, top, step, k, kernel: this.kernel, strength: this.strengthRows,
+      strengthKey, eaten: this.eaten, eatenVersion: this.eatenVersion, recomputed, cachedBytes: this.bytes };
+  }
+  frame(columns: readonly HeatColumn[], view: Viewport, width: number, height: number,
+    options: SmoothingOptions, scale: { upper: number; lower: number; gamma: number },
+    style: "block" | "glow", trades: TradeAggregator | null) {
+    const prepared = this.profiles(columns, view, width, height, options, style, trades);
+    const { dx, aligned, firstPixel, step, kernel, recomputed } = prepared;
+    const list = this.list;
+    let cores = 0, paints = 0;
+    const strengthRows = prepared.strength;
+    const strength = (y: number) => strengthRows[y]!;
     const position = (n: number) => n > 0 && n > scale.lower
       ? Math.min(1, Math.max(0, (n - scale.lower) / Math.max(1, scale.upper - scale.lower))) ** scale.gamma : 0;
     const state = (x: number, y: number) => !list[x] || !list[x]!.coverage[y] ? 2 : position(list[x]!.values[y]!) > 0 ? 1 : 0;

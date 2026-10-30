@@ -46,6 +46,8 @@ Agent が更新してよいのは、下の Current Status 節だけ。
 
 ## Current Status
 
+2026-10-31：HEATMAP背景と現在板の色帯にWebGL2を追加、Canvas退避とcontext復帰を維持。NQ/GC・DPR1/2/3の画素264比較と60秒×36測定を実施。DPR1の帯だけ許容差4/255、他は3/255。描画命令発行p95は33ms以内だがSwiftShaderでは総CPU増、実GPU効果・実ライブ未確認。画面186/186、サーバー直列277/277、両型検査・ビルド成功。未公開、PWA未着手。詳細 docs/GPU_HEATMAP_REPORT.md。
+
 2026-10-30：NQを維持して標準GCを両画面へ追加。1上流接続での複数購読、銘柄別保存・履歴調整、タブ内選択、GC限月不明の保持を実装し、隔離試験を実施。実上流のNQ＋GC同時受信・本番反映は未実施。詳細は server/GC_IMPLEMENTATION_REPORT.md。
 
 - 2026-10-29：承認されたUI 5.1・LONGVP 4.8をCRLF→LFのみで配置し、両画面に独立Canvasの十字カーソルを実装。価格/時刻/CVDの座標照合、操作・表示切替・消去、100移動→1描画と重い層/通信の不増を隔離実ブラウザで確認。画面150/150・型検査・本番ビルド成功。検証ブラウザ終了・専用Chrome残存0、下流0/上流stoppedを確認。既存受信プロセス・公開・保存形式・設定version・依存は未変更。Safari実機・実上流ライブは未確認。詳細artifacts/heatmap/CROSSHAIR_REPORT.md。
