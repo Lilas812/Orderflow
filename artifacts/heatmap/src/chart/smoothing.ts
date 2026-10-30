@@ -51,7 +51,7 @@ interface Entry {
   rgba: Uint8ClampedArray; sig: string; paintSig: string; generation: number; bytes: number;
 }
 /** Only display-derived profiles. Same 2h/48MiB ceiling as existing display tiles.
- * Cache keys contain exact physical pixel edges and geometry; no RGB resampling. */
+ * Cache keys contain physical pixel edges and geometry; no RGB resampling. */
 export class SmoothingRaster {
   private entries = new Map<string, Entry>();
   private bytes = 0;
@@ -66,6 +66,15 @@ export class SmoothingRaster {
     options: SmoothingOptions, scale: { upper: number; lower: number; gamma: number },
     style: "block" | "glow", trades: TradeAggregator | null) {
     const start = view.startUs / 1e6, dx = view.durationSec / width;
+    // followStartUs rounds the epoch-aligned pixel grid to integer microseconds.
+    // Round each edge from its absolute grid index, not from the rounded first
+    // edge + x*dx: otherwise one-pixel follow changes every interval's phase.
+    // Non-aligned pans retain their exact original overlap calculation.
+    const pixelUs = view.durationSec * 1e6 / width;
+    const firstPixel = Math.round(view.startUs / pixelUs);
+    const aligned = Math.round(firstPixel * pixelUs) === view.startUs;
+    const edge = (x: number) => aligned
+      ? Math.round((firstPixel + x) * pixelUs) / 1e6 : start + x * dx;
     const geometry = `${height}|${view.centerPriceTicks}|${view.priceSpanTicks}|${options.time}|${options.price}`;
     if (geometry !== this.geometry) { this.reset(); this.geometry = geometry; }
     const bySecond = new Map<number, HeatColumn>();
@@ -75,14 +84,14 @@ export class SmoothingRaster {
     const list: Entry[] = [];
     let recomputed = 0, cores = 0, paints = 0;
     for (let x = 0; x < width; x++) {
-      const from = start + x * dx, to = start + (x + 1) * dx;
+      const from = edge(x), to = edge(x + 1);
       const refs: HeatColumn[] = [];
       for (let s = Math.floor(from); s < Math.ceil(to); s++) { const c = bySecond.get(s); if (c) refs.push(c); }
       const key = `${from}|${to}`;
       let e = this.entries.get(key);
       if (!e || e.refs.length !== refs.length || e.refs.some((c, i) => c !== refs[i])) {
         if (e) { this.bytes -= e.bytes; this.entries.delete(key); }
-        const p = projectQuantities(temporalQuantities(refs, from, to), dx, top, view.priceSpanTicks, height, options);
+        const p = projectQuantities(temporalQuantities(refs, from, to), to - from, top, view.priceSpanTicks, height, options);
         e = { ...p, id: ++this.nextId, refs, from, to, core: new Float32Array(height),
           blur: new Float32Array(height), rgba: new Uint8ClampedArray(height * 4), sig: "", paintSig: "",
           generation: 0, bytes: height * 20 + refs.length * 8 };

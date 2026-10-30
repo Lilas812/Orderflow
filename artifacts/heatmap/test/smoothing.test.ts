@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { temporalQuantities, projectQuantities, mergeQuantity, SmoothingRaster } from "../src/chart/smoothing.ts";
 import { readSmoothing, saveSmoothing } from "../src/data/smoothing-settings.ts";
 import type { HeatColumn } from "../src/domain.ts";
+import { followStartUs } from "../src/chart/coordinates.ts";
 const column = (sec: number, size: number, price = 10): HeatColumn => ({ timeUs: sec * 1e6, source: "history",
   bids: { prices: Int32Array.of(price), sizes: Uint32Array.of(size) },
   asks: { prices: new Int32Array(), sizes: new Uint32Array() } });
@@ -43,4 +44,57 @@ test("tab settings separate symbols, defaults, no server setting side effects", 
   assert.deepEqual(readSmoothing(storage, "GC"), { time: "mean", price: "auto" });
   saveSmoothing(storage, "NQ", { time: "max", price: "none" });
   assert.equal(readSmoothing(storage, "NQ").time, "max"); assert.equal(readSmoothing(storage, "GC").time, "mean");
+});
+
+test("epoch follow grid reuses overlapping pixels at DPR1/2 and matches a fresh raster", () => {
+  const head = 1_793_350_000, durationSec = 1800;
+  const columns = Array.from({ length: 1800 }, (_, s) => column(head - 1799 + s, s % 113));
+  const scale = { upper: 200, lower: 0, gamma: 1 };
+  for (const width of [928, 1856]) for (const style of ["block", "glow"] as const) {
+    const raster = new SmoothingRaster(), options = { time: "mean", price: "auto" } as const;
+    let previousIndex: number | undefined;
+    for (let step = 0; step <= 5; step++) {
+      const startUs = followStartUs((head + step) * 1e6, durationSec, width);
+      const view = { startUs, durationSec, centerPriceTicks: 10, priceSpanTicks: 2 };
+      const index = Math.round(startUs / (durationSec * 1e6 / width));
+      const image = raster.frame(columns, view, width, 4, options, scale, style, null);
+      const advance = previousIndex === undefined ? width : index - previousIndex;
+      assert.equal(raster.metrics.recomputedColumns, advance, `width=${width}, ${style}, step=${step}`);
+      if (advance < width) assert.ok(raster.metrics.coreColumns < 50);
+      assert.deepEqual(image, new SmoothingRaster().frame(columns, view, width, 4, options, scale, style, null));
+      previousIndex = index;
+    }
+    const view = { startUs: followStartUs((head + 5) * 1e6, durationSec, width),
+      durationSec, centerPriceTicks: 10, priceSpanTicks: 2 };
+    // A late replacement changes only the pixel(s) overlapping this second.
+    const corrected = [...columns]; corrected[1000] = column(head - 799, 91);
+    const image = raster.frame(corrected, view, width, 4, options, scale, style, null);
+    assert.ok(raster.metrics.recomputedColumns > 0 && raster.metrics.recomputedColumns <= 3);
+    assert.deepEqual(image, new SmoothingRaster().frame(corrected, view, width, 4, options, scale, style, null));
+  }
+});
+
+test("arbitrary pan, zoom, geometry and mode changes retain exact fresh-raster results", () => {
+  const columns = Array.from({ length: 20 }, (_, s) => column(s, s ? 10 : 100));
+  const raster = new SmoothingRaster(), scale = { upper: 200, lower: 0, gamma: 1 };
+  for (const startUs of [123_457, 1_777_777, 123_457, 0]) for (const durationSec of [10, 10.1234567])
+    for (const time of ["mean", "max"] as const) for (const price of ["auto", "none"] as const) {
+      const view = { startUs, durationSec, centerPriceTicks: 10.125, priceSpanTicks: 3 };
+      const image = raster.frame(columns, view, 17, 2, { time, price }, scale, "glow", null);
+      assert.deepEqual(image, new SmoothingRaster().frame(columns, view, 17, 2, { time, price }, scale, "glow", null));
+    }
+});
+
+test("rounded follow edges use their actual duration: fully known pixels retain full coverage", () => {
+  const head = 1_793_350_000, scale = { upper: 200, lower: 0, gamma: 1 };
+  const options = { time: "mean", price: "auto" } as const;
+  const columns = Array.from({ length: 60 }, (_, i) => column(head - 30 + i, 100));
+  const reference = new SmoothingRaster().frame([column(0, 100)],
+    { startUs: 0, durationSec: 1, centerPriceTicks: 10, priceSpanTicks: 1 }, 1, 1, options, scale, "block", null);
+  for (const width of [928, 1856]) {
+    const view = { startUs: followStartUs(head * 1e6, 10, width),
+      durationSec: 10, centerPriceTicks: 10, priceSpanTicks: 1 };
+    const image = new SmoothingRaster().frame(columns, view, width, 1, options, scale, "block", null);
+    for (let x = 0; x < width; x++) assert.deepEqual(image.slice(x * 4, x * 4 + 4), reference);
+  }
 });

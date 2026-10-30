@@ -2,7 +2,7 @@
 import fs from "node:fs/promises";
 import { spawn, execFileSync } from "node:child_process";
 import { browser, delay } from "../tools/perf/cdp.ts";
-const out = "data/heatmap-smoothing/live";
+const out = process.argv.find(a => a.startsWith("--out="))?.slice(6) ?? "data/heatmap-smoothing/live";
 await fs.mkdir(out, { recursive: true });
 const hz = Number(execFileSync("getconf", ["CLK_TCK"], { encoding: "utf8" }).trim());
 async function chromeUsage(profile: string) {
@@ -88,6 +88,9 @@ for (const [symbol, dpr] of [["NQ", 1], ["GC", 2]] as const) {
     if (result.before.hidden || result.after.hidden || samples.length < 30
       || after.hubs.reduce((n: number, h: any) => n + h.connected, 0) !== 1) throw Error("invalid_measurement_conditions");
     result.targetMet = result.receiveToPaint.p95 <= 100;
+    // Outside the measured interval; captures actual product Canvas, not a mock.
+    const screenshot = await p.cdp.call("Page.captureScreenshot", { format: "png" });
+    await fs.writeFile(`${out}/${symbol}-dpr${dpr}.png`, Buffer.from(screenshot.data, "base64"));
   } catch (e) { result.error = String(e); }
   finally {
     if (chrome) result.browserClosed = await chrome.close();

@@ -1,4 +1,68 @@
-# HEATMAP平均化・平滑化：隔離確認結果（追従キャッシュ修正待ち）
+# HEATMAP平均化・平滑化：追従キャッシュ最小修正・隔離確認
+
+## 承認後の最小修正
+
+ユーザーの「最小修正を進める」を受けて実施。開始HEADは`01254047aef91b1e61cedd2d83e2a027b8b0dd77`、開始時の未コミット差分なし。以下の旧記録の「修正未実施・許可待ち」は、この節より前の時点の記録。
+
+### 変更・影響・戻し方
+
+- 製品変更は`artifacts/heatmap/src/chart/smoothing.ts::SmoothingRaster.frame`のみ。`followStartUs`と一致する格子かを調べ、各画素境界を**絶対画素番号から整数µsへ一貫して計算**する。丸めた先頭へ小数dxを繰り返し足さない。キャッシュキーは実際の境界で一致させる。
+- 任意パンの非整列位置は従来の重なり境界のまま。平均の有効時間分母は`to - from`。整数µs化した境界の実際の長さを使い、既知領域の不透明度が丸め誤差で減らないようにした。数量やRGBを粗く丸めてキャッシュヒットさせる修正ではない。
+- `coordinates.ts`、保存・配信・約定・VP等の集計・サーバー設定・色の保存値・48MiB上限は変更なし。既存の追従中zoom復元の課題、冷間初回最適化、他の追加機能は対象外。
+- 戻す場合はこの`smoothing.ts`の今回差分のみを戻す。以前の平均化・最新表示・指標等をresetしない。データ移行／復元は不要。
+
+### 回帰試験
+
+`artifacts/heatmap/test/smoothing.test.ts`に追加。修正前はepoch追従試験が`width=928, block, step=2: 928 !== 1`で失敗した。
+
+- 実epoch時刻・幅928／1856・block／glow：静止は再計算0、1～2画素進むと新規の1～2列だけ再計算。毎回、新規キャッシュで描いた全画素と一致。core再生成も50列未満。
+- 既存秒の後着置換は影響する1～3列のみ再集約し、新規描画と全画素一致。
+- 任意パン／往復／非整数時間幅のzoom／価格幾何／平均・最大／自動・なし変更も新規描画と全画素一致。
+- 全既知100枚の画素は実epoch・両幅で、100枚・完全取得の参照色と全画素一致。既存の平均19、既知0／unknown、重み、欠損・未来除外の試験も維持。
+- 全フロント**180/180合格**、フロント型検査・production build・検証コードを含むreceiver型検査・`git diff --check`合格。サーバー製品コード未変更のため全サーバー試験の機械的再実行はしていない。
+
+### 同条件・修正前後の実WS／製品Canvas
+
+今回の修正前distと修正後distを、それぞれ新規の自前fixture／Chromeで測定。他のビルドや検証Chromeと重ねず実行した。上流接続なし・dummy I/O、前景1タブ、1280×800 CSS、初期1796列×80価格、1800秒表示、固定上限200／下限off／gamma1、glow・平均／自動。各条件15秒＋500ms drain、250msに1約定・1秒に1板。**各61件・183枚**で入力は同じ。時刻は実行時のUTCに移動する合成入力であり実ライブではない。比較元は上記HEAD、修正後JSは`dist/public/assets/index-BGeOK7vE.js`。
+
+| 指標 | NQ DPR1 前→後 | GC DPR2 前→後 |
+|---|---:|---:|
+| 実Canvas depth更新サンプル数 | 31→31 | 32→31 |
+| 実Canvas depth p50 ms | 8.8→7.8 | 41.4→26.2 |
+| 実Canvas depth p95 ms | **177.1→16.8** | **766.0→90.7** |
+| 実Canvas depth最大 ms | 464.2→16.9 | 784.8→94.1 |
+| ブラウザ受信→latest描画 p95 ms | **8.6→4.3** | **55.3→17.2** |
+| サーバー送信→latest描画 p95／最大 ms | 39／276→6／8 | 642／746→83／102 |
+| Chrome CPU秒 | 3.69→2.91 | 11.94→6.56 |
+| Chromeプロセス群RSS標本最大MiB | 932.8→928.2 | 1165.7→1083.8 |
+| JS heap標本最大MiB | 61.0→51.3 | 142.2→82.2 |
+| 最終派生キャッシュMiB | 33.0→10.2 | 48.0→40.8 |
+| server CPU秒 | 0.182→0.185 | 0.187→0.202 |
+| WS実送信byte増分 | 7937→7950 | 7680→7888 |
+
+通信差はバッチ化／取得窓の時刻に伴うもの。配信頻度・形式は変更していない。実Canvasは測定開始前snapshot以降のdepth=trueフレームのみで、計算コア単体や初回cold描画ではない。RSSは子プロセス合算で共有ページの重複を含む。全ブラウザのメモリ上限を48MiBにしたという意味ではない。
+
+serverの最終数量は全条件233枚（seed50＋183）、ブラウザの約定キャッシュは62件（窓内seed1＋61）で前後一致。VP描画snapshotは周期更新の途中値を含むため、この500ms drainだけで全レイヤーの終端数量233まで照合したとは扱わない。今回の板背景の全画素一致は上記回帰試験、実Canvasの表示は下記PNGで確認した。
+
+受信後p95 100ms目標は両条件で達成。追従の全再計算とこの短時間条件の負荷は改善したが、**高流量・長時間・本番CPU・実上流の遅延解消は未確認**。GCのサーバー送信→描画最大102msやブラウザ全体の大きなRSSも隠さず残す。
+
+### 証拠・実行・終了
+
+```sh
+node server/test/smoothing-live-check.ts --out=data/heatmap-smoothing/follow-fix-before
+pnpm --filter @workspace/heatmap test
+pnpm --filter @workspace/heatmap typecheck
+pnpm --filter @workspace/heatmap build
+pnpm --filter @workspace/receiver typecheck
+node server/test/smoothing-live-check.ts --out=data/heatmap-smoothing/follow-fix-after
+git diff --check
+```
+
+- 比較データ：`data/heatmap-smoothing/follow-fix-comparison.json`、前後フォルダーの`real-ws.json`。検証ツール`server/test/smoothing-live-check.ts`は出力先指定と測定終了後の撮影のみ追加。
+- 画面：`follow-fix-after/NQ-dpr1.png`、`GC-dpr2.png`。実製品Canvasで価格軸・現在板・平均／自動の凡例・板背景・最新価格・指標が描かれている。右下に「ダミー隔離」を明示。通常workspaceの`workspace.jpg`は上流stoppedの板待機画面で、実板の合格証拠とは区別する。
+- 各条件の自前Chromeは`Browser.close`後に親PID消滅／9233閉鎖を確認。自前fixtureもSIGTERM後PID消滅を確認。サーバー待受消滅により自前WS接続も残らない。
+- 最終撮影Chromeと子プロセスも全PID ESRCH。**検証Chromium残存0、18812／18814／18815／9233／9234すべて閉鎖**。`follow-fix-after/cleanup.json`。
+- 既存受信・管理workflowの停止／再起動、上流追加接続、本番書込、再Publishは行っていない。再ビルド済み・未公開。
 
 ## 再開した残りの確認（2026-10-30）
 
