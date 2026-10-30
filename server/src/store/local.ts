@@ -42,6 +42,23 @@ export function ranges(input: Range[]): Range[] {
 }
 export const hourOf = (sec: number) => Math.floor(sec / 3600) * 3600;
 
+/** Update a sorted, disjoint interval set without sorting the entire history.
+ * Existing arrays are private to the store; return whether the union changed. */
+export function includeRange(input: Range[], start: number, end: number): boolean {
+  let lo = 0, hi = input.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >>> 1;
+    if (input[mid][1] < start) lo = mid + 1; else hi = mid;
+  }
+  const first = lo;
+  if (first < input.length && input[first][0] <= start && input[first][1] >= end) return false;
+  while (lo < input.length && input[lo][0] <= end) {
+    start = Math.min(start, input[lo][0]); end = Math.max(end, input[lo][1]); lo++;
+  }
+  input.splice(first, lo - first, [start, end]);
+  return true;
+}
+
 /** One serialization queue protects live append, history merge, rotation and readers. */
 export class LocalStore implements Store {
   readonly symbol: MarketSymbol;
@@ -59,6 +76,10 @@ export class LocalStore implements Store {
   private failure: Error | null = null;
   private now: () => number;
   private replaceVpFile: typeof fs.rename;
+  private coverageRevision = 1;
+  private savedCoverageRevision = 0;
+  private fileSizes = new Map<string, number>();
+  private changedFiles = new Set<string>();
   protected bounds: { fromSec: number; toSec: number } | null = null;
   private includeSecond(sec: number) {
     this.bounds = { fromSec: Math.min(this.bounds?.fromSec ?? sec, sec),
@@ -90,6 +111,10 @@ export class LocalStore implements Store {
     try { await fs.access(file); return true; }
     catch (e) { if ((e as NodeJS.ErrnoException).code === "ENOENT") return false; throw e; }
   }
+  /** Called only after a successful owned write, replacement, hydration or removal. */
+  protected filesChanged(...files: string[]) {
+    for (const file of files) this.changedFiles.add(file);
+  }
   private async atomic(file: string, bytes: Buffer | string) {
     await fs.mkdir(path.dirname(file), { recursive: true, mode: 0o700 });
     await fs.writeFile(file + ".tmp", bytes, { mode: 0o600 });
@@ -117,7 +142,7 @@ export class LocalStore implements Store {
         || [...v.book, ...v.tick].some(r => !Array.isArray(r) || r.length !== 2
           || !r.every(Number.isSafeInteger) || r[0] >= r[1])) throw Error("invalid_coverage_index");
       this.coverage = v;
-      this.recordedTicks = v.tick.map(([a, b]) => [a, b]);
+      this.recordedTicks = ranges(v.tick.map(([a, b]) => [a, b]));
     }
     await this.retention();
     // Recover actually persisted seconds even if a crash preceded index replacement.
@@ -154,14 +179,18 @@ export class LocalStore implements Store {
     signal?.throwIfAborted();
   }
   hold(start: number, end: number) {
-    for (let hour = hourOf(start); hour < end; hour += 3600) this.held.add(hour);
+    for (let hour = hourOf(start); hour < end; hour += 3600) {
+      if (!this.held.has(hour)) this.coverageRevision++;
+      this.held.add(hour);
+    }
   }
   covered(kind: Kind, second: number) {
     return this.coverage[kind].some(([a, b]) => a <= second && second < b);
   }
   markCovered(kind: Kind, start: number, end: number) {
-    this.coverage[kind] = ranges([...this.coverage[kind], [start, end]]);
-    if (kind === "tick") this.recordedTicks = ranges([...this.recordedTicks, [start, end]]);
+    const changed = includeRange(this.coverage[kind], start, end);
+    const recordedChanged = kind === "tick" && includeRange(this.recordedTicks, start, end);
+    if (changed || recordedChanged) this.coverageRevision++;
   }
   addColumns(columns: Column[]) {
     return this.run(async () => {
@@ -194,10 +223,10 @@ export class LocalStore implements Store {
   releaseHour(hour: number) {
     return this.run(async () => {
       await this.writeHour(hour);
-      this.held.delete(hour);
+      if (this.held.delete(hour)) this.coverageRevision++;
       await this.saveCoverage();
       this.pendingStats();
-      await this.refreshStats();
+      await this.refreshChangedStats();
     });
   }
   private async columnBytes(hour: number): Promise<Buffer> {
@@ -242,6 +271,7 @@ export class LocalStore implements Store {
         last = merged.lastSecond;
       }
       if (last >= 0) this.columnLastSeconds.set(hour, last);
+      this.filesChanged(file, file + ".gz");
       for (const [second] of incoming) this.markCovered("book", second, second + 1);
       this.stats.latestColumnSec = Math.max(this.stats.latestColumnSec ?? 0, incoming.at(-1)![0]);
       this.columns.delete(hour);
@@ -260,6 +290,7 @@ export class LocalStore implements Store {
         await fs.appendFile(file, await gzip(incoming.map(t => JSON.stringify(t) + "\n").join("")), { mode: 0o600 });
       }
       this.trades.delete(hour);
+      this.filesChanged(file);
       for (const t of incoming) {
         const sec = Math.floor(t.tsUs / 1_000_000);
         this.markCovered("tick", sec, sec + 1);
@@ -267,6 +298,8 @@ export class LocalStore implements Store {
     }
   }
   private async saveCoverage() {
+    if (this.savedCoverageRevision === this.coverageRevision) return;
+    const revision = this.coverageRevision;
     const persisted: Coverage = { book: [], tick: [] };
     for (const kind of ["book", "tick"] as const) {
       for (const [start, end] of kind === "tick" ? this.recordedTicks : this.coverage[kind]) {
@@ -279,6 +312,9 @@ export class LocalStore implements Store {
       persisted[kind] = ranges(persisted[kind]);
     }
     await this.atomic(path.join(this.root, "coverage.json"), JSON.stringify(persisted));
+    // markCovered/hold can run while atomic I/O is awaiting. Do not acknowledge
+    // a later revision which was not included in this snapshot.
+    this.savedCoverageRevision = revision;
   }
   private pendingStats() {
     this.stats.pendingColumns = [...this.columns.values()].reduce((a, m) => a + m.size, 0);
@@ -391,7 +427,10 @@ export class LocalStore implements Store {
           }
           await streamPipeline(Readable.from(lines()), createGzip(), createWriteStream(temporary, { mode: 0o600 }));
         }
-        for (const { file, temporary } of staged) await this.replaceVpFile(temporary, file);
+        for (const { file, temporary } of staged) {
+          await this.replaceVpFile(temporary, file);
+          this.filesChanged(file);
+        }
         // Index replacement is strictly after all data-file replacements.
         this.markCovered("tick", start, end); await this.saveCoverage();
       } finally { for (const { temporary } of staged) await fs.rm(temporary, { force: true }); }
@@ -426,17 +465,34 @@ export class LocalStore implements Store {
     for (const file of await this.allFiles()) {
       const match = file.match(/(\d{4}-\d\d-\d\d)[/\\](\d\d)\./)!;
       const hour = Date.parse(`${match[1]}T${match[2]}:00:00Z`) / 1000;
-      if (hour + 3600 <= cutoff) await fs.unlink(file);
+      if (hour + 3600 <= cutoff) { await fs.unlink(file); this.filesChanged(file); }
     }
     for (const kind of ["book", "tick"] as const) {
+      if (this.coverage[kind].some(([a]) => a < cutoff)) this.coverageRevision++;
       this.coverage[kind] = this.coverage[kind].filter(([, b]) => b > cutoff).map(([a, b]) => [Math.max(a, cutoff), b]);
     }
+    if (this.recordedTicks.some(([a]) => a < cutoff)) this.coverageRevision++;
     this.recordedTicks = this.recordedTicks.filter(([, b]) => b > cutoff).map(([a, b]) => [Math.max(a, cutoff), b]);
   }
   async refreshStats() {
     const files = await this.allFiles();
-    this.stats.files = files.length;
-    this.stats.bytes = (await Promise.all(files.map(f => fs.stat(f)))).reduce((a, s) => a + s.size, 0);
+    const sizes = await Promise.all(files.map(async f => [f, (await fs.stat(f)).size] as const));
+    this.fileSizes = new Map(sizes);
+    this.changedFiles.clear();
+    this.stats.files = this.fileSizes.size;
+    this.stats.bytes = sizes.reduce((a, [, size]) => a + size, 0);
+  }
+  private async refreshChangedStats() {
+    for (const file of this.changedFiles) {
+      let size: number | undefined;
+      try { size = (await fs.stat(file)).size; }
+      catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+      const old = this.fileSizes.get(file);
+      this.stats.bytes += (size ?? 0) - (old ?? 0);
+      if (size === undefined) this.fileSizes.delete(file); else this.fileSizes.set(file, size);
+      this.changedFiles.delete(file);
+    }
+    this.stats.files = this.fileSizes.size;
   }
   maintenance() {
     return this.run(async () => {
@@ -447,15 +503,17 @@ export class LocalStore implements Store {
         if (!this.held.has(hour) && hour + 3600 <= this.now() / 1000) {
           await this.atomic(file + ".gz", await gzip(await fs.readFile(file)));
           await fs.unlink(file);
+          this.filesChanged(file, file + ".gz");
         }
       }
-      await this.retention(); await this.saveCoverage(); await this.refreshStats();
+      await this.retention(); await this.saveCoverage(); await this.refreshChangedStats();
     });
   }
   flush() {
     return this.run(async () => {
       // Also persists an interrupted backfill's partial hours on orderly shutdown.
       for (const hour of new Set([...this.columns.keys(), ...this.trades.keys()])) await this.writeHour(hour);
+      if (this.held.size) this.coverageRevision++;
       this.held.clear();
       for (const file of await this.allFiles()) {
         if (!file.endsWith(".bin")) continue;

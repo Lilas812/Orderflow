@@ -39,6 +39,44 @@ const tick = (sec: number): Trade => ({ tsUs: sec * 1e6, recvUs: sec * 1e6, pric
 const root = () => fs.mkdtemp(path.join(os.tmpdir(), "dummy-app-storage-"));
 const hour = hourOf(Date.UTC(2026, 9, 28) / 1000);
 
+test("ダミー：incremental stats track hydration, verified expiry and empty covered-hour files", async () => {
+  const first = await root(), second = await root(), emptyDir = await root();
+  const cloud = new DummyObjects();
+  let now = (hour + 5) * 1000;
+  try {
+    const seed = new AppStore(first, cloud, "dev/", log, () => now);
+    await seed.initialize(); await seed.addColumns([col(hour + 1)]); await seed.addTrades([tick(hour + 1)]);
+    now = (hour + 3605) * 1000; await seed.flush();
+    const originalObjects = new Map([...cloud.files].map(([name, bytes]) => [name, Buffer.from(bytes)]));
+    const store = new AppStore(second, cloud, "dev/", log, () => now);
+    await store.initialize();
+    assert.equal(store.stats.files, 0);
+    assert.equal((await store.readView(hour, hour + 2)).trades.length, 1);
+    await store.maintenance(); await store.publicationSettled();
+    const hydrated = { files: store.stats.files, bytes: store.stats.bytes };
+    await store.refreshStats();
+    assert.deepEqual({ files: store.stats.files, bytes: store.stats.bytes }, hydrated);
+    assert.equal(hydrated.files, 2);
+    now += 49 * 3600 * 1000;
+    await store.maintenance(); await store.publicationSettled();
+    await store.maintenance(); await store.publicationSettled();
+    assert.equal(store.stats.files, 0); assert.equal(store.stats.bytes, 0);
+    assert.deepEqual(cloud.files, originalObjects);
+
+    const emptyStore = new AppStore(emptyDir, new DummyObjects(), "dev/", log, () => now);
+    await emptyStore.initialize();
+    // Known-empty history must still be materialized and published, not skipped.
+    const h = hourOf(now / 1000) - 3600;
+    emptyStore.markCovered("tick", h, h + 3600);
+    await emptyStore.maintenance(); await emptyStore.publicationSettled();
+    await emptyStore.maintenance(); await emptyStore.publicationSettled();
+    const incremental = { files: emptyStore.stats.files, bytes: emptyStore.stats.bytes };
+    await emptyStore.refreshStats();
+    assert.deepEqual({ files: emptyStore.stats.files, bytes: emptyStore.stats.bytes }, incremental);
+    assert.equal(incremental.files, 1); assert.ok(incremental.bytes > 0);
+  } finally { for (const dir of [first, second, emptyDir]) await fs.rm(dir, { recursive: true, force: true }); }
+});
+
 test("ダミー：公開判定はREPLIT_DEPLOYMENTだけ。NODE_ENV本番でもdev、公開はlocal指定を無視", () => {
   assert.deepEqual(storageMode({}), { app: false, prefix: "dev/" });
   assert.deepEqual(storageMode({ NODE_ENV: "production", HEATMAP_STORAGE: "app-storage" }), { app: true, prefix: "dev/" });

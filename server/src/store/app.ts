@@ -217,6 +217,7 @@ export class AppStore extends LocalStore {
       await fs.mkdir(path.dirname(destination), { recursive: true });
       await this.objects.download(this.object(kind, hour), staged);
       await fs.rename(staged, destination);
+      if (!(old && !writable)) this.filesChanged(destination);
       this.cloudStatus.downloads++;
       if (old && !writable) this.temporary.set(key, destination);
       else this.confirmed.set(this.object(kind, hour), await this.fingerprint(destination));
@@ -290,7 +291,9 @@ export class AppStore extends LocalStore {
         if (h + 3600 > this.clock() / 1000 - 48 * 3600 || this.held.has(h)
           || this.pins.has(this.key(kind, h))) continue;
         const name = this.object(kind, h);
-        if (this.confirmed.get(name) === await this.fingerprint(file)) await fs.rm(file);
+        if (this.confirmed.get(name) === await this.fingerprint(file)) {
+          await fs.rm(file); this.filesChanged(file);
+        }
       }
     });
   }
@@ -306,6 +309,7 @@ export class AppStore extends LocalStore {
             const file = this.file(kind, h) + (kind === "book" ? ".gz" : "");
             if (!await this.exists(file)) {
               await fs.mkdir(path.dirname(file), { recursive: true }); await fs.writeFile(file, gzipSync(""));
+              this.filesChanged(file);
             }
           }
       });
