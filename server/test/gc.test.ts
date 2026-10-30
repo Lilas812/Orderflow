@@ -156,6 +156,11 @@ test("GC bootstrap covers at most seven calendar days, preserves a partial first
     list: async prefix => [...objects.keys()].filter(k => k.startsWith(prefix)),
     upload: async (name, file) => { objects.set(name, await fs.readFile(file)); },
     download: async (name, file) => { await fs.writeFile(file, objects.get(name)!); },
+    downloadVersion: async (name, file) => {
+      if (!objects.has(name)) return null;
+      await fs.writeFile(file, objects.get(name)!); return "1";
+    },
+    uploadConditional: async (name, file) => { objects.set(name, await fs.readFile(file)); return "1"; },
   };
   const repo = new LongObjects(storage, "dev/", path.join(root, "objects"), "GC");
   const store = new LocalStore(path.join(root, "raw"), () => nowUs / 1000, undefined, "GC");

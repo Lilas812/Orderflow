@@ -1,6 +1,6 @@
 import { historyColumns, historyTrades } from "./decode.ts";
 import type { HistorySource } from "./client.ts";
-import { WindowUnavailableError } from "./client.ts";
+import { WindowUnavailableError, WindowSplitRequired, timeoutSplit } from "./client.ts";
 import { setTimeout as delay } from "node:timers/promises";
 import { inWindow } from "./decode.ts";
 import { hourOf } from "../store/local.ts";
@@ -80,6 +80,14 @@ export class Backfill {
     let response;
     try { response = await this.source.get(kind, start, end, this.abort.signal); }
     catch (error) {
+      if (error instanceof WindowSplitRequired) {
+        const middle = timeoutSplit(start, end);
+        if (middle !== null) {
+          this.status.splitRequests++;
+          await this.take(kind, middle, end); await this.take(kind, start, middle);
+          return;
+        }
+      }
       if (!(error instanceof WindowUnavailableError)) throw error;
       const gap = { kind, startSec: start, endSec: end, reason: error.reason };
       this.status.gaps.push(gap);

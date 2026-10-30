@@ -1,5 +1,18 @@
 export type Log = (event: string, details?: unknown) => void;
 
+/** Keep Error information (including cause) which JSON.stringify would otherwise discard. */
+export function exceptionDetails(error: unknown, depth = 0): unknown {
+  if (depth >= 4) return "[cause depth limit]";
+  if (!(error instanceof Error)) {
+    const detail = error && typeof error === "object" ? error as Record<string, unknown> : {};
+    return { message: typeof error === "string" ? error.slice(0, 2000)
+      : typeof detail.message === "string" ? detail.message.slice(0, 2000) : "non_error_exception",
+      ...(typeof detail.statusCode === "number" ? { statusCode: detail.statusCode } : {}) };
+  }
+  return { name: error.name, message: error.message.slice(0, 2000), stack: error.stack?.slice(0, 8000),
+    ...(error.cause !== undefined ? { cause: exceptionDetails(error.cause, depth + 1) } : {}) };
+}
+
 /** Apply at every output boundary, including JSON property names and Errors. */
 export function makeSanitizer(secret: string) {
   const secrets = [...new Set([secret, encodeURIComponent(secret)])].filter(Boolean);

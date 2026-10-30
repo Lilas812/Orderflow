@@ -3,9 +3,9 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { gzipSync, gunzipSync } from "node:zlib";
 import type { Objects } from "../store/objects.ts";
-import { uploadVerified } from "../store/objects.ts";
+import { uploadVerified, ObjectGenerationConflict, digest } from "../store/objects.ts";
 import type { DayData, RollData } from "./day.ts";
-import { validDate } from "./day.ts";
+import { validDate, improvesDay } from "./day.ts";
 import { validContract, type MarketSymbol } from "../../../lib/market/instruments.ts";
 
 export function validateDay(value: unknown, symbol: MarketSymbol = "NQ"): DayData {
@@ -119,12 +119,43 @@ export class LongObjects {
     validateDay(day, this.symbol);
     const json = Buffer.from(JSON.stringify(day)), compressed = gzipSync(json);
     if (json.length * 8 > this.maxBytes) throw Error("longvp_day_exceeds_memory_budget");
-    await this.temporary(async file => {
-      await fs.writeFile(file, compressed, { mode: 0o600 });
-      await uploadVerified(this.objects, this.prefix + `days/${day.tradingDate}.json.gz`, file, signal);
+    const { downloadVersion, uploadConditional } = this.objects;
+    if (!downloadVersion || !uploadConditional) throw Error("longvp_generation_support_required");
+    const name = this.prefix + `days/${day.tradingDate}.json.gz`;
+    return this.temporary(async file => {
+      const latestFile = file + ".latest", verify = file + ".verify";
+      try {
+        await fs.writeFile(file, compressed, { mode: 0o600 });
+        for (let attempt = 0; attempt < 5; attempt++) {
+          signal?.throwIfAborted();
+          try {
+            const generation = await downloadVersion.call(this.objects, name, latestFile);
+            if (generation !== null) {
+              const latest = validateDay(JSON.parse(gunzipSync(await fs.readFile(latestFile),
+                { maxOutputLength: this.maxBytes / 8 }).toString("utf8")), this.symbol);
+              if (latest.tradingDate !== day.tradingDate) throw Error("longvp_date_mismatch");
+              if (!improvesDay(latest, day)) {
+                this.remember(latest);
+                return { saved: false, generation, jsonBytes: 0, gzipBytes: 0 };
+              }
+            }
+            signal?.throwIfAborted();
+            const written = await uploadConditional.call(this.objects, name, file, generation ?? "0");
+            signal?.throwIfAborted();
+            await downloadVersion.call(this.objects, name, verify, written);
+            if (await digest(file) !== await digest(verify)) throw Error("object_verification_failed");
+            // Re-read the current generation too: an external writer may have won after our upload.
+            const current = await downloadVersion.call(this.objects, name, latestFile);
+            if (current !== written) throw new ObjectGenerationConflict();
+            this.remember(day);
+            return { saved: true, generation: written, jsonBytes: json.length, gzipBytes: compressed.length };
+          } catch (error) {
+            if (!(error instanceof ObjectGenerationConflict)) throw error;
+          }
+        }
+        throw Error("longvp_generation_conflict_exhausted");
+      } finally { await Promise.all([latestFile, verify].map(f => fs.rm(f, { force: true }))); }
     });
-    this.remember(day);
-    return { jsonBytes: json.length, gzipBytes: compressed.length };
   }
   async rolls() {
     if (!await this.objects.exists(this.prefix + "rolls.json")) return [];

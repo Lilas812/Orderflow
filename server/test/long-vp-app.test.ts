@@ -12,13 +12,91 @@ import { dayAt, dayBounds, datesBetween, edgeDifference, isRth, nextFinalizeUs, 
   weekStartUs } from "../src/long-vp/day.ts";
 import { LocalStore } from "../src/store/local.ts";
 import type { Objects } from "../src/store/objects.ts";
+import { ObjectGenerationConflict } from "../src/store/objects.ts";
 import { Metrics } from "../src/ingest/metrics.ts";
 import { readTradeRange } from "../src/vp/trade-history.ts";
 import { WindowUnavailableError } from "../src/history/client.ts";
 import { longVpRouter } from "../src/long-vp/routes.ts";
 import type { Trade } from "../src/types.ts";
+import { createLogger } from "../src/logger.ts";
 
 const noop = () => {};
+test("ダミー：日次処理は先行backfill/VPがrunningでも完了待ちせず保存する", async t => {
+  const { root, repo, objects } = await fixture(t), store = new DummyStore(path.join(root, "raw"));
+  await store.initialize();
+  const now = atET("2026-10-28", 18, 6);
+  store.markCovered("tick", now / 1e6 - 8 * 86400, now / 1e6);
+  await store.flush();
+  const logs: { event: string; details: any }[] = [];
+  let requests = 0, seq = 0;
+  const service = new AppLongVp({ repository: repo, store, metrics: new Metrics(noop),
+    nextSeq: () => ++seq, now: () => now, metadata: { roll: async () => metadata },
+    history: { get: async () => { requests++; throw Error("DUMMY-unexpected-request"); } },
+    readyStatus: () => ({ seamReady: false, backfillState: "running", vpHistoryState: "running" }),
+    log: (event, details) => logs.push({ event, details }) });
+  await service.run();
+  assert.equal(requests, 0);
+  assert.ok(objects.uploads.some(n => n.endsWith("2026-10-28.json.gz")));
+  const stages = logs.filter(r => r.event === "long_vp_stage_started").map(r => r.details.stage);
+  for (const stage of ["repository_initialize", "rolls_read", "metadata", "today_restore", "build", "save"])
+    assert.ok(stages.includes(stage), stage);
+  const diagnosticRows = logs.filter(r => r.event.startsWith("long_vp_stage_") || r.event === "long_vp_decision");
+  assert.ok(diagnosticRows.every(r => r.details.symbol === "NQ" && r.details.runId));
+  assert.ok(logs.some(r => r.event === "long_vp_decision" && r.details.action === "save"));
+  const uploads = objects.uploads.filter(n => n.endsWith("2026-10-28.json.gz")).length;
+  await service.run();
+  assert.equal(objects.uploads.filter(n => n.endsWith("2026-10-28.json.gz")).length, uploads);
+  assert.ok(logs.some(r => r.event === "long_vp_decision" && r.details.action === "skip"));
+  await service.stop();
+});
+test("ダミー：診断はimprovesDayの拒否を変えず、保存済みの行を保全する", async t => {
+  const { root, repo, objects } = await fixture(t), store = new DummyStore(path.join(root, "raw"));
+  await store.initialize();
+  const now = atET("2026-10-28", 18, 6), ts = atET("2026-10-28", 10);
+  store.markCovered("tick", now / 1e6 - 8 * 86400, now / 1e6);
+  await store.flush();
+  const a = new LongAggregate();
+  a.add(trade(ts, 400, 5), "NQZ6");
+  await repo.save(serializeDay("2026-10-28", a, [metadata], [[ts / 1e6 + 1, ts / 1e6 + 10]], now));
+  const key = "dev/longvp/NQ/days/2026-10-28.json.gz", original = Buffer.from(objects.files.get(key)!);
+  const logs: { event: string; details: any }[] = [];
+  let seq = 0;
+  const service = new AppLongVp({ repository: repo, store, metrics: new Metrics(noop),
+    nextSeq: () => ++seq, now: () => now, metadata: { roll: async () => metadata },
+    history: { get: async () => { throw Error("DUMMY-unexpected-request"); } },
+    log: (event, details) => logs.push({ event, details }) });
+  await service.run();
+  assert.deepEqual(objects.files.get(key), original);
+  assert.ok(logs.some(r => r.event === "long_vp_decision" && r.details.date === "2026-10-28"
+    && r.details.action === "preserve"));
+  assert.equal(objects.uploads.filter(n => n === key).length, 1);
+  await service.stop();
+});
+for (const failedStage of ["repository_initialize", "metadata", "build", "save"]) {
+  test(`ダミー：${failedStage}失敗を段階ログで特定し、元の例外を保持`, async t => {
+    const { root, repo } = await fixture(t), store = new DummyStore(path.join(root, "raw"));
+    await store.initialize();
+    const now = atET("2026-10-28", 18, 6), error = Error("DUMMY-raw-payload");
+    store.markCovered("tick", now / 1e6 - 8 * 86400, now / 1e6);
+    await store.flush();
+    if (failedStage === "repository_initialize") repo.initialize = async () => { throw error; };
+    if (failedStage === "save") repo.save = async () => { throw error; };
+    if (failedStage === "build") store.recordedTickCoverage = async () => { throw error; };
+    const logs: { event: string; details: any }[] = [];
+    let seq = 0;
+    const service = new AppLongVp({ repository: repo, store, metrics: new Metrics(noop),
+      nextSeq: () => ++seq, now: () => now,
+      metadata: { roll: async () => { if (failedStage === "metadata") throw error; return metadata; } },
+      history: { get: async () => { throw Error("DUMMY-unexpected-request"); } },
+      log: (event, details) => logs.push({ event, details }) });
+    await assert.rejects(service.run(), e => e === error);
+    assert.ok(logs.some(r => r.event === "long_vp_stage_finished"
+      && r.details.stage === failedStage && r.details.outcome === "failed"));
+    assert.equal(logs.at(-1)!.details.outcome, "failed");
+    assert.ok(!JSON.stringify(logs).includes(error.message));
+    await service.stop();
+  });
+}
 class DummyStore extends LocalStore { protected override async retention() {} }
 const metadata = { contract: "NQZ6", sinceUs: Date.parse("2026-09-14T07:46:50Z") * 1000 };
 function trade(us: number, price = 400, size = 2, side: "buy" | "sell" = "buy", seq = 1): Trade {
@@ -28,6 +106,8 @@ class DummyObjects implements Objects {
   files = new Map<string, Buffer>();
   downloads = 0; uploads: string[] = [];
   corrupt = false;
+  generations = new Map<string, string>();
+  counter = 0;
   async exists(name: string) { return this.files.has(name); }
   async list(prefix: string) { return [...this.files.keys()].filter(n => n.startsWith(prefix)); }
   async download(name: string, file: string) {
@@ -35,7 +115,26 @@ class DummyObjects implements Objects {
     if (!this.files.has(name)) throw Error("dummy_missing");
     await fs.writeFile(file, this.corrupt ? Buffer.from("DUMMY: corrupt") : this.files.get(name)!);
   }
-  async upload(name: string, file: string) { this.files.set(name, await fs.readFile(file)); this.uploads.push(name); }
+  async upload(name: string, file: string) {
+    this.files.set(name, await fs.readFile(file)); this.uploads.push(name);
+    this.generations.set(name, String(++this.counter));
+  }
+  async downloadVersion(name: string, file: string, generation?: string) {
+    if (!this.files.has(name)) {
+      if (generation) throw new ObjectGenerationConflict();
+      return null;
+    }
+    const current = this.generations.get(name)!;
+    if (generation && current !== generation) throw new ObjectGenerationConflict();
+    await this.download(name, file);
+    return current;
+  }
+  async uploadConditional(name: string, file: string, generation: string) {
+    const bytes = await fs.readFile(file);
+    if ((this.generations.get(name) ?? "0") !== generation) throw new ObjectGenerationConflict();
+    this.files.set(name, bytes); this.uploads.push(name);
+    const next = String(++this.counter); this.generations.set(name, next); return next;
+  }
 }
 async function fixture(t: test.TestContext) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "dummy-longvp-app-"));
@@ -43,6 +142,195 @@ async function fixture(t: test.TestContext) {
   const objects = new DummyObjects(), repo = new LongObjects(objects, "dev/", path.join(root, "tmp"));
   return { root, objects, repo };
 }
+test("ダミー：CT16:55の記録済み日次は進行中の履歴窓を待たず、後の7日再構築で埋まる", async t => {
+  const { root, repo } = await fixture(t), store = new DummyStore(path.join(root, "raw"));
+  await store.initialize();
+  let now = atET("2026-10-28", 17, 54), seq = 10, calls = 0, release!: () => void, entered!: () => void;
+  const hole = atET("2026-10-28", 17, 30) / 1e6;
+  await store.addTrades([trade(atET("2026-10-28", 17, 15), 444, 3)]);
+  store.markCovered("tick", now / 1e6 - 8 * 86400, hole);
+  store.markCovered("tick", hole + 60, now / 1e6); await store.flush();
+  const blocked = new Promise<void>(r => { release = r; });
+  const started = new Promise<void>(r => { entered = r; });
+  const service = new AppLongVp({ repository: repo, store, metrics: new Metrics(noop),
+    metadata: { roll: async () => metadata }, nextSeq: () => ++seq, log: noop, now: () => now,
+    history: { get: async () => { calls++; entered(); await blocked; return { truncated: false, rows: [] }; } } });
+  const background = service.run();
+  await started;
+  try {
+    now = atET("2026-10-28", 17, 55);
+    await service.checkpoint();
+    const partial = await repo.day("2026-10-28");
+    assert.equal(partial.complete, false);
+    assert.equal(calls, 1);
+    assert.ok(partial.gaps.some(([a, b]) => a <= hole && b >= hole + 60));
+    assert.ok(partial.gaps.some(([a, b]) => a <= now / 1e6 && b === dayBounds("2026-10-28").endUs / 1e6));
+    assert.equal(partial.vp30m.reduce((n, r) => n + r[2], 0), 3);
+    now = atET("2026-10-28", 18, 5);
+    await store.addTrades([trade(hole * 1e6, 445, 6)]);
+    store.markCovered("tick", now / 1e6 - 8 * 86400, now / 1e6); await store.flush();
+  } finally { release(); }
+  await background;
+  assert.equal((await repo.day("2026-10-28")).complete, true);
+  assert.equal((await repo.day("2026-10-28")).vp30m.reduce((n, r) => n + r[2], 0), 9);
+  await service.stop();
+});
+test("ダミー：既存タイマーがCT16:55で不完全日を保存し、CT17:05で確定する", async t => {
+  t.mock.timers.enable({ apis: ["setInterval"] });
+  const { root, repo } = await fixture(t), store = new DummyStore(path.join(root, "raw"));
+  await store.initialize();
+  let now = atET("2026-10-28", 17, 54), seq = 0;
+  store.markCovered("tick", now / 1e6 - 8 * 86400, now / 1e6); await store.flush();
+  const service = new AppLongVp({ repository: repo, store, metrics: new Metrics(noop),
+    metadata: { roll: async () => metadata }, nextSeq: () => ++seq, log: noop, now: () => now,
+    history: { get: async () => { throw Error("DUMMY: no network allowed"); } } });
+  service.start(); await service.settled();
+  assert.equal(repo.records.has("2026-10-28"), false);
+  now = atET("2026-10-28", 17, 55);
+  t.mock.timers.tick(60000); await service.settled();
+  assert.equal((await repo.day("2026-10-28")).complete, false);
+  now = atET("2026-10-28", 18, 5);
+  store.markCovered("tick", now / 1e6 - 8 * 86400, now / 1e6); await store.flush();
+  t.mock.timers.tick(60000); await service.settled();
+  assert.equal((await repo.day("2026-10-28")).complete, true);
+  await service.stop();
+});
+test("ダミー：限月切替後の16:55保存がmetadataより先でも旧限月を延長せず17:05に再集計できる", async t => {
+  const { root, repo } = await fixture(t), store = new DummyStore(path.join(root, "raw"));
+  await store.initialize();
+  let now = atET("2026-10-28", 17, 55), seq = 0, release!: () => void, entered!: () => void;
+  await repo.save(serializeDay("2026-10-27", new LongAggregate(), [metadata], [], now));
+  await store.addTrades([trade(atET("2026-10-28", 12), 450, 9)]);
+  store.markCovered("tick", now / 1e6 - 8 * 86400, now / 1e6); await store.flush();
+  const pending = new Promise<void>(r => { release = r; });
+  const started = new Promise<void>(r => { entered = r; });
+  const service = new AppLongVp({ repository: repo, store, metrics: new Metrics(noop),
+    nextSeq: () => ++seq, now: () => now, log: noop,
+    metadata: { roll: async () => { entered(); await pending;
+      return { contract: "NQH7", sinceUs: atET("2026-10-28", 11) }; } },
+    history: { get: async () => { throw Error("DUMMY: unexpected network"); } } });
+  const background = service.run();
+  await started;
+  try {
+    await service.checkpoint();
+    const early = await repo.day("2026-10-28");
+    assert.equal(early.complete, false);
+    assert.deepEqual(early.contracts, []);
+    assert.deepEqual(early.vp30m, []);
+    assert.ok(early.gaps.some(([a, b]) => a <= atET("2026-10-28", 12) / 1e6 && b > atET("2026-10-28", 12) / 1e6));
+    now = atET("2026-10-28", 18, 5);
+    store.markCovered("tick", now / 1e6 - 8 * 86400, now / 1e6); await store.flush();
+  } finally { release(); }
+  await background;
+  const repaired = await repo.day("2026-10-28");
+  assert.equal(repaired.complete, true);
+  assert.equal(repaired.vp30m.reduce((n, r) => n + r[2], 0), 9);
+  assert.ok(repaired.vp30m.every(r => repaired.contracts[r[4]].contract === "NQH7"));
+  await service.stop();
+});
+test("ダミー：checkpointは最後のmetadata観測時刻より後の旧限月を推測しない", async t => {
+  const { root, repo } = await fixture(t), store = new DummyStore(path.join(root, "raw"));
+  await store.initialize();
+  let now = atET("2026-10-28", 17, 54), seq = 0;
+  await store.addTrades([trade(atET("2026-10-28", 17, 15), 444, 3),
+    trade(now + 30e6, 450, 9)]);
+  store.markCovered("tick", now / 1e6 - 8 * 86400, now / 1e6 + 60); await store.flush();
+  const service = new AppLongVp({ repository: repo, store, metrics: new Metrics(noop),
+    nextSeq: () => ++seq, now: () => now, log: noop, metadata: { roll: async () => metadata },
+    history: { get: async () => { throw Error("DUMMY: unexpected network"); } } });
+  await service.run();
+  const observedUntil = now;
+  now = atET("2026-10-28", 17, 55);
+  await service.checkpoint();
+  const early = await repo.day("2026-10-28");
+  assert.equal(early.complete, false);
+  assert.ok(early.contracts.every(c => c.toSec <= observedUntil / 1e6));
+  assert.equal(early.vp30m.reduce((n, r) => n + r[2], 0), 3);
+  assert.ok(early.gaps.some(([a, b]) => a <= observedUntil / 1e6 && b > now / 1e6));
+  now = atET("2026-10-28", 18, 1);
+  store.markCovered("tick", now / 1e6 - 8 * 86400, now / 1e6); await store.flush();
+  await service.run(); // Fresh metadata now confirms the entire finished day.
+  await service.checkpoint();
+  const immature = await repo.day("2026-10-28");
+  assert.equal(immature.complete, false); // No complete file before CT17:05.
+  assert.equal(immature.vp30m.reduce((n, r) => n + r[2], 0), 12);
+  now = atET("2026-10-28", 18, 5);
+  await service.checkpoint();
+  assert.equal((await repo.day("2026-10-28")).complete, true);
+  await service.stop();
+});
+test("ダミー：古いLRUよりクラウド最新を優先し、初回作成競合でも外部の増量分を保つ", async t => {
+  const { root, repo, objects } = await fixture(t);
+  const external = new LongObjects(objects, "dev/", path.join(root, "external"));
+  const make = (size: number) => {
+    const a = new LongAggregate(); a.add(trade(atET("2026-10-28", 10), 400, size), "NQZ6");
+    return serializeDay("2026-10-28", a, [metadata], [], atET("2026-10-28", 18, 5));
+  };
+  await repo.save(make(5));
+  await external.save(make(10));
+  assert.equal((await repo.save(make(6))).saved, false);
+  assert.equal((await repo.day("2026-10-28")).vp30m[0][2], 10);
+  const original = objects.uploadConditional.bind(objects);
+  let raced = false;
+  objects.uploadConditional = async (name, file, generation) => {
+    if (!raced) { raced = true; await external.save(make(20)); }
+    return original(name, file, generation);
+  };
+  assert.equal((await repo.save(make(15))).saved, false);
+  assert.equal((await repo.day("2026-10-28")).vp30m[0][2], 20);
+  // The absent-object precondition is also a real CAS (ifGenerationMatch=0).
+  const other = { ...make(30), tradingDate: "2026-10-29", ...{
+    startSec: dayBounds("2026-10-29").startUs / 1e6, endSec: dayBounds("2026-10-29").endUs / 1e6,
+    contracts: [], bars1m: [], vp30m: [], gaps: [] } };
+  raced = false;
+  objects.uploadConditional = async (name, file, generation) => {
+    if (!raced) { raced = true; assert.equal(generation, "0"); await external.save(other); }
+    return original(name, file, generation);
+  };
+  assert.equal((await repo.save(other)).saved, true);
+  assert.ok(raced);
+});
+test("ダミー：競合しても候補が最新より良ければ世代を読み直して保存、連続競合は有限で中止", async t => {
+  const { root, repo, objects } = await fixture(t);
+  const external = new LongObjects(objects, "dev/", path.join(root, "external"));
+  const make = (size: number) => {
+    const a = new LongAggregate(); a.add(trade(atET("2026-10-28", 10), 400, size), "NQZ6");
+    return serializeDay("2026-10-28", a, [metadata], [], atET("2026-10-28", 18, 5));
+  };
+  await repo.save(make(5));
+  const original = objects.uploadConditional.bind(objects);
+  let raced = false;
+  objects.uploadConditional = async (name, file, generation) => {
+    if (!raced) { raced = true; await external.save(make(7)); }
+    return original(name, file, generation);
+  };
+  assert.equal((await repo.save(make(10))).saved, true);
+  assert.equal((await repo.day("2026-10-28")).vp30m[0][2], 10);
+  let conflicts = 0;
+  objects.uploadConditional = async () => { conflicts++; throw new ObjectGenerationConflict(); };
+  await assert.rejects(repo.save(make(12)), /conflict_exhausted/);
+  assert.equal(conflicts, 5);
+  assert.equal((await repo.day("2026-10-28")).vp30m[0][2], 10);
+  assert.deepEqual(await fs.readdir(path.join(root, "tmp")), []);
+});
+test("ダミー：GC long_vp_failedは元の例外・cause・stackを残しAPIキーは伏せる", async t => {
+  const { root, objects } = await fixture(t), store = new DummyStore(path.join(root, "raw"));
+  await store.initialize();
+  const repo = new LongObjects(objects, "dev/", path.join(root, "gc"), "GC");
+  const lines: string[] = [], logger = createLogger("DUMMY-key", line => lines.push(line));
+  const error = Error("original failure DUMMY-key", { cause: Error("original cause") });
+  const service = new AppLongVp({ repository: repo, store, metrics: new Metrics(noop),
+    metadata: { roll: async () => { throw error; } }, nextSeq: () => 1,
+    now: () => atET("2026-10-28", 10), history: { get: async () => { throw Error("unexpected"); } },
+    log: (event, fields) => logger(event, { ...(fields as object), symbol: "GC" }) });
+  service.start(); await service.settled(); await service.stop();
+  const failure = lines.map(s => JSON.parse(s)).find(r => r.event === "long_vp_failed");
+  assert.equal(failure.details.symbol, "GC");
+  assert.equal(failure.details.error.message, "original failure [REDACTED]");
+  assert.equal(failure.details.error.cause.message, "original cause");
+  assert.ok(failure.details.error.stack.includes("original failure"));
+  assert.ok(!lines.join("").includes("DUMMY-key"));
+});
 test("ダミー：長期VPは休止を終了側に含め、週末・DST・CT17:05の確定・RTHを区別", () => {
   assert.equal(dayAt(atET("2026-10-28", 17, 59)), "2026-10-28");
   assert.equal(dayAt(atET("2026-10-28", 18)), "2026-10-29");

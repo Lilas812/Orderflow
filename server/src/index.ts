@@ -18,7 +18,6 @@ import path from "node:path";
 import { productionAccumulation, accumulationEnabled, AppLongVp } from "./long-vp/app-service.ts";
 import { LongRest } from "./long-vp/rest.ts";
 import { LongObjects } from "./long-vp/objects.ts";
-import { setTimeout as delay } from "node:timers/promises";
 import type { Server } from "node:http";
 import { SettingsTrace } from "./settings/trace.ts";
 import { createGcRuntime } from "./gc-runtime.ts";
@@ -62,18 +61,9 @@ async function main() {
     longVp = new AppLongVp({ repository: new LongObjects(objects, mode.prefix, path.join(root, "longvp-working")),
       store: pipeline.store, history: pipeline.client, metrics: pipeline.historyMetrics,
       metadata: new LongRest(config.apiKey, historyRequest), nextSeq: () => receiver.nextSequence(), log: nqLog,
-      ready: async signal => {
-        if (!productionAccumulation(process.env)) return;
-        while (pipeline.status().seamL === null) await delay(1000, undefined, { signal });
-        let onAbort: () => void = () => {};
-        const interrupted = new Promise<never>((_resolve, reject) => {
-          onAbort = () => reject(signal.reason);
-          if (signal.aborted) onAbort(); else signal.addEventListener("abort", onAbort, { once: true });
-        });
-        try { await Promise.race([Promise.all([pipeline.backfill.settled(), pipeline.vpHistory.settled()]), interrupted]); }
-        finally { signal.removeEventListener("abort", onAbort); }
-        signal.throwIfAborted();
-      } });
+      readyStatus: () => ({ seamReady: pipeline.backfill.status.endSec !== null,
+        backfillState: pipeline.backfill.status.state, vpHistoryState: pipeline.vpHistory.state.state }),
+    });
   } else log("long_vp_disabled", longStatus());
   const upstream = new Upstream({ apiKey: config.apiKey, receiver: new MarketReceiver(receiver, gc.receiver), log, symbols: ["NQ", "GC"] });
   const hub: Hub = new Hub({

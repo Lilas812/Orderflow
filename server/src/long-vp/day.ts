@@ -78,11 +78,12 @@ export function mergeAggregates(a: LongAggregate, b: LongAggregate) {
   return result;
 }
 export function serializeDay(date: string, aggregate: LongAggregate, timeline: Roll[],
-  gaps: [number, number][], nowUs: number, provisional = false, recordContracts = false): DayData {
+  gaps: [number, number][], nowUs: number, provisional = false, recordContracts = false,
+  verifiedContracts?: DayData["contracts"]): DayData {
   const { startUs, endUs } = dayBounds(date);
-  const contracts: DayData["contracts"] = [];
+  const contracts: DayData["contracts"] = verifiedContracts?.map(c => ({ ...c })) ?? [];
   const sorted = timeline.slice().sort((a, b) => a.sinceUs - b.sinceUs);
-  for (let i = 0; i < sorted.length; i++) {
+  for (let i = 0; verifiedContracts === undefined && i < sorted.length; i++) {
     const from = Math.max(startUs, sorted[i].sinceUs), to = Math.min(endUs, sorted[i + 1]?.sinceUs ?? endUs);
     if (from < to) contracts.push({ contract: sorted[i].contract, fromSec: from / 1e6, toSec: to / 1e6 });
   }
@@ -113,6 +114,15 @@ export function serializeDay(date: string, aggregate: LongAggregate, timeline: R
         ? [v.startUs / 1e6, v.price, v.buy, v.sell, index(v.contract, v.startUs), v.undirected]
         : [v.startUs / 1e6, v.price, v.buy, v.sell, index(v.contract, v.startUs)]),
     gaps, complete: !provisional && gaps.length === 0, builtAtUs: nowUs };
+}
+export function improvesDay(old: DayData, next: DayData) {
+  if (next.gaps.some(([a, b]) => !old.gaps.some(([x, y]) => x <= a && b <= y))) return false;
+  const key = (d: DayData, r: DayData["vp30m"][number]) => `${r[0]}:${r[1]}:${d.contracts[r[4]].contract}`;
+  const rows = new Map(next.vp30m.map(r => [key(next, r), r]));
+  return old.vp30m.every(r => {
+    const n = rows.get(key(old, r));
+    return n !== undefined && n[2] >= r[2] && n[3] >= r[3] && (n[5] ?? 0) >= (r[5] ?? 0);
+  });
 }
 export function edgeDifference(from: string, to: string, atUs: number,
   before: { tsUs: number; price: number } | null, after: { tsUs: number; price: number } | null): RollData {

@@ -10,6 +10,13 @@ export class WindowUnavailableError extends Error {
   readonly reason: string;
   constructor(reason: string) { super(reason); this.name = "WindowUnavailableError"; this.reason = reason; }
 }
+/** Split on minute boundaries; never create a new child shorter than one minute. */
+export function timeoutSplit(start: number, end: number) {
+  return end - start >= 120 ? start + Math.floor((end - start) / 120) * 60 : null;
+}
+export class WindowSplitRequired extends WindowUnavailableError {
+  constructor() { super("network_or_timeout"); }
+}
 export interface HistoryNetworkStats {
   requests: number; fetchedBookRows: number; fetchedTradeRows: number;
   errors: number; retries: number; exhaustedRequests: number;
@@ -40,9 +47,13 @@ export class HistoryClient implements HistorySource {
     const url = new URL(`https://api.tick-stream.xyz/v1/history/${kind === "book" ? "book" : "ticks"}`);
     for (const [k, v] of Object.entries({ symbol: this.symbol, start, end, limit: 500000 })) url.searchParams.set(k, String(v));
     let failures = 0;
+    let requestStarted = performance.now();
     const retryFailure = async (reason: string) => {
       this.stats.errors++; this.stats.lastError = reason;
-      this.log("history_request_failed", { kind, start, end, reason, failure: ++failures });
+      this.log("history_request_failed", { symbol: this.symbol, kind, start, end, reason,
+        elapsedMs: performance.now() - requestStarted, failure: ++failures });
+      if (reason === "network_or_timeout" && timeoutSplit(start, end) !== null)
+        throw new WindowSplitRequired();
       if (failures >= 3) {
         this.stats.exhaustedRequests++;
         throw new WindowUnavailableError(reason);
@@ -53,6 +64,7 @@ export class HistoryClient implements HistorySource {
     while (true) {
       signal.throwIfAborted();
       let response: Response;
+      requestStarted = performance.now();
       this.stats.requests++;
       try {
         response = await this.request(url, { headers: { Authorization: `Bearer ${this.apiKey}` },
@@ -67,7 +79,8 @@ export class HistoryClient implements HistorySource {
           await retryFailure(`http_${response.status}`); continue;
         }
         this.stats.errors++; this.stats.lastError = `http_${response.status}`;
-        this.log("history_request_failed", { kind, start, end, reason: this.stats.lastError });
+        this.log("history_request_failed", { symbol: this.symbol, kind, start, end,
+          elapsedMs: performance.now() - requestStarted, reason: this.stats.lastError });
         if (response.status === 429) {
           const retry = response.headers.get("retry-after");
           const seconds = retry !== null && /^\d+(?:\.\d+)?$/.test(retry) ? Number(retry) * 1000

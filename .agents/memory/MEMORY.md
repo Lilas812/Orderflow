@@ -17,7 +17,7 @@
 - [設定の運用条件](settings-decisions.md) — 最新列と表示列は参照共有。通信失敗を未保存と扱わず、初期値を自動上書きしない。
 - [App Storageの運用指定](app-storage-decisions.md) — 再試行・再DL照合、古い範囲のディスク一時保存、破損設定の退避を維持する。
 - [artifactの経路検証](artifact-routing-cautions.md) — TOML検証成功だけでは環境別pathsのサポートや実際の転送を確認できない。
-- [長期VPの運用条件](long-vp-decisions.md) — 新正本優先・開発WS禁止・既存保存保護。CT17:05以降の確定は矛盾解消の例外承認。
+- [長期VPの運用条件](long-vp-decisions.md) — 新正本優先・開発WS禁止・既存保存保護。CT16:55の不完全保存とCT17:05以降の成熟後再集計。
 - [Phase 14の表示補足](phase14-display-decisions.md) — 短命板のフェードは積、数字なしは帯もなし、初期値復帰は非表示2項目も含む。
 - [履歴鮮度の隔離検証](history-isolation-evidence.md) — 初期chunkのcoverage変化を後保存の鮮度と分離し、回復操作ごとに新規状態でdraw入力まで確認する。
 - [専用FOOTPRINTの範囲](footprint-decisions.md) — 専用タブ・直近2時間・不完全性の明示。非表示検証では観測自体の再集計と表示区間のずれに注意。

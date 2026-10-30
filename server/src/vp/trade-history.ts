@@ -1,6 +1,6 @@
 import { setTimeout as delay } from "node:timers/promises";
 import type { HistorySource } from "../history/client.ts";
-import { WindowUnavailableError } from "../history/client.ts";
+import { WindowUnavailableError, WindowSplitRequired, timeoutSplit } from "../history/client.ts";
 import { historyTrades, inWindow } from "../history/decode.ts";
 import type { LocalStore } from "../store/local.ts";
 import type { Metrics } from "../ingest/metrics.ts";
@@ -52,6 +52,13 @@ export async function readTradeRange(options: {
     let response;
     try { state.apiWindows++; response = await source.get("tick", start, end, signal); }
     catch (error) {
+      if (error instanceof WindowSplitRequired) {
+        const middle = timeoutSplit(start, end);
+        if (middle !== null) {
+          state.splitRequests++;
+          await take(start, middle); await take(middle, end); return;
+        }
+      }
       if (!(error instanceof WindowUnavailableError)) throw error;
       state.gaps.push({ startSec: start, endSec: end, reason: error.reason }); return;
     } finally { state.apiMs += schedule.now() - before; }
@@ -96,6 +103,30 @@ export async function readTradeRange(options: {
           } else await take(segment.start, segment.end);
         }
       });
+    }
+    return state;
+  } finally { await reader.close(); }
+}
+
+/** Daily snapshots never join the network-fill queue, wait for maturity, or call the API. */
+export async function readRecordedTradeRange(options: {
+  store: LocalStore; start: number; end: number; signal: AbortSignal; visit(t: Trade): void;
+}) {
+  const state = historyProgress(), reader = options.store.tradeReadSession(options.signal);
+  try {
+    const coverage = await options.store.recordedTickCoverage();
+    for (let a = options.start; a < options.end; a += 900) {
+      for (const segment of coverageSegments(coverage, a, Math.min(a + 900, options.end))) {
+        options.signal.throwIfAborted();
+        if (!segment.covered) {
+          state.gaps.push({ startSec: segment.start, endSec: segment.end, reason: "not_recorded" });
+        }
+        // Partially received rows are still useful; missing coverage must remain a gap.
+        const before = performance.now();
+        await reader.visit(segment.start, segment.end, t => { state.importedTrades++; options.visit(t); });
+        state.fileReadMs += performance.now() - before;
+        state.fileWindows++; if (segment.covered) state.fileSeconds += segment.end - segment.start;
+      }
     }
     return state;
   } finally { await reader.close(); }

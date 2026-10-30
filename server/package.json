@@ -11,6 +11,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@google-cloud/storage": "7.22.0",
     "@replit/object-storage": "^1.0.0",
     "express": "5.3.0",
     "pg": "^8.23.1",

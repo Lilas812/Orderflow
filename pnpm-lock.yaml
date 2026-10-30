@@ -473,6 +473,9 @@ importers:
 
   server:
     dependencies:
+      '@google-cloud/storage':
+        specifier: 7.22.0
+        version: 7.22.0
       '@replit/object-storage':
         specifier: ^1.0.0
         version: 1.0.0

@@ -1,12 +1,11 @@
 import path from "node:path";
-import { setTimeout as delay } from "node:timers/promises";
 import { Receiver } from "./ingest/receiver.ts";
 import { Pipeline } from "./pipeline.ts";
 import { Hub } from "./hub/hub.ts";
 import { AppStore } from "./store/app.ts";
 import { LongObjects } from "./long-vp/objects.ts";
 import { LongRest } from "./long-vp/rest.ts";
-import { AppLongVp, accumulationEnabled, productionAccumulation } from "./long-vp/app-service.ts";
+import { AppLongVp, accumulationEnabled } from "./long-vp/app-service.ts";
 import { statusSnapshot } from "./status/app.ts";
 import type { Objects } from "./store/objects.ts";
 import type { Upstream } from "./upstream/connection.ts";
@@ -33,12 +32,8 @@ export function createGcRuntime(options: {
       store: pipeline.store, history: pipeline.client, metrics: pipeline.historyMetrics,
       metadata: new LongRest(options.key, options.request, undefined, "GC", c => { receiver.currentContract = c; }),
       nextSeq: () => receiver.nextSequence(), log,
-      ready: async signal => {
-        if (!productionAccumulation(options.env)) return;
-        while (pipeline.status().seamL === null) await delay(1000, undefined, { signal });
-        await Promise.all([pipeline.backfill.settled(), pipeline.vpHistory.settled()]);
-        signal.throwIfAborted();
-      },
+      readyStatus: () => ({ seamReady: pipeline.backfill.status.endSec !== null,
+        backfillState: pipeline.backfill.status.state, vpHistoryState: pipeline.vpHistory.state.state }),
     });
   }
   const hub: Hub = new Hub({
