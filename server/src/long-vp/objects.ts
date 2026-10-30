@@ -22,9 +22,10 @@ export function validateDay(value: unknown, symbol: MarketSymbol = "NQ"): DayDat
   }
   for (const [rows, length, quantum] of [[d.bars1m, 8, 60], [d.vp30m, 5, 1800]] as const) {
     for (const row of rows) {
-      if (!Array.isArray(row) || row.length !== length || !row.every(Number.isSafeInteger)
+      if (!Array.isArray(row) || (row.length !== length && row.length !== length + 1) || !row.every(Number.isSafeInteger)
         || row[0] % quantum !== 0 || row[0] < d.startSec || row[0] >= d.endSec
-        || row.at(-1)! < 0 || row.at(-1)! >= d.contracts.length) throw Error("invalid_longvp_rows");
+        || row[length - 1]! < 0 || row[length - 1]! >= d.contracts.length
+        || (row[length] ?? 0) < 0) throw Error("invalid_longvp_rows");
       if (length === 8 && (row[5]! < 0 || row[6]! < 0 || row[2] < Math.max(row[1], row[3], row[4])
         || row[3] > Math.min(row[1], row[2], row[4]))) throw Error("invalid_longvp_bar");
       if (length === 5 && (row[2] < 0 || row[3] < 0)) throw Error("invalid_longvp_volume");

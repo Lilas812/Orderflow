@@ -1,6 +1,6 @@
 import { MAX_CACHE_SECONDS, US_PER_SECOND, type Trade } from "../domain.ts";
 
-export interface TradeCell { secondUs: number; price: number; buy: number; sell: number; }
+export interface TradeCell { secondUs: number; price: number; buy: number; sell: number; undirected?: number; }
 export interface LastPrice { secondUs: number; price: number; }
 interface Bucket {
   records: Map<string, Trade>;
@@ -128,7 +128,9 @@ export class TradeAggregator {
         for (const t of bucket.records.values()) {
           if (t.tsUs > cutoffUs) continue;
           const cell = partial.get(t.price) ?? { secondUs: second, price: t.price, buy: 0, sell: 0 };
-          cell[t.side] += t.size; partial.set(t.price, cell);
+          if (t.side === "unknown") cell.undirected = (cell.undirected ?? 0) + t.size;
+          else cell[t.side] += t.size;
+          partial.set(t.price, cell);
         }
         result.push(...partial.values());
       }
@@ -190,7 +192,8 @@ export class TradeAggregator {
     bucket.records.set(id, trade); bucket.last = trade;
     let cell = bucket.cells.get(trade.price);
     if (!cell) { cell = { secondUs: second, price: trade.price, buy: 0, sell: 0 }; bucket.cells.set(trade.price, cell); }
-    cell[trade.side] += trade.size;
+    if (trade.side === "unknown") cell.undirected = (cell.undirected ?? 0) + trade.size;
+    else cell[trade.side] += trade.size;
     this.count++; this.revisionValue++;
   }
 }

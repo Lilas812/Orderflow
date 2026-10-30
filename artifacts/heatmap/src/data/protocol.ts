@@ -84,7 +84,7 @@ export function decodeTrades(value: unknown): Trade[] {
       seq: numberField(record, "seq"),
       price: numberField(record, "price"),
       size: numberField(record, "size"),
-      side: record.side === "buy" || record.side === "sell" ? record.side : (() => { throw new Error("invalid_trade_side"); })(),
+      side: record.side === "buy" || record.side === "sell" || record.side === "unknown" ? record.side : (() => { throw new Error("invalid_trade_side"); })(),
     };
     if (![trade.tsUs, trade.recvUs, trade.price, trade.seq].every(Number.isSafeInteger)
       || !Number.isInteger(trade.size) || trade.size < 1 || trade.size > 0xffffffff) {

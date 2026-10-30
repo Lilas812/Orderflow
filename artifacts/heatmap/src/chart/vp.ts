@@ -8,8 +8,8 @@ export function vpRows(levels: Iterable<VpLevel>, view: Viewport, height: number
   area: ReturnType<typeof valueArea>) {
   const totals = new Float64Array(height), colors = new Uint8Array(height);
   let pocVolume = 0;
-  for (const [price, buy, sell] of levels) {
-    if (price === area.poc) pocVolume = buy + sell;
+  for (const [price, buy, sell, u = 0] of levels) {
+    if (price === area.poc) pocVolume = buy + sell + u;
     const top = priceTicksToY(price + 0.5, view, height), bottom = priceTicksToY(price - 0.5, view, height);
     if (bottom <= 0 || top >= height) continue;
     // Shared floored boundaries partition expanded rows without double-counting.
@@ -20,7 +20,7 @@ export function vpRows(levels: Iterable<VpLevel>, view: Viewport, height: number
     }
     const color = price === area.poc ? 2
       : area.low !== null && price >= area.low && price <= area.high! ? 1 : 0;
-    for (let y = first; y <= last; y++) { totals[y] += buy + sell; colors[y] = Math.max(colors[y], color); }
+    for (let y = first; y <= last; y++) { totals[y] += buy + sell + u; colors[y] = Math.max(colors[y], color); }
   }
   const maximum = totals.reduce((a, b) => Math.max(a, b), 0);
   return { totals, colors, maximum, scaleMaximum: height < view.priceSpanTicks ? maximum : pocVolume };

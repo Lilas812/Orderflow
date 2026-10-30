@@ -7,7 +7,7 @@ export interface Trade {
   seq: number;
   price: PriceTicks;
   size: number;
-  side: "buy" | "sell";
+  side: "buy" | "sell" | "unknown";
   /** GC only: explicit record identity or verified current LIVE identity; absent = unknown. */
   contract?: string;
 }

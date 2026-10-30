@@ -1,6 +1,89 @@
 # GC購入約定の隔離取り込み
 
-**実データ取り込み済み（隔離保存・B/Aのみ製品集計へ採用）。本番未反映。**
+**実データ取り込み済み（隔離保存・B/A/Nを総量へ採用）。本番未反映。**
+
+## 方向不明数量の修正（2026-10-30、現行結果）
+
+ユーザー指定によりB/Aだけを採用した初回方針を改めた。**以下の初回記録のN除外・旧active hash・旧数量は履歴であり、現在値ではない。**
+
+### 全量・価格別・再実行
+
+| 項目 | 初回 | 修正後 |
+|---|---:|---:|
+| 標準GC採用件数 | 2,014,936 | **2,050,826** |
+| 総枚数 | 2,915,632 | **2,966,996** |
+| 買い | 1,454,155 | 1,454,155 |
+| 売り | 1,461,477 | 1,461,477 |
+| 総量に含む方向不明 | 0 | **51,364（35,890件）** |
+| スプレッド | 103,620件・別保全 | 103,620件・別保全、全指標から除外 |
+
+26CSVの検証済みステージと21限月について、全行の件数・枚数・価格加重合計・価格別のbuy/sell/N数量が一致。元CSV ordinalの厳密増加と、入力ファイル／side群ごとの順序付きhashで、内容・順序・同内容別約定の多重度を照合した。イベント時刻ではsortしないため巻き戻りも維持する。
+
+日次CVD／VWAP・LONG VP・全量FOOTPRINTを照合。FOOTPRINTは実`FootprintStore`を1時間ずつ使い、全件・全価格・全5秒足の総量=買+売+不明、デルタ=買−売を確認した。GCZ26は2,009,413件・2,908,774枚（うちN26,698枚）、290,128非空5秒足、2,695価格が一致。他20限月も合格。保存元90ファイルと前回NQ activeは不変。
+
+GCZ26の購入区間全体のVWAP（**未調整、同限月**）：
+- 修正前：41,398.14605513526 ticks＝4,139.814605513526。
+- 修正後：41,398.292500207994 ticks＝4,139.8292500208。
+- 元の全B/A/NのΣpriceTicks×size÷Σsizeに一致。異なる限月をまとめた価格平均を市場VWAPとは呼ばない。
+
+同じZIP・UTC範囲・`all-outright-v2`で再実行し、全出力hashを照合して`already_imported`。再集計・行追加なし。旧B/A-onlyとは採用方針キーを分けているので旧キャッシュを誤採用しない。
+
+### 変更範囲
+
+- `server/src/import/databento-install.ts::mergeIncoming/replaceHour/install`：B/AとNの分離ファイルを元CSV順にストリーム合流。Nも区間置換へ採用。原本・ステージ・スプレッドは変更しない。正常・例外・中断のいずれもstreamをfinallyで閉じる。
+- `server/tools/import-databento.ts`：採用方針キーを追加し、新世代へ再生成。
+- `server/src/import/databento-rebuild.ts`：Nを価格別数量・VWAP分母へ含める。
+- `server/src/types.ts`／フロント`domain.ts`／`data/protocol.ts`：side=unknownを受理。既知B/Aは従来のまま。
+- `server/src/vp/state.ts`、フロント`data/daily.ts`・`data/vp.ts`・`chart/vp.ts`：Nを独立数量で保存し、VP・POC・VA・VWAP・総量へ加算。CVDはbuy−sellのまま。限月不明数量とは別。
+- `server/src/long-vp/{aggregate,day,objects,app-service}.ts`、フロント`long-vp/model.ts`：Nの保存・読取・merge・価格別合計・週VWAP。週CVDは既知buy−sellのみ。Nを失う再構築は保護判定で拒否する。
+- フロント`data/trade-aggregate.ts`、`footprint/model.ts`：Nを独立列で保持。フットプリント総量・価格POCに含め、deltaと買売セルへ配分しない。バブルは従来のbuy+sellで判定・着色し、Nから買売色を作らない。価格ラインは実約定価格を保持する。
+
+任意のN数量をVP／日次／長期の配列末尾へ追加。旧長の配列も新フロントは受理し、B/Aだけの出力長は変えない。**旧フロントはN拡張配列を受理できないため、公開する場合は対応フロントとサーバーが必要。今回は未公開。**
+
+### 保存先・再現手順・戻し方
+
+現行世代：`data/databento-gc-import/generations/c13e46e4-f6c6-4eda-898e-cb5a2c79146b/`。新active SHA-256：
+`95ce0121a6061c09744f72a532d62033c878187c33298e82d7b995a912e8f988`
+
+旧世代`cc7d31d6-b492-4995-89b0-4f8041fceed4`は残り、import.json hashは旧activeと同じ`015b894c9e62e5b5af449811a1a1f4270a459d570af3eff8e6187cbc7c8cd667`。戻す必要があれば、旧manifestと出力hashを照合して**隔離activeだけ**を旧manifestへ原子的に切り替える。今回は戻していない。
+
+```sh
+node server/tools/import-databento.ts --zip=attached_assets/GLBX-20261030-JWXTRBXPJQ_1793362749512.zip --out=data/databento-gc-import --base=data
+node server/test/databento-full-check.ts --out=data/databento-gc-import
+node server/test/databento-footprint-check.ts --out=data/databento-gc-import
+# 同じimportコマンド再実行：already_imported、全hash不変
+node --test server/test/unknown-side.test.ts
+```
+
+関連server試験34件と追加3件、保護判定を含む追加関連32件、フロント177件、両型検査・製品buildに合格。最初の追加試験はテスト側のメソッド名誤りで1件失敗し、実在する`appendLive`へ修正後3件合格。製品処理の失敗ではない。
+
+関連仕様SHA-256：
+```
+b4ae18f2665f9c88dc7e954d344c403f838529e23454368305105870b1263128  docs/DATABENTO_IMPORT_SPEC.md
+2e6ba512e738439a150191e45c4e37de23a2b03c6e30b39967e95607a9daa287  docs/SPEC.md
+```
+SPECでは内部side型と方向不明の総量／方向計算の扱いだけを追記した。上流TICK STREAM自体の提供形式は変更していない。
+
+### 「完全値」の範囲
+
+**購入CSVに含まれる標準GC outrightの数量・VWAPとしては全量値になった。Nの取りこぼしは解消した。** 買売方向が不明な量を含むため、デルタ・CVDは引き続き既知方向分のみ。
+
+**購入対象期間／CME全体の完全性まで保証したものではない。** 10/24の供給condition=degraded、未提供の日時、最初のセッション冒頭2時間、最後のセッション残り、購入期間外の約定を作らない。これらの欠け・途中集計表示は維持。Nがあるという理由だけの出来高coverage欠けは解消するが、板は未補修。NQの前回隔離データは今回再生成していない。
+
+### 今回の実画面・終了確認
+
+固定snapshot GCZ26・2026-10-01 14:35 UTC、dummy設定・板なしの実製品読取／WS／Canvas経路で確認した（実ライブではない）。
+
+- HEATMAP：全19,758点のAPI／DailyStateの累積が、買36,550／売36,392／N789＝**73,731枚**、CVD **+158**、VWAP **4197.107474467999**で一致。修正前72,942枚との差789がN分。VP・VWAP・CVDの実Canvas表示を確認。capture `jwqi3t`／`vtbyeg`。
+- FOOTPRINT：14:33:25 UTCの5秒足が買17／売14／N1＝**32枚**、delta **+3**。実debugと画面の`VOL32 / Δ+3`が一致。capture `e55vvq`。Nを買17や売14へ混ぜていない。
+- LONG VP：10/01のGC API200。vp30m 5,177行とbars1m 1,377行の双方でN1,232枚。実buildSeriesは総量**121,743枚**（既知120,511＋N1,232）、VWAP 41,983.897086485464 ticks、CVD+737で一致。画面は10/20〜10/30と当日503警告を確認したが、**今回の10/01のCanvas再確認は未完**（API／実モデル計算は確認済み）。capture `1cfqq0`。
+- バブルは方向付き3枚だけが2個の買／売bubbleになり、N10枚の価格にはbubbleが出ないことを実`tradeGeometry`単体試験で確認した。今回の実購入画面上でNの買売色除外を直接確認するところまでは未了。欠け／途中集計表示・当日503・板0を正常な実ライブとは扱わない。
+
+数量・画面・終了のJSONは`data/databento-gc-import/unknown-ui/`。PNGの指定フォルダ保存はできず、上記観察capture IDを記録。通常プレビューの`unknown-workspace-preview.jpg`は板待機表示であり、購入データの検証画像に代用しない。
+
+Chrome PID15892のcontext.close後の残存も所有profileの親子だけを終了し、全PIDのESRCHとhub接続0を確認した。追加プレビュー撮影用Chrome PID17353の親子もESRCH。最後に隔離サーバーPID15841をSIGTERMで終了、ログ`stopped:true, connected:0`、PID消滅、18814／9233閉鎖、検証Chrome残存0を確認した。証拠は`unknown-ui/cleanup-evidence.json`、`unknown-preview-closed.json`、`unknown-cleanup.json`。
+
+本番書込・再Publish・既存受信の停止／再起動・開発上流接続追加は行っていない。HEATMAP平均化等の保留差分も保持している。
 
 2026-10-30。ユーザーの「GCの取り込みを先にする」に従い、HEATMAP平均化・平滑化の差分・合格結果を保持して保留し、GCを先行した。
 

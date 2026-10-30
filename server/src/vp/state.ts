@@ -16,7 +16,7 @@ export function sessionStartSec(second: number): number {
     ? candidate : candidate + 3600;
 }
 
-export type VpLevel = [number, number, number];
+export type VpLevel = [number, number, number, number?];
 export interface VpMessage {
   type: "vp" | "vpUpdate"; sessionStartSec: number; upToSec: number;
   loading?: boolean; levels: VpLevel[];
@@ -30,8 +30,9 @@ export class VolumeProfile {
   private end: number;
   buy = 0;
   sell = 0;
-  private levels = new Map<number, { buy: number; sell: number; revision: number }>();
-  private seconds = new Map<number, { buy: number; sell: number; weighted: number; unknown: number; revision: number }>();
+  undirected = 0;
+  private levels = new Map<number, { buy: number; sell: number; undirected: number; revision: number }>();
+  private seconds = new Map<number, { buy: number; sell: number; undirected: number; weighted: number; unknown: number; revision: number }>();
   private lastTradeUs = 0;
   private dailyChanges = new Map<number, number>();
   private dailyFloor = 0;
@@ -42,7 +43,7 @@ export class VolumeProfile {
   advance(second: number): void {
     if (second >= this.end) {
       this.start = sessionStartSec(second); this.end = sessionStartSec(this.start + 27 * 3600);
-      this.levels.clear(); this.buy = this.sell = 0; this.generation++;
+      this.levels.clear(); this.buy = this.sell = this.undirected = 0; this.generation++;
       this.seconds.clear(); this.lastTradeUs = 0;
       this.dailyChanges.clear(); this.dailyFloor = 0;
       // All post-startup sessions are already owned by the running live/replay feed.
@@ -52,13 +53,14 @@ export class VolumeProfile {
   }
   add(trade: Trade): void {
     if (trade.tsUs < this.start * 1e6 || trade.tsUs >= this.end * 1e6) return;
-    const level = this.levels.get(trade.price) ?? { buy: 0, sell: 0, revision: 0 };
-    level[trade.side] += trade.size; level.revision = ++this.revision;
-    this[trade.side] += trade.size;
+    const side = trade.side === "unknown" ? "undirected" : trade.side;
+    const level = this.levels.get(trade.price) ?? { buy: 0, sell: 0, undirected: 0, revision: 0 };
+    level[side] += trade.size; level.revision = ++this.revision;
+    this[side] += trade.size;
     this.levels.set(trade.price, level);
     const second = Math.floor(trade.tsUs / 1e6) * 1e6;
-    const row = this.seconds.get(second) ?? { buy: 0, sell: 0, weighted: 0, unknown: 0, revision: 0 };
-    row[trade.side] += trade.size; row.weighted += trade.price * trade.size;
+    const row = this.seconds.get(second) ?? { buy: 0, sell: 0, undirected: 0, weighted: 0, unknown: 0, revision: 0 };
+    row[side] += trade.size; row.weighted += trade.price * trade.size;
     if (!trade.contract) row.unknown += trade.size;
     row.revision = this.revision; this.seconds.set(second, row);
     this.dailyChanges.delete(second); this.dailyChanges.set(second, row.revision);
@@ -70,7 +72,8 @@ export class VolumeProfile {
   }
   summary() {
     return { sessionStartSec: this.start, upToSec: this.upToSec, loading: this.loading,
-      prices: this.levels.size, buy: this.buy, sell: this.sell, total: this.buy + this.sell };
+      prices: this.levels.size, buy: this.buy, sell: this.sell, ...(this.undirected ? { undirected: this.undirected } : {}),
+      total: this.buy + this.sell + this.undirected };
   }
   complete(start: number): void {
     if (start !== this.start) return;
@@ -86,13 +89,15 @@ export class VolumeProfile {
       revision: this.revision, loading: this.loading, quality: "received_not_guaranteed",
       upToUs: this.lastTradeUs, adjusted: false,
       points: seconds.sort((a, b) => a - b).map(t => {
-        const r = this.seconds.get(t)!; return [t, r.buy, r.sell, r.weighted, r.unknown];
+        const r = this.seconds.get(t)!; return r.undirected
+          ? [t, r.buy, r.sell, r.weighted, r.unknown, r.undirected] : [t, r.buy, r.sell, r.weighted, r.unknown];
       }) };
   }
   message(after?: number): VpMessage {
     return { type: after === undefined ? "vp" : "vpUpdate", sessionStartSec: this.start,
       upToSec: this.upToSec, ...(after === undefined ? { loading: this.loading } : {}),
       levels: [...this.levels].filter(([, v]) => after === undefined || v.revision > after)
-        .sort(([a], [b]) => a - b).map(([price, v]) => [price, v.buy, v.sell]) };
+        .sort(([a], [b]) => a - b).map(([price, v]): VpLevel => v.undirected
+          ? [price, v.buy, v.sell, v.undirected] : [price, v.buy, v.sell]) };
   }
 }

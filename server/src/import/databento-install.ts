@@ -44,16 +44,15 @@ export async function replaceHour(file: string, incoming: string[], contract: st
   if (exists) for await (const { trade: t } of tradeFileEntries(input, signal)) {
     if (t.tsUs < fromUs || t.tsUs >= toUs) continue;
     if (!t.contract || !/^(NQ|GC)[FGHJKMNQUVXZ]\d{2}$/.test(t.contract)) return blocked("existing_contract_unknown");
-    if (unknown && t.contract === contract) return blocked("source_unknown_side");
   }
   const content = createHash("sha256"), adopted = emptyStats(), kept = createHash("sha256");
   const target = file + "." + randomUUID() + ".tmp.jsonl.gz", before = exists ? await sha(input) : null;
   let injected = false, keptRows = 0;
   async function* fresh() {
     injected = true;
-    for (const source of incoming) for await (const { line, trade } of tradeFileEntries(source, signal)) {
+    for await (const { line, trade } of mergeIncoming(incoming, signal)) {
       if (trade.tsUs < fromUs || trade.tsUs >= toUs) continue;
-      if (trade.contract !== contract || !["buy", "sell"].includes(trade.side)) throw Error("incoming_identity_mismatch");
+      if (trade.contract !== contract || !["buy", "sell", "unknown"].includes(trade.side)) throw Error("incoming_identity_mismatch");
       count(adopted, trade); yield line + "\n";
     }
   }
@@ -85,6 +84,24 @@ export async function replaceHour(file: string, incoming: string[], contract: st
   return { blocked: null, adopted, keptRows, keptContentHash: kept.digest("hex"), sha256: await sha(file) };
 }
 
+/** Merge split known/N tapes by original CSV ordinal, NOT event time.
+ * Retains timestamp rewinds and distinct identical trades; bounded to one row/stream. */
+export async function* mergeIncoming(files: string[], signal?: AbortSignal) {
+  const streams = files.map(file => tradeFileEntries(file, signal));
+  try {
+    const heads = await Promise.all(streams.map(s => s.next()));
+    while (true) {
+      signal?.throwIfAborted();
+      let index = -1;
+      for (let i = 0; i < heads.length; i++) if (!heads[i]!.done
+        && (index < 0 || heads[i]!.value.trade.seq < heads[index]!.value.trade.seq)) index = i;
+      if (index < 0) break;
+      yield heads[index]!.value!;
+      heads[index] = await streams[index]!.next();
+    }
+  } finally { await Promise.all(streams.map(s => s.return(undefined))); }
+}
+
 export async function install(staged: StagedFile[], stage: string, generation: string,
   baseline: string, fromUs: number, toUs: number, availableDays: Set<string>, signal?: AbortSignal, resume = false) {
   const snap = JSON.parse(await fs.readFile(path.join(baseline, "snapshot.json"), "utf8"));
@@ -103,7 +120,8 @@ export async function install(staged: StagedFile[], stage: string, generation: s
       const key = `${m[3]}/${m[4]}`, group = groups.get(key) ?? {
         incoming: [], unknown: false, valid: true, day: m[3]!,
       };
-      if (m[1] === "known") group.incoming.push(path.join(stage, f.sha256, item.path)); else group.unknown = true;
+      group.incoming.push(path.join(stage, f.sha256, item.path));
+      if (m[1] === "unknown") group.unknown = true;
       group.valid &&= f.errors === 0 && availableDays.has(m[3]!);
       groups.set(key, group);
     }
@@ -118,12 +136,12 @@ export async function install(staged: StagedFile[], stage: string, generation: s
         resume ? path.join(baseline, `trades/${symbol}`, hour + ".jsonl.gz") : undefined);
       hours.push({ hour, fromUs: start, toUs: end, unknownSide: group.unknown, ...outcome });
       // recorded coverage is only certified for whole microsecond-aligned SECONDS.
-      // Unknown-side hours remain partial, never certify them as complete trade coverage.
-      if (!outcome.blocked && !group.unknown) coverage.tick.push([Math.ceil(start / 1e6), Math.floor(end / 1e6)]);
+      // N is now adopted, so direction alone no longer invalidates volume coverage.
+      if (!outcome.blocked) coverage.tick.push([Math.ceil(start / 1e6), Math.floor(end / 1e6)]);
     }
     coverage.tick = ranges(coverage.tick.filter(([a, b]) => a < b));
     await atomic(path.join(root, "coverage.json"), coverage);
-    result[contract] = { root, hours, coverage, note: "unknown-side data is isolated, not allocated; board unchanged" };
+    result[contract] = { root, hours, coverage, note: "N included in volume, never allocated to buy/sell; spreads excluded; board unchanged" };
   }
   return result;
 }

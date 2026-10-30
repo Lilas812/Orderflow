@@ -18,31 +18,45 @@ for (const f of active.staged) {
 }
 for (const [contract, install] of Object.entries(active.installed) as [string, any][]) {
   const root = path.join(active.generation, contract), actual = active.rebuilt[contract];
-  const expected = emptyStats(), prices = new Map<number, { buy: number; sell: number }>();
+  const expected = emptyStats(), prices = new Map<number, { buy: number; sell: number; unknown?: number }>();
   const content = new Map<string, ReturnType<typeof createHash>>(), allowed = new Map<string, any>();
   for (const hour of install.hours) if (!hour.blocked) allowed.set(hour.hour, hour);
   let blockedRows = 0, outsideRows = 0;
   for (const f of active.staged) for (const output of f.outputs) {
-    if (!output.path.startsWith(`known/${contract}/`)) continue;
-    const hour = output.path.slice(`known/${contract}/`.length).replace(".jsonl.gz", ""), h = allowed.get(hour);
+    const kind = output.path.startsWith(`known/${contract}/`) ? "known"
+      : active.sidePolicy === "all-outright-v2" && output.path.startsWith(`unknown/${contract}/`) ? "unknown" : null;
+    if (!kind) continue;
+    const hour = output.path.slice(`${kind}/${contract}/`.length).replace(".jsonl.gz", ""), h = allowed.get(hour);
     for await (const { line, trade: t } of tradeFileEntries(path.join(active.stage, f.sha256, output.path))) {
       if (t.tsUs < active.fromUs || t.tsUs >= active.toUs) { outsideRows++; continue; }
       if (!h) { blockedRows++; continue; }
       count(expected, t);
-      const p = prices.get(t.price) ?? { buy: 0, sell: 0 }; p[t.side] += t.size; prices.set(t.price, p);
-      let hash = content.get(hour); if (!hash) { hash = createHash("sha256"); content.set(hour, hash); }
+      const p = prices.get(t.price) ?? { buy: 0, sell: 0 } as { buy: number; sell: number; unknown?: number };
+      if (t.side === "unknown") p.unknown = (p.unknown ?? 0) + t.size; else p[t.side] += t.size;
+      prices.set(t.price, p);
+      const key = `${hour}/${f.sha256}/${kind}`;
+      let hash = content.get(key); if (!hash) { hash = createHash("sha256"); content.set(key, hash); }
       hash.update(line + "\n");
     }
   }
   assert.deepEqual(expected, actual.totals);
   const priceFile = JSON.parse(await fs.readFile(path.join(root, "price-volumes.json"), "utf8"));
   assert.deepEqual(priceFile, [...prices].sort(([a], [b]) => a - b));
-  for (const [hour, hash] of content) {
+  const checked = new Map<string, ReturnType<typeof createHash>>();
+  const checkedHours = new Set([...content.keys()].map(k => k.slice(0, 13)));
+  for (const hour of checkedHours) {
     const file = path.join(root, `trades/${contract.startsWith("NQ") ? "NQ" : "GC"}`, hour + ".jsonl.gz");
-    const check = createHash("sha256");
-    for await (const { line } of tradeFileEntries(file)) check.update(line + "\n");
-    assert.equal(check.digest("hex"), hash.digest("hex"), `row order and multiplicity ${contract}/${hour}`);
+    let previous = -1;
+    for await (const { line, trade: t } of tradeFileEntries(file)) {
+      if (t.contract !== contract || t.tsUs < active.fromUs || t.tsUs >= active.toUs) continue;
+      assert(t.seq > previous, `original CSV order ${contract}/${hour}`); previous = t.seq;
+      const raw = JSON.parse(line), key = `${hour}/${raw.source.inputSha256}/${t.side === "unknown" ? "unknown" : "known"}`;
+      assert(content.has(key), `unexpected input group ${key}`);
+      let hash = checked.get(key); if (!hash) { hash = createHash("sha256"); checked.set(key, hash); }
+      hash.update(line + "\n");
+    }
   }
+  for (const [key, hash] of content) assert.equal(checked.get(key)?.digest("hex"), hash.digest("hex"), `row content/order/multiplicity ${contract}/${key}`);
   let dailyCount = 0, dailyBuy = 0, dailySell = 0;
   for (const s of actual.sessions) {
     const state = new DailyState(contract.startsWith("NQ") ? "NQ" : "GC");
@@ -50,20 +64,20 @@ for (const [contract, install] of Object.entries(active.installed) as [string, a
     // Hub adds the instrument tag to VolumeProfile's internal snapshot on wire.
     assert.equal(state.accept({ ...daily, symbol: contract.startsWith("NQ") ? "NQ" : "GC" }), true); state.series();
     const snapshot = state.snapshot();
-    assert.equal(snapshot.total, s.stats.buy + s.stats.sell); assert.equal(snapshot.cvd, s.stats.buy - s.stats.sell);
+    assert.equal(snapshot.total, s.stats.buy + s.stats.sell + s.stats.unknown); assert.equal(snapshot.cvd, s.stats.buy - s.stats.sell);
     assert(Math.abs(snapshot.vwapTicks! - s.stats.weighted / snapshot.total) < 1e-8);
     dailyCount += s.stats.count; dailyBuy += s.stats.buy; dailySell += s.stats.sell;
   }
   assert.equal(dailyCount, expected.count); assert.equal(dailyBuy, expected.buy); assert.equal(dailySell, expected.sell);
-  let longBuy = 0, longSell = 0;
+  let longBuy = 0, longSell = 0, longUnknown = 0;
   for (const f of await fs.readdir(path.join(root, "longvp")).catch(e => { if (e.code === "ENOENT") return []; throw e; })) {
     const day = JSON.parse(await fs.readFile(path.join(root, "longvp", f), "utf8"));
-    for (const r of day.vp30m) { longBuy += r[2]; longSell += r[3]; }
+    for (const r of day.vp30m) { longBuy += r[2]; longSell += r[3]; longUnknown += r[5] ?? 0; }
   }
-  assert.equal(longBuy, expected.buy); assert.equal(longSell, expected.sell);
+  assert.equal(longBuy, expected.buy); assert.equal(longSell, expected.sell); assert.equal(longUnknown, expected.unknown);
   results.push({ contract, adopted: expected, blockedRows, outsideRows, prices: prices.size,
-    checkedHourFiles: content.size, sessions: actual.sessions.length, daily: { count: dailyCount, buy: dailyBuy, sell: dailySell },
-    longvp: { buy: longBuy, sell: longSell }, result: "pass" });
+    checkedHourFiles: checkedHours.size, sessions: actual.sessions.length, daily: { count: dailyCount, buy: dailyBuy, sell: dailySell, unknown: expected.unknown },
+    longvp: { buy: longBuy, sell: longSell, unknown: longUnknown }, result: "pass" });
 }
 const baseline = JSON.parse(await fs.readFile(path.join(out, "baseline/snapshot.json"), "utf8"));
 for (const f of baseline.files) assert.equal(await sha(path.join("data", f.path)), f.sha256, `original unchanged: ${f.path}`);

@@ -1,8 +1,8 @@
 import type { Trade } from "../types.ts";
-export interface PriceVolume { startUs: number; contract: string; price: number; buy: number; sell: number; }
+export interface PriceVolume { startUs: number; contract: string; price: number; buy: number; sell: number; undirected?: number; }
 export interface MinuteBar {
   startUs: number; contract: string; open: number; high: number; low: number; close: number;
-  buy: number; sell: number; firstUs: number; lastUs: number;
+  buy: number; sell: number; undirected?: number; firstUs: number; lastUs: number;
 }
 /** Aggregates only, never retains the tick tape. Prices remain integer quarter-point ticks. */
 export class LongAggregate {
@@ -14,7 +14,8 @@ export class LongAggregate {
     const key = `${contract}:${startUs}:${t.price}`;
     let v = this.volumes.get(key);
     if (!v) { v = { startUs, contract, price: t.price, buy: 0, sell: 0 }; this.volumes.set(key, v); }
-    v[t.side] += t.size;
+    if (t.side === "unknown") v.undirected = (v.undirected ?? 0) + t.size;
+    else v[t.side] += t.size;
     const minute = Math.floor(t.tsUs / 60_000_000) * 60_000_000, mk = `${contract}:${minute}`;
     let b = this.minutes.get(mk);
     if (!b) {
@@ -25,7 +26,8 @@ export class LongAggregate {
     b.high = Math.max(b.high, t.price); b.low = Math.min(b.low, t.price);
     if (t.tsUs < b.firstUs) { b.firstUs = t.tsUs; b.open = t.price; }
     if (t.tsUs >= b.lastUs) { b.lastUs = t.tsUs; b.close = t.price; }
-    b[t.side] += t.size;
+    if (t.side === "unknown") b.undirected = (b.undirected ?? 0) + t.size;
+    else b[t.side] += t.size;
     this.count++;
   }
   snapshot() { return { trades: this.count, volumeRows: this.volumes.size, minuteRows: this.minutes.size }; }

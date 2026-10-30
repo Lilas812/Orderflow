@@ -21,7 +21,7 @@ export async function rebuild(root: string, contract: string, signal?: AbortSign
   // Cache by the ACTUAL event hour (not filename/capture hour); timestamp rewinds
   // remain intact, while timezone formatting is not repeated for millions of rows.
   const hours = new Map<number, { session: number; date: string | null }>();
-  const priceTotals = new Map<number, { buy: number; sell: number }>();
+  const priceTotals = new Map<number, { buy: number; sell: number; unknown?: number }>();
   let session: number | null = null, profile: VolumeProfile | null = null, aggregate = new LongAggregate();
   let stats = emptyStats(), dates = new Set<string>(), ignoredContractRows = 0;
   const flush = async () => {
@@ -39,7 +39,7 @@ export async function rebuild(root: string, contract: string, signal?: AbortSign
       await atomic(path.join(root, "longvp", tradingDate + ".json"), data);
     }
     sessions.push({ sessionStartSec: session, dates: [...dates], stats, dailyFile, sha256: await sha(dailyFile),
-      cvd: stats.buy - stats.sell, vwapTicks: stats.weighted / (stats.buy + stats.sell), partial: true });
+      cvd: stats.buy - stats.sell, vwapTicks: stats.weighted / (stats.buy + stats.sell + stats.unknown), partial: true });
   };
   for (const file of files) for await (const { trade: t } of tradeFileEntries(path.join(base, file), signal)) {
     if (t.contract !== contract) { ignoredContractRows++; continue; }
@@ -56,7 +56,9 @@ export async function rebuild(root: string, contract: string, signal?: AbortSign
       aggregate = new LongAggregate(); dates = new Set(); stats = emptyStats();
     }
     profile!.add(t); count(stats, t); count(totals, t);
-    const v = priceTotals.get(t.price) ?? { buy: 0, sell: 0 }; v[t.side] += t.size; priceTotals.set(t.price, v);
+    const v = priceTotals.get(t.price) ?? { buy: 0, sell: 0 } as { buy: number; sell: number; unknown?: number };
+    if (t.side === "unknown") v.unknown = (v.unknown ?? 0) + t.size; else v[t.side] += t.size;
+    priceTotals.set(t.price, v);
     const date = timing.date;
     if (date) { dates.add(date); aggregate.add(t, contract); }
   }

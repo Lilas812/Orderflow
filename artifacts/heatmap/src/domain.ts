@@ -20,7 +20,7 @@ export interface Trade {
   seq: number;
   price: PriceTicks;
   size: number;
-  side: "buy" | "sell";
+  side: "buy" | "sell" | "unknown";
   /** Optional contract delivered with the trade (footprint separates series by it). */
   contract?: string;
 }

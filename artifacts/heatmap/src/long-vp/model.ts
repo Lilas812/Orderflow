@@ -2,8 +2,8 @@ import { dayEndSec, dayStartSec, isRthSec, weekEndSec, weekKey, weekStartSec, sh
 import { validContract, UNKNOWN_CONTRACT, type MarketSymbol } from "../../../../lib/market/instruments.ts";
 import { ACTIVE_SYMBOL } from "../instrument.ts";
 
-export type BarRow = [number, number, number, number, number, number, number, number];
-export type VolumeRow = [number, number, number, number, number];
+export type BarRow = [number, number, number, number, number, number, number, number, number?];
+export type VolumeRow = [number, number, number, number, number, number?];
 export interface DayData {
   version: 1; tradingDate: string; startSec: number; endSec: number;
   contracts: { contract: string; fromSec: number; toSec: number }[];
@@ -26,9 +26,9 @@ export function parseDay(value: unknown, symbol: MarketSymbol = ACTIVE_SYMBOL): 
     throw Error("日次データの形式が不正です");
   for (const c of d.contracts) if (!c || !validContract(c.contract, symbol, true) || !Number.isFinite(c.fromSec) || !Number.isFinite(c.toSec))
     throw Error("限月の形式が不正です");
-  for (const r of d.bars1m) if (!ints(r, 8) || r[7] < 0 || r[7] >= d.contracts.length || r[5] < 0 || r[6] < 0
+  for (const r of d.bars1m) if (!(ints(r, 8) || ints(r, 9)) || (r[8] ?? 0) < 0 || r[7] < 0 || r[7] >= d.contracts.length || r[5] < 0 || r[6] < 0
     || r[2] < Math.max(r[1], r[3], r[4]) || r[3] > Math.min(r[1], r[2], r[4])) throw Error("1分足の形式が不正です");
-  for (const r of d.vp30m) if (!ints(r, 5) || r[4] < 0 || r[4] >= d.contracts.length || r[2] < 0 || r[3] < 0)
+  for (const r of d.vp30m) if (!(ints(r, 5) || ints(r, 6)) || (r[5] ?? 0) < 0 || r[4] < 0 || r[4] >= d.contracts.length || r[2] < 0 || r[3] < 0)
     throw Error("出来高の形式が不正です");
   for (const g of d.gaps) if (!Array.isArray(g) || g.length !== 2 || !g.every(Number.isFinite) || g[0] >= g[1])
     throw Error("欠損区間の形式が不正です");
@@ -102,7 +102,7 @@ export function buildSeries(days: DayData[], rolls: RollData[], latest: string |
     for (const r of day.vp30m) {
       const o = offsets[r[4]];
       if (o === null) { unadjustableDates.add(day.tradingDate); continue; }
-      volumes.push({ t: r[0], p: r[1] + o, v: r[2] + r[3], date: day.tradingDate });
+      volumes.push({ t: r[0], p: r[1] + o, v: r[2] + r[3] + (r[5] ?? 0), date: day.tradingDate });
     }
   }
   bars.sort((a, b) => a.t - b.t);

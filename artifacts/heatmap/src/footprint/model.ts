@@ -65,7 +65,7 @@ export function splitRanges(ranges: readonly Range[], chunk = REQUEST_CHUNK_SEC)
 }
 
 /* ---------------- bars ---------------- */
-interface Series { cells: Map<number, { buy: number; sell: number }>; open: number; close: number; high: number; low: number; count: number; }
+interface Series { cells: Map<number, { buy: number; sell: number; undirected?: number }>; open: number; close: number; high: number; low: number; count: number; }
 interface Rec extends FpTrade { viaLive: boolean; }
 interface Sec { trades: Rec[]; ids: Set<string>; series: Map<string, Series>; }
 
@@ -74,32 +74,35 @@ export interface FootprintBar {
   open: number; high: number; low: number; close: number;
   volume: number; delta: number; buyTotal: number; sellTotal: number; poc: number; count: number;
   /** Ascending by price. */
-  prices: Int32Array; buy: Uint32Array; sell: Uint32Array;
+  prices: Int32Array; buy: Uint32Array; sell: Uint32Array; undirected?: Uint32Array; undirectedTotal?: number;
 }
 export type BarGroup = Map<string, FootprintBar>;
 
 /** Price-level and total math in one place (tested). Ties for POC take the higher price. */
 export function buildBar(contract: string, startSec: number, tf: number, parts: readonly Series[]): FootprintBar | null {
   if (parts.length === 0) return null;
-  const cells = new Map<number, { buy: number; sell: number }>();
+  const cells = new Map<number, { buy: number; sell: number; undirected?: number }>();
   let high = -Infinity, low = Infinity, count = 0;
   for (const p of parts) {
     for (const [price, c] of p.cells) {
       const cell = cells.get(price);
-      if (cell) { cell.buy += c.buy; cell.sell += c.sell; } else cells.set(price, { buy: c.buy, sell: c.sell });
+      if (cell) { cell.buy += c.buy; cell.sell += c.sell; cell.undirected = (cell.undirected ?? 0) + (c.undirected ?? 0); }
+      else cells.set(price, { ...c });
     }
     high = Math.max(high, p.high); low = Math.min(low, p.low); count += p.count;
   }
   const prices = Int32Array.from([...cells.keys()].sort((a, b) => a - b));
-  const buy = new Uint32Array(prices.length), sell = new Uint32Array(prices.length);
-  let buyTotal = 0, sellTotal = 0, poc = prices[0]!, pocVol = -1;
+  const buy = new Uint32Array(prices.length), sell = new Uint32Array(prices.length), undirected = new Uint32Array(prices.length);
+  let buyTotal = 0, sellTotal = 0, undirectedTotal = 0, poc = prices[0]!, pocVol = -1;
   prices.forEach((price, i) => {
     const c = cells.get(price)!;
     buy[i] = c.buy; sell[i] = c.sell; buyTotal += c.buy; sellTotal += c.sell;
-    if (c.buy + c.sell >= pocVol) { pocVol = c.buy + c.sell; poc = price; }
+    undirected[i] = c.undirected ?? 0; undirectedTotal += undirected[i]!;
+    if (c.buy + c.sell + undirected[i]! >= pocVol) { pocVol = c.buy + c.sell + undirected[i]!; poc = price; }
   });
   return { contract, startSec, endSec: startSec + tf, open: parts[0]!.open, close: parts.at(-1)!.close, high, low,
-    volume: buyTotal + sellTotal, delta: buyTotal - sellTotal, buyTotal, sellTotal, poc, count, prices, buy, sell };
+    volume: buyTotal + sellTotal + undirectedTotal, delta: buyTotal - sellTotal, buyTotal, sellTotal, poc, count, prices, buy, sell,
+    ...(undirectedTotal ? { undirected, undirectedTotal } : {}) };
 }
 
 interface PendingRange { from: number; to: number; rows: FpTrade[]; live: FpTrade[]; }
@@ -324,7 +327,9 @@ export class FootprintStore {
     let series = sec.series.get(k);
     if (!series) { series = { cells: new Map(), open: t.price, close: t.price, high: t.price, low: t.price, count: 0 }; sec.series.set(k, series); }
     const cell = series.cells.get(t.price) ?? { buy: 0, sell: 0 };
-    cell[t.side] += t.size; series.cells.set(t.price, cell);
+    if (t.side === "unknown") cell.undirected = (cell.undirected ?? 0) + t.size;
+    else cell[t.side] += t.size;
+    series.cells.set(t.price, cell);
     series.close = t.price; series.high = Math.max(series.high, t.price); series.low = Math.min(series.low, t.price); series.count++;
     this.tradeCount++; this.invalidate(s); this.revision++;
   }

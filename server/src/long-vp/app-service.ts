@@ -287,6 +287,6 @@ export function improvesDay(old: DayData, next: DayData) {
   const rows = new Map(next.vp30m.map(r => [key(next, r), r]));
   return old.vp30m.every(r => {
     const n = rows.get(key(old, r));
-    return n !== undefined && n[2] >= r[2] && n[3] >= r[3];
+    return n !== undefined && n[2] >= r[2] && n[3] >= r[3] && (n[5] ?? 0) >= (r[5] ?? 0);
   });
 }

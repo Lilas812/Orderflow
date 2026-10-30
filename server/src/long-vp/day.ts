@@ -2,8 +2,8 @@ import { atET, parts, shiftDate } from "./calendar.ts";
 import { LongAggregate } from "./aggregate.ts";
 import type { Roll } from "./rest.ts";
 
-export type BarRow = [number, number, number, number, number, number, number, number];
-export type VolumeRow = [number, number, number, number, number];
+export type BarRow = [number, number, number, number, number, number, number, number, number?];
+export type VolumeRow = [number, number, number, number, number, number?];
 export interface DayData {
   version: 1; tradingDate: string; startSec: number; endSec: number;
   contracts: { contract: string; fromSec: number; toSec: number }[];
@@ -62,13 +62,15 @@ export function mergeAggregates(a: LongAggregate, b: LongAggregate) {
   for (const source of [a, b]) {
     for (const [key, v] of source.volumes) {
       const old = result.volumes.get(key);
-      result.volumes.set(key, old ? { ...v, buy: old.buy + v.buy, sell: old.sell + v.sell } : { ...v });
+      result.volumes.set(key, old ? { ...v, buy: old.buy + v.buy, sell: old.sell + v.sell,
+        ...((old.undirected ?? 0) + (v.undirected ?? 0) ? { undirected: (old.undirected ?? 0) + (v.undirected ?? 0) } : {}) } : { ...v });
     }
     for (const [key, v] of source.minutes) {
       const old = result.minutes.get(key);
       result.minutes.set(key, old ? { ...v, open: old.firstUs <= v.firstUs ? old.open : v.open,
         close: old.lastUs > v.lastUs ? old.close : v.close, high: Math.max(old.high, v.high),
         low: Math.min(old.low, v.low), buy: old.buy + v.buy, sell: old.sell + v.sell,
+        ...((old.undirected ?? 0) + (v.undirected ?? 0) ? { undirected: (old.undirected ?? 0) + (v.undirected ?? 0) } : {}),
         firstUs: Math.min(old.firstUs, v.firstUs), lastUs: Math.max(old.lastUs, v.lastUs) } : { ...v });
     }
     result.count += source.count;
@@ -103,9 +105,13 @@ export function serializeDay(date: string, aggregate: LongAggregate, timeline: R
   };
   return { version: 1, tradingDate: date, startSec: startUs / 1e6, endSec: endUs / 1e6, contracts,
     bars1m: [...aggregate.minutes.values()].sort((a, b) => a.startUs - b.startUs || a.contract.localeCompare(b.contract))
-      .map(b => [b.startUs / 1e6, b.open, b.high, b.low, b.close, b.buy, b.sell, index(b.contract, b.startUs)]),
+      .map((b): BarRow => b.undirected
+        ? [b.startUs / 1e6, b.open, b.high, b.low, b.close, b.buy, b.sell, index(b.contract, b.startUs), b.undirected]
+        : [b.startUs / 1e6, b.open, b.high, b.low, b.close, b.buy, b.sell, index(b.contract, b.startUs)]),
     vp30m: [...aggregate.volumes.values()].sort((a, b) => a.startUs - b.startUs || a.price - b.price || a.contract.localeCompare(b.contract))
-      .map(v => [v.startUs / 1e6, v.price, v.buy, v.sell, index(v.contract, v.startUs)]),
+      .map((v): VolumeRow => v.undirected
+        ? [v.startUs / 1e6, v.price, v.buy, v.sell, index(v.contract, v.startUs), v.undirected]
+        : [v.startUs / 1e6, v.price, v.buy, v.sell, index(v.contract, v.startUs)]),
     gaps, complete: !provisional && gaps.length === 0, builtAtUs: nowUs };
 }
 export function edgeDifference(from: string, to: string, atUs: number,

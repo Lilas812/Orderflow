@@ -40,7 +40,7 @@ try {
   const activeFile = path.join(out, "active.json");
   let old: Record<string, any> | null = null;
   try { old = JSON.parse(await fs.readFile(activeFile, "utf8")); } catch (e) { if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e; }
-  if (old?.archiveSha256 === archiveSha256 && old.fromUs === fromUs && old.toUs === toUs) {
+  if (old?.sidePolicy === "all-outright-v2" && old.archiveSha256 === archiveSha256 && old.fromUs === fromUs && old.toUs === toUs) {
     for (const f of old.outputHashes) if (await sha(f.file) !== f.sha256) throw Error("committed_output_changed");
     console.log(JSON.stringify({ state: "already_imported", archiveSha256, fromUs, toUs, generation: old.generation }));
   } else {
@@ -80,16 +80,16 @@ try {
     for (const contract of Object.keys(installed)) {
       const root = path.join(generation, contract);
       const hours = (installed[contract] as { hours: { blocked?: string | null; unknownSide?: boolean; fromUs: number; toUs: number }[] }).hours;
-      const certified = hours.filter(h => !h.blocked && !h.unknownSide && Number.isFinite(h.fromUs))
+      const certified = hours.filter(h => !h.blocked && Number.isFinite(h.fromUs))
         .map(h => [h.fromUs / 1e6, h.toUs / 1e6] as [number, number]);
       rebuilt[contract] = await rebuild(root, contract, control.signal, certified);
       for (const name of await fs.readdir(root, { recursive: true })) if (/\.(?:gz|json|bin)$/.test(name)) {
         const file = path.join(root, name); if ((await fs.stat(file)).isFile()) outputHashes.push({ file, sha256: await sha(file) });
       }
     }
-    const record = { version: 1, archiveSha256, original: zip, fromUs, toUs, generation, stage,
+    const record = { version: 1, sidePolicy: "all-outright-v2", archiveSha256, original: zip, fromUs, toUs, generation, stage,
       staged, installed, rebuilt, outputHashes, state: "verified_isolated", committedAt: new Date().toISOString(),
-      note: "Unclassified sides and spreads remain in verified source quarantine; original stores untouched." };
+      note: "N retained and included in volume/VWAP, excluded from directional measures. Spreads quarantined; original stores untouched." };
     await atomic(path.join(generation, "import.json"), record);
     control.signal.throwIfAborted();
     if (arg("fail-before-commit") === "1") throw Error("injected_before_active_pointer");

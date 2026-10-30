@@ -1,8 +1,8 @@
 import type { MarketSymbol } from "../../../../lib/market/instruments.ts";
 import type { DailyPoint } from "../chart/daily-renderer.ts";
 
-type Row = [number, number, number, number, number];
-interface Prefix extends DailyPoint { buy: number; sell: number; weighted: number; unknown: number; }
+type Row = [number, number, number, number, number, number?];
+interface Prefix extends DailyPoint { buy: number; sell: number; weighted: number; unknown: number; undirected: number; }
 /** Authoritative absolute second counters, NOT another copy of raw trades. */
 export class DailyState {
   readonly symbol: MarketSymbol;
@@ -31,10 +31,10 @@ export class DailyState {
     if (start === this.sessionStartSec && revision < this.revision) return false;
     const rows: Row[] = [];
     for (const raw of m.points) {
-      if (!Array.isArray(raw) || raw.length !== 5 || !raw.every(Number.isFinite) || !Number.isSafeInteger(raw[0])) return false;
+      if (!Array.isArray(raw) || (raw.length !== 5 && raw.length !== 6) || !raw.every(Number.isFinite) || !Number.isSafeInteger(raw[0])) return false;
       const r = raw as Row;
-      if (r[0] < start * 1e6 || r[0] % 1e6 || r.slice(1).some(v => v < 0)
-        || r[0] > upToUs || r[4] > r[1] + r[2]) return false;
+      if (r[0] < start * 1e6 || r[0] % 1e6 || r.slice(1).some(v => v === undefined || v < 0)
+        || r[0] > upToUs || r[4] > r[1] + r[2] + (r[5] ?? 0)) return false;
       rows.push(r);
     }
     if (m.full || start !== this.sessionStartSec) {
@@ -57,8 +57,8 @@ export class DailyState {
     for (let i = this.dirty; i < this.times.length; i++) {
       const r = this.rows.get(this.times[i]!)!, p = this.prefix[i - 1];
       const buy = (p?.buy ?? 0) + r[1], sell = (p?.sell ?? 0) + r[2];
-      const weighted = (p?.weighted ?? 0) + r[3], total = buy + sell;
-      this.prefix[i] = { timeUs: r[0], buy, sell, weighted, unknown: (p?.unknown ?? 0) + r[4],
+      const weighted = (p?.weighted ?? 0) + r[3], undirected = (p?.undirected ?? 0) + (r[5] ?? 0), total = buy + sell + undirected;
+      this.prefix[i] = { timeUs: r[0], buy, sell, weighted, undirected, unknown: (p?.unknown ?? 0) + r[4],
         cvd: buy - sell, vwap: total ? weighted / total : 0 };
     }
     this.dirty = Infinity; this.prefix.length = this.times.length;
@@ -68,7 +68,8 @@ export class DailyState {
     const p = this.prefix.at(-1);
     return { available: this.available, sessionStartSec: this.sessionStartSec, loading: this.loading,
       derivedPending: this.dirty !== Infinity,
-      upToUs: this.upToUs, total: (p?.buy ?? 0) + (p?.sell ?? 0), cvd: p?.cvd ?? 0,
+      upToUs: this.upToUs, total: (p?.buy ?? 0) + (p?.sell ?? 0) + (p?.undirected ?? 0), cvd: p?.cvd ?? 0,
+      ...(p?.undirected ? { undirectedQuantity: p.undirected } : {}),
       vwapTicks: p?.vwap ?? null, unknownQuantity: p?.unknown ?? 0, points: this.times.length, adjusted: false };
   }
 }
