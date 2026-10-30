@@ -20,6 +20,7 @@ import { defaultDocument, fetchSettings, putSettings, resolveSettings, settingsC
 import { SettingsRecovery } from "./data/settings-recovery.ts";
 import type { SettingsDocument } from "./data/settings.ts";
 import { mountSettingsUi } from "./components/settings-ui.ts";
+import { readSmoothing, saveSmoothing } from "./data/smoothing-settings.ts";
 import { LIVE_RESET_SEC, REPLAY_RESET_SEC, resetViewport } from "./chart/view-reset.ts";
 import { boardGridTemplate } from "./chart/layout.ts";
 import { AutoPriceScale, resetTimeViewport } from "./chart/axis-view.ts";
@@ -194,6 +195,15 @@ const statusBanner = required<HTMLDivElement>("status-banner");
 const debugPanel = required<HTMLPreElement>("debug-panel");
 const scaleValue = required<HTMLSpanElement>("scale-value");
 const renderer = new HeatmapRenderer(canvas, axisCanvas, () => drawScheduler.request("heat"));
+let smoothingOptions = readSmoothing(sessionStorage, ACTIVE_SYMBOL);
+renderer.setSmoothing(smoothingOptions);
+const smoothingLegend = document.createElement("span");
+smoothingLegend.dataset.testid = "smoothing-legend";
+scaleValue.parentElement!.append(smoothingLegend);
+function syncSmoothingLegend() {
+  smoothingLegend.textContent = ` · 1秒代表値 ${smoothingOptions.time === "mean" ? "平均" : "最大"} / 価格${smoothingOptions.price === "auto" ? "自動" : "なし"}・取得分`;
+}
+syncSmoothingLegend();
 const cache = new ColumnCache();
 const dailyState = new DailyState(ACTIVE_SYMBOL);
 const dailyOptions = { vwap: true, cvd: true };
@@ -567,7 +577,7 @@ const drawScheduler = new LayerScheduler(draw => requestAnimationFrame(draw), {
   depth: (redrawAxes) => {
       const columns = cache.columns;
       renderer.setTrades(cache.tradeAggregation);
-      renderer.draw(columns, viewport, receivedColumnRevision, displayZone, columns.length > 0, redrawAxes);
+      renderer.draw(columns, viewport, receivedColumnRevision, displayZone, columns.length > 0, redrawAxes, replayHeadUs ?? Infinity);
       depthDrawCount++;
   },
   book: () => bookRenderer.draw(cache.latestBook, viewport, renderer.metrics.p99,
@@ -971,6 +981,27 @@ const settingsUi = mountSettingsUi(document.querySelector<HTMLElement>(".tool-ra
 });
 // The native modal makes the workspace inert; rendering/feed processing continue.
 void settingsUi;
+const tabFields = document.querySelector<HTMLElement>(".su-fields")!;
+const tabTitle = document.createElement("h3");
+tabTitle.className = "su-group"; tabTitle.textContent = "表示（このタブ）"; tabFields.append(tabTitle);
+for (const [key, label, choices] of [
+  ["time", "時間のまとめ方", [["mean", "平均"], ["max", "最大"]]],
+  ["price", "価格方向の平滑化", [["auto", "自動"], ["none", "なし"]]],
+] as const) {
+  const row = document.createElement("label"); row.className = "su-field";
+  const name = document.createElement("span"); name.className = "su-label"; name.textContent = label;
+  const select = document.createElement("select"); select.className = "su-input";
+  select.dataset.testid = `input-smoothing-${key}`;
+  for (const [value, text] of choices) { const o = document.createElement("option"); o.value = value; o.textContent = text; select.append(o); }
+  select.value = smoothingOptions[key];
+  select.addEventListener("change", () => {
+    const next = { ...smoothingOptions, [key]: select.value } as typeof smoothingOptions;
+    try { saveSmoothing(sessionStorage, ACTIVE_SYMBOL, next); }
+    catch { select.value = smoothingOptions[key]; window.alert("このタブの表示設定を保存できません。変更を中止しました。"); return; }
+    smoothingOptions = next; renderer.setSmoothing(next); syncSmoothingLegend(); drawScheduler.request("heat");
+  });
+  row.append(name, select); tabFields.append(row);
+}
 
 function applySettings(doc: SettingsDocument): void {
   // A delayed response from an older PUT must not undo a newer successful PUT.

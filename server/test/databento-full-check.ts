@@ -5,7 +5,8 @@ import { createHash } from "node:crypto";
 import { tradeFileEntries } from "../src/store/records.ts";
 import { sha, emptyStats, count } from "../src/import/databento-stage.ts";
 import { DailyState } from "../../artifacts/heatmap/src/data/daily.ts";
-const active = JSON.parse(await fs.readFile("data/databento-import/active.json", "utf8"));
+const out = process.argv.find(a => a.startsWith("--out="))?.slice(6) ?? "data/databento-import";
+const active = JSON.parse(await fs.readFile(path.join(out, "active.json"), "utf8"));
 const results = [];
 let sourceRows = 0, spreadRows = 0, errorRows = 0, unknownRows = 0, unknownQuantity = 0;
 for (const f of active.staged) {
@@ -55,7 +56,7 @@ for (const [contract, install] of Object.entries(active.installed) as [string, a
   }
   assert.equal(dailyCount, expected.count); assert.equal(dailyBuy, expected.buy); assert.equal(dailySell, expected.sell);
   let longBuy = 0, longSell = 0;
-  for (const f of await fs.readdir(path.join(root, "longvp"))) {
+  for (const f of await fs.readdir(path.join(root, "longvp")).catch(e => { if (e.code === "ENOENT") return []; throw e; })) {
     const day = JSON.parse(await fs.readFile(path.join(root, "longvp", f), "utf8"));
     for (const r of day.vp30m) { longBuy += r[2]; longSell += r[3]; }
   }
@@ -64,11 +65,11 @@ for (const [contract, install] of Object.entries(active.installed) as [string, a
     checkedHourFiles: content.size, sessions: actual.sessions.length, daily: { count: dailyCount, buy: dailyBuy, sell: dailySell },
     longvp: { buy: longBuy, sell: longSell }, result: "pass" });
 }
-const baseline = JSON.parse(await fs.readFile("data/databento-import/baseline/snapshot.json", "utf8"));
+const baseline = JSON.parse(await fs.readFile(path.join(out, "baseline/snapshot.json"), "utf8"));
 for (const f of baseline.files) assert.equal(await sha(path.join("data", f.path)), f.sha256, `original unchanged: ${f.path}`);
 const report = { archiveSha256: active.archiveSha256, sourceRows, spreadRows, errorRows, unknownRows, unknownQuantity,
   sourceAccountedRows: active.staged.reduce((sum: number, f: any) => sum + Object.values(f.contracts).reduce((n: number, c: any) => n + c.count, 0), 0) + spreadRows + errorRows,
   results, originalFilesUnchanged: baseline.files.length };
 assert.equal(report.sourceRows, report.sourceAccountedRows);
-await fs.writeFile("data/databento-import/full-check.json", JSON.stringify(report, null, 2));
+await fs.writeFile(path.join(out, "full-check.json"), JSON.stringify(report, null, 2));
 console.log(JSON.stringify(report));

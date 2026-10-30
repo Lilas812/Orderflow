@@ -6,9 +6,18 @@ import os from "node:os";
 import { gzipSync } from "node:zlib";
 import { priceTicks, timestamp, convert, fields } from "../src/import/databento-csv.ts";
 import { canonical, sha } from "../src/import/databento-stage.ts";
+import { rebuild } from "../src/import/databento-rebuild.ts";
 import { replaceHour } from "../src/import/databento-install.ts";
 import { tradeFileEntries } from "../src/store/records.ts";
 const stamp = "2026-09-30T00:00:00.003307752Z";
+test("empty contract interval rebuilds zero without inventing coverage or hiding I/O errors", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "databento-empty-"));
+  try {
+    const result = await rebuild(root, "GCF27");
+    assert.equal(result.totals.count, 0);
+    assert.deepEqual(result.sessions, []);
+  } finally { await fs.rm(root, { recursive: true, force: true }); }
+});
 function csv(side = "B", symbol = "NQZ6", price = "30712.500000000") {
   return `${stamp},2026-09-30T00:00:00.002976833Z,0,1,261401,T,${side},0,${price},2,0,12785,250063934,${symbol}`;
 }

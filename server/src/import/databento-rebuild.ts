@@ -11,7 +11,11 @@ import { coverageSegments } from "../vp/history.ts";
 /** Rebuild EVERY affected historical session, not only the latest seven days. */
 export async function rebuild(root: string, contract: string, signal?: AbortSignal, certified: [number, number][] = []) {
   const symbol = contract.startsWith("NQ") ? "NQ" : "GC", base = path.join(root, `trades/${symbol}`);
-  const files = (await fs.readdir(base, { recursive: true })).filter(n => /^\d{4}-\d\d-\d\d\/\d\d\.jsonl\.gz$/.test(n)).sort();
+  const names = await fs.readdir(base, { recursive: true }).catch(e => {
+    if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
+    return [] as string[];
+  });
+  const files = names.filter(n => /^\d{4}-\d\d-\d\d\/\d\d\.jsonl\.gz$/.test(n)).sort();
   const sessions: object[] = [], totals = emptyStats();
   // CT17:00 and ET18:00 boundaries are whole UTC hours in these 2026 files.
   // Cache by the ACTUAL event hour (not filename/capture hour); timestamp rewinds

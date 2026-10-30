@@ -9,6 +9,7 @@ import { GlowRaster, type GlowMetrics } from "./glow.ts";
 import { priceTicksToY } from "./coordinates.ts";
 import type { TradeAggregator } from "../data/trade-aggregate.ts";
 import { DEFAULT_SETTINGS } from "../data/settings.ts";
+import { SmoothingRaster, DEFAULT_SMOOTHING, type SmoothingOptions } from "./smoothing.ts";
 
 export type HeatStyle = "glow" | "block";
 
@@ -33,6 +34,12 @@ export interface DrawMetrics extends Partial<TileCacheMetrics> {
 }
 
 export class HeatmapRenderer {
+  private smoothing: SmoothingOptions | null = { ...DEFAULT_SMOOTHING };
+  private readonly smoothingRaster = new SmoothingRaster();
+  /** null is only for isolated pre-change comparison, never a UI setting. */
+  setSmoothing(value: SmoothingOptions | null): void {
+    this.smoothing = value; this.smoothingRaster.reset();
+  }
   private readonly context: CanvasRenderingContext2D;
   private readonly invalidateScaleDraw: () => void;
   private readonly canvas: HTMLCanvasElement;
@@ -103,7 +110,8 @@ export class HeatmapRenderer {
   /** Trade aggregation (SPEC 7.1) used by the glow "eaten" cut. */
   setTrades(trades: TradeAggregator | null): void { this.trades = trades; }
 
-  draw(columns: readonly HeatColumn[], view: Viewport, _revision: number, _zone: DisplayZone, hasPriceData = true, redrawAxis = true): void {
+  draw(columns: readonly HeatColumn[], view: Viewport, _revision: number, _zone: DisplayZone, hasPriceData = true, redrawAxis = true, cutoffUs = Infinity): void {
+    if (Number.isFinite(cutoffUs)) columns = columns.filter(c => c.timeUs + 1_000_000 <= cutoffUs);
     const drawStart = performance.now();
     const rect = this.canvas.getBoundingClientRect();
     if (rect.width < 1 || rect.height < 1) return;
@@ -125,6 +133,28 @@ export class HeatmapRenderer {
     const syncStart = performance.now();
     this.tileCache.setColumns(columns);
     const tileSyncMs = performance.now() - syncStart;
+    if (this.smoothing) {
+      const top = view.centerPriceTicks + view.priceSpanTicks / 2, bottom = top - view.priceSpanTicks;
+      const hasVisible = columns.some(c => c.timeUs + 1_000_000 > view.startUs && c.timeUs < view.startUs + view.durationSec * 1e6
+        && [c.bids, c.asks].some(side => side.prices.some((p, i) => p + .5 > bottom && p - .5 < top && side.sizes[i]! > 0)));
+      const { scaleMs } = this.refreshScale(columns, view, hasPriceData, hasVisible);
+      const start = performance.now();
+      this.context.fillStyle = "#000"; this.context.fillRect(0, 0, width, height);
+      if (hasPriceData && this.threshold !== null) {
+        const image = this.smoothingRaster.frame(columns, view, width, height, this.smoothing,
+          { upper: this.threshold, lower: this.lower, gamma: this.options.heatGamma }, this.style, this.trades);
+        this.context.putImageData(new ImageData(image as Uint8ClampedArray<ArrayBuffer>, width, height), 0, 0);
+      }
+      if (redrawAxis) { if (hasPriceData) drawPriceAxis(this.axis, view); else clearPriceAxis(this.axis); }
+      this.colorDirty = false;
+      this.metricsValue = { ...this.tileCache.metrics, drawMs: performance.now() - drawStart,
+        aggregationMs: performance.now() - start, scaleMs, tileSyncMs, p99: this.threshold ?? 1,
+        lower: this.lower, gamma: this.options.heatGamma, style: this.style,
+        rasterRebuilt: this.smoothingRaster.metrics.recomputedColumns > 0,
+        recomputedColumns: this.smoothingRaster.metrics.recomputedColumns,
+        cachedProfileBytes: this.smoothingRaster.metrics.cachedBytes };
+      return;
+    }
     if (this.style === "glow") {
       this.drawGlow(columns, view, width, height, hasPriceData, redrawAxis, drawStart, tileSyncMs);
       return;

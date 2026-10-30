@@ -2,7 +2,8 @@ import * as fs from "node:fs/promises";
 import path from "node:path";
 import { tradeFileEntries } from "../src/store/records.ts";
 import { fields } from "../src/import/databento-csv.ts";
-const active = JSON.parse(await fs.readFile("data/databento-import/active.json", "utf8"));
+const out = process.argv.find(a => a.startsWith("--out="))?.slice(6) ?? "data/databento-import";
+const active = JSON.parse(await fs.readFile(path.join(out, "active.json"), "utf8"));
 const source: Record<string, { rows: number; buy: number; sell: number; unknown: number }> = {};
 const excluded = { rows: 0, buy: 0, sell: 0, unknown: 0, invalid: 0 };
 for (const item of active.staged) {
@@ -21,5 +22,5 @@ for (const item of active.staged) {
   }
 }
 const result = { source, excluded, adopted: Object.fromEntries(Object.entries(active.rebuilt).map(([c, r]: [string, any]) => [c, r.totals])) };
-await fs.writeFile("data/databento-import/inventory.json", JSON.stringify(result, null, 2));
+await fs.writeFile(path.join(out, "inventory.json"), JSON.stringify(result, null, 2));
 console.log(JSON.stringify(result));
