@@ -434,3 +434,45 @@ mtime_ms = 1793374516284
 storage_uri = "gcs://replit-rams-assets-pike/rams/assets/repl:c326af06-2355-4bfb-a52e-f433587c4cd9/ea122903-7af4-4f0a-bea1-6c817162884a/cc4403b9-2d9d-43cb-a9d6-7b94139d3d18"
 storage_version_token = "1793375187451041"
 content_type = "image/png"
+
+[[outputs]]
+id = "f1J0nY_iHG_PoBhdEcZVr"
+uri = "file://.local/gc-investigation/report.html"
+type = "html"
+title = "公開GC調査報告：履歴取り込み・CPU照合を追記"
+description = "追加指定5を収録。履歴失敗29件・待機21件、NQ backfill127標本、CPUと保存空白の照合。個別失敗時刻・同窓反復・過去loop値は取得不能と明記。"
+logical_id = "28b01173-64ac-47ff-ae46-9ff10612d8e0"
+content_hash = "sha256:f490bcd9a850199884e48b29c866bdbfb110340f0a276fc2a0e10326968c443c"
+size = 291306
+mtime_ms = 1793381449212
+storage_uri = "gcs://replit-rams-assets-pike/rams/assets/repl:c326af06-2355-4bfb-a52e-f433587c4cd9/28b01173-64ac-47ff-ae46-9ff10612d8e0/70f6e115-ab09-4970-9e37-111bd245d5a1"
+storage_version_token = "1793381460639577"
+content_type = "text/html"
+
+[[outputs]]
+id = "cvWLBfR5SPMdxViepvPJf"
+uri = "file://.local/gc-investigation/seconds.csv"
+type = "table"
+title = "対象1,320秒の保存件数・coverage表"
+description = "UTC/JST対応。NQ28,166件・195秒が0件。GCは対象クラウドファイル不在のためNAであり、0件ではありません。"
+logical_id = "157bc517-0ac7-4693-bf1c-01d01c31caf9"
+content_hash = "sha256:ef7f52f2113dbe39ff9b6138d11de6a17c401467a2a41c2f53c5da326677afef"
+size = 175292
+mtime_ms = 1793380280139
+storage_uri = "gcs://replit-rams-assets-pike/rams/assets/repl:c326af06-2355-4bfb-a52e-f433587c4cd9/157bc517-0ac7-4693-bf1c-01d01c31caf9/20d3d219-d494-4863-b25c-b335df105b7a"
+storage_version_token = "1793380888245535"
+content_type = "text/csv"
+
+[[outputs]]
+id = "hPbP86-LmZT0At3eoogTQ"
+uri = "file://.local/gc-investigation/history-cpu-minutes.csv"
+type = "table"
+title = "履歴状態・CPU・保存空白の22分対照表"
+description = "UTC/JST併記。CPU10秒平均/最大、CPU60秒平均、NQ backfillと保存件数を照合。未取得の履歴失敗時刻・GC実件数・VP状態・過去loop値はNA。"
+logical_id = "234d1445-11e9-4c2b-87d8-0401f8811216"
+content_hash = "sha256:5380eb379801b6499cdd492b4db9fb9731218fd96ae582c7ffd70dc662f7421c"
+size = 2415
+mtime_ms = 1793381402753
+storage_uri = "gcs://replit-rams-assets-pike/rams/assets/repl:c326af06-2355-4bfb-a52e-f433587c4cd9/234d1445-11e9-4c2b-87d8-0401f8811216/b7492ae3-e515-4dbc-9bf2-e338c8d41bb4"
+storage_version_token = "1793381462014209"
+content_type = "text/csv"

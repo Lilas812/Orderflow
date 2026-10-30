@@ -23,3 +23,4 @@
 - [専用FOOTPRINTの範囲](footprint-decisions.md) — 専用タブ・直近2時間・不完全性の明示。非表示検証では観測自体の再集計と表示区間のずれに注意。
 - [Workspace再起動後の隔離検証](workspace-restart-isolation.md) — 保存済みファイルと処理完了、停止操作なしと既存受信の継続を区別する。
 - [購入履歴の反映時の保全](databento-promotion-safety.md) — 取込成功や日次合計の大小だけで本番の日次ファイルを置換しない。限月・UTC区間・原約定を照合する。
+- [公開調査の権限境界](production-evidence-authority.md) — フォークで公開情報が未公開扱いでも、既知の公開アプリの停止と断定しない。
