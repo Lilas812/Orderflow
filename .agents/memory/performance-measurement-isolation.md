@@ -21,3 +21,9 @@ description: 残存ブラウザと計測画面の受信を区別し、画面数�
 
 **How to apply:** タブ作成・切替後はCDPのPage.bringToFrontなどで対象を前面化する。キャッシュ受信に加え、描画回数・有効な表示寸法・表示されたカーソルを確認してから撮影する。
 
+前面復帰直後の同期evaluateだけで、古いCanvasを更新停止と判定しない。実visibleを確認し、複数rAFと描画済みsnapshotの収束を待つ。
+
+**Why:** nativeタブの非表示中にHTTP・storeの採用が進んでも、派生profileとCanvasは次の可視フレームまで古かった。即時観測が停止の誤判定になった。
+
+**How to apply:** HTTP内容、storeの採用時刻、描画済み数量・画素を別々に記録する。復帰後の2 rAFと値の待機後も古い場合にのみ、永続的な描画停止を疑う。
+

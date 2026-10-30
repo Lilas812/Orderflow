@@ -14,7 +14,7 @@
 - [VPの照合締切](vp-verification-cutoff.md) — ライブと保存の独立比較では、巻き戻る約定時刻だけでなく受信締切を一致させる。
 - [VP装飾の表示寸法](vp-decoration-decisions.md) — ラベル高さ18 CSS px、拡大時のVA帯もVAH・VALの価格行全体を含める承認。
 - [デルタの追加指定](delta-decisions.md) — 区間全体がそろわない過去の棒は非描画、最新区間は受信分で更新。棒の隙間・中央線は承認済み。
-- [設定変更時の列の共有](settings-decisions.md) — 再構築用の最新列と表示列を重複保持しないユーザー指定。
+- [設定の運用条件](settings-decisions.md) — 最新列と表示列は参照共有。通信失敗を未保存と扱わず、初期値を自動上書きしない。
 - [App Storageの運用指定](app-storage-decisions.md) — 再試行・再DL照合、古い範囲のディスク一時保存、破損設定の退避を維持する。
 - [artifactの経路検証](artifact-routing-cautions.md) — TOML検証成功だけでは環境別pathsのサポートや実際の転送を確認できない。
 - [長期VPの運用条件](long-vp-decisions.md) — 新正本優先・開発WS禁止・既存保存保護。CT17:05以降の確定は矛盾解消の例外承認。

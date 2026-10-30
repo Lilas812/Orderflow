@@ -51,7 +51,7 @@ export function createStatusApp(upstream: Upstream, receiver: Receiver, apiKey: 
       ...(longVpSettings ? { longVpSettings: longVpSettings.snapshot() } : {}),
       longVp: (selected ? selected.longVp : longVp)?.snapshot() ?? { enabled: false, reason: "production_only" } });
   });
-  if (longVpSettings) app.use("/api/settings/longvp", longVpSettingsRouter(longVpSettings));
+  if (longVpSettings) app.use("/api/settings/longvp", longVpSettingsRouter(longVpSettings, settingsTrace));
   if (settings) app.use("/api/settings", settingsRouter(settings, settingsTrace));
   app.use("/api/longvp", longVpRouter(longVp ?? null, markets
     ? symbol => symbol === "NQ" ? longVp ?? null : markets(symbol)?.longVp ?? null : undefined));

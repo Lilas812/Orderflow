@@ -1,5 +1,4 @@
 import * as fs from "node:fs/promises";
-import path from "node:path";
 import { LocalSettings } from "./local.ts";
 import type { SettingsPersistence, SettingsDiagnostics } from "./local.ts";
 import type { SettingsValues } from "./schema.ts";
@@ -8,6 +7,7 @@ import type { Log } from "../logger.ts";
 import { uploadVerified } from "../store/objects.ts";
 import type { Objects } from "../store/objects.ts";
 import { settingsQueue, settingsStage } from "./trace.ts";
+import { fetchSettingsFile } from "./fetch-file.ts";
 
 /** Cloud is authoritative; local settings is only a staging file, never a fallback. */
 export class AppSettings implements SettingsPersistence {
@@ -29,12 +29,7 @@ export class AppSettings implements SettingsPersistence {
     this.tail = next.catch(() => {}); return next;
   }
   private async fetch() {
-    await fs.mkdir(path.dirname(this.file), { recursive: true });
-    if (await this.objects.exists(this.prefix + "settings.json")) {
-      await this.objects.download(this.prefix + "settings.json", this.file + ".cloud");
-      await fs.rename(this.file + ".cloud", this.file);
-    } else await fs.rm(this.file, { force: true });
-    this.backups = (await this.objects.list(this.prefix + "settings.corrupt-"))
+    this.backups = (await fetchSettingsFile(this.objects, this.prefix, "settings", this.file))
       .filter(n => /^settings\.corrupt-\d+\.json$/.test(n.slice(this.prefix.length)));
   }
   get() {

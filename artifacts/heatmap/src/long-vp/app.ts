@@ -130,7 +130,9 @@ export function mountLongVp(root: HTMLElement): () => void {
   const debugWindow = window as Window & { __longVpDebug?: unknown };
   if (new URLSearchParams(location.search).get("debug") === "1") Object.defineProperty(debugWindow, "__longVpDebug", {
     configurable: true, get: () => ({ cursor: cursor.snapshot(), view: { ...view }, layout: layout(), timeZone,
-      cvdAxis: { ...cvdAxis }, baseDraws, seriesBuilds, profileBuilds, settings: { ...settings } }),
+      cvdAxis: { ...cvdAxis }, baseDraws, seriesBuilds, profileBuilds, settings: { ...settings },
+      todayBuiltAtUs: store.today?.builtAtUs ?? null,
+      profiles: profiles.map(p => ({ key: p.key, total: p.total, poc: p.poc })) }),
   });
 
   function request() { if (!frame && !destroyed) frame = requestAnimationFrame(draw); }
@@ -571,6 +573,15 @@ export function mountLongVp(root: HTMLElement): () => void {
   void loadSettings(); void loadZone();
   syncData(); store.start(); request();
 
+  const onPageHide = (event: PageTransitionEvent) => {
+    if (event.persisted) {
+      // BFCache freezes this document; it will NOT re-run the module on Back.
+      saveView("longvp", ACTIVE_SYMBOL, { view, autoPrice });
+    } else destroy();
+  };
+  const onResume = () => { if (!document.hidden) { store.resume(); request(); } };
+  window.addEventListener("pageshow", onResume);
+  document.addEventListener("visibilitychange", onResume);
   const destroy = () => {
     if (destroyed) return;
     destroyed = true;
@@ -579,9 +590,11 @@ export function mountLongVp(root: HTMLElement): () => void {
     resize.disconnect(); store.destroy(); modal.destroy(); cursor.destroy();
     delete debugWindow.__longVpDebug;
     root.replaceChildren();
-    window.removeEventListener("pagehide", destroy);
+    window.removeEventListener("pagehide", onPageHide);
+    window.removeEventListener("pageshow", onResume);
+    document.removeEventListener("visibilitychange", onResume);
   };
-  window.addEventListener("pagehide", destroy, { once: true });
+  window.addEventListener("pagehide", onPageHide);
   return destroy;
 }
 

@@ -392,3 +392,17 @@ mtime_ms = 1793340757884
 storage_uri = "gcs://replit-rams-assets-pike/rams/assets/repl:c326af06-2355-4bfb-a52e-f433587c4cd9/669f75ad-039f-4368-8512-00937039f74a/3cb71390-702c-4d0b-a6fb-d1f2c353e6aa"
 storage_version_token = "1793342833125147"
 content_type = "image/png"
+
+[[outputs]]
+id = "VeW9PJbMWRpvF0-omD9Aw"
+uri = "file://data/settings-longvp/ui/after-settled-nq1.png"
+type = "image"
+title = "LONG VP 復帰後の描画確認（隔離データ）"
+description = "非表示中の追加約定を取得し、復帰後にNQ87枚の集計とCanvasへの反映を確認。実ライブ・本番データではありません。"
+logical_id = "4ecb79a1-262c-44b0-ba1b-58c42b341603"
+content_hash = "sha256:90daa5b375889383220b967fca31a89e391693627b38ece1c308fb29dae33e82"
+size = 39982
+mtime_ms = 1793347331684
+storage_uri = "gcs://replit-rams-assets-pike/rams/assets/repl:c326af06-2355-4bfb-a52e-f433587c4cd9/4ecb79a1-262c-44b0-ba1b-58c42b341603/a2209077-4141-49cd-9771-9ef873a2760c"
+storage_version_token = "1793347651102213"
+content_type = "image/png"

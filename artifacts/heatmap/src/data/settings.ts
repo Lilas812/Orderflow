@@ -1,3 +1,4 @@
+import { requestSettingsDocument } from "./settings-request.ts";
 import { parseBubbleMin } from "../chart/trade-geometry.ts";
 import { parseBigOrderOptions } from "./big-orders.ts";
 
@@ -83,19 +84,7 @@ export function settingsChanges(a: SettingsValues, b: SettingsValues) {
 }
 
 async function requestSettings(values?: SettingsValues): Promise<SettingsDocument> {
-  const controller = new AbortController(), timer = setTimeout(() => controller.abort(), 10000);
-  try {
-    const url = `${import.meta.env.BASE_URL}api/settings`;
-    const res = await fetch(url, { method: values ? "PUT" : "GET", cache: "no-store", signal: controller.signal,
-      ...(values ? { headers: { "Content-Type": "application/json" }, body: JSON.stringify({ values }) } : {}) });
-    const result = await res.json();
-    if (!res.ok) throw Error(Object.values(result.fields ?? {}).join(" / ") || "設定を保存できませんでした");
-    if (!validDocument(result)) throw Error("設定の応答が不正です");
-    return result;
-  } catch (error) {
-    if (controller.signal.aborted) throw Error("設定の通信が10秒でタイムアウトしました");
-    throw error;
-  } finally { clearTimeout(timer); }
+  return requestSettingsDocument(`${import.meta.env.BASE_URL}api/settings`, values, raw => validDocument(raw) ? raw : null);
 }
 export const fetchSettings = () => requestSettings();
 export const putSettings = (values: SettingsValues) => requestSettings(values);

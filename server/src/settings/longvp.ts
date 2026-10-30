@@ -8,6 +8,8 @@ import { uploadVerified } from "../store/objects.ts";
 import { defaults, readDocument, validateSettings } from "../../../artifacts/heatmap/src/long-vp/settings-schema.ts";
 import type { SettingsDocument, SettingsValues } from "../../../artifacts/heatmap/src/long-vp/settings-schema.ts";
 import type { SettingsDiagnostics } from "./local.ts";
+import { fetchSettingsFile } from "./fetch-file.ts";
+import { settingsQueue, settingsStage, settingsOperation, type SettingsTrace } from "./trace.ts";
 
 /** Independent namespace: never reads or writes the heatmap settings file. */
 export class LongVpSettings {
@@ -24,19 +26,16 @@ export class LongVpSettings {
   snapshot(): SettingsDiagnostics { return structuredClone(this.diag); }
   private stamp() { return this.lastStamp = Math.max(Date.now() * 1000, this.lastStamp + 1); }
   private serial<T>(work: () => Promise<T>) {
-    const next = this.tail.then(work); this.tail = next.catch(() => {}); return next;
+    const dequeued = settingsQueue("app");
+    const next = this.tail.then(() => { dequeued(); return work(); }); this.tail = next.catch(() => {}); return next;
   }
   private async read(): Promise<{ document: SettingsDocument; corrupt: Buffer | null }> {
     const initial: SettingsDocument = { version: 1, values: { ...defaults }, updatedAt: null };
     await fs.mkdir(path.dirname(this.file), { recursive: true, mode: 0o700 });
     if (this.cloud) {
       const { objects, prefix } = this.cloud;
-      const key = prefix + "settings-longvp.json";
-      if (await objects.exists(key)) {
-        await objects.download(key, this.file + ".cloud");
-        await fs.rename(this.file + ".cloud", this.file);
-      } else await fs.rm(this.file, { force: true });
-      this.diag.preservedFiles = (await objects.list(prefix + "settings-longvp.corrupt-"))
+      this.diag.preservedFiles = (await settingsStage("cloud_fetch", () =>
+        fetchSettingsFile(objects, prefix, "settings-longvp", this.file)))
         .filter(n => /^settings-longvp\.corrupt-\d+\.json$/.test(n.slice(prefix.length)));
     } else {
       this.diag.preservedFiles = (await fs.readdir(path.dirname(this.file)))
@@ -90,7 +89,8 @@ export class LongVpSettings {
           }
           if (!(await fs.readFile(backup)).equals(corrupt)) throw Error("backup_verification_failed");
           const name = this.cloud ? this.cloud.prefix + path.basename(backup) : backup;
-          if (this.cloud) await uploadVerified(this.cloud.objects, name, backup);
+          if (this.cloud) await uploadVerified(this.cloud.objects, name, backup, undefined,
+            (phase, work) => settingsStage(`backup_${phase}`, work));
           this.diag.preservedFiles.push(name);
           this.log("longvp_settings_corrupt_preserved", { file: name, bytes: corrupt.length });
         }
@@ -100,7 +100,8 @@ export class LongVpSettings {
         try { await handle.writeFile(JSON.stringify(doc) + "\n"); await handle.sync(); }
         finally { await handle.close(); }
         // Never acknowledge a cloud save before upload and independent verification.
-        if (this.cloud) await uploadVerified(this.cloud.objects, this.cloud.prefix + "settings-longvp.json", temporary);
+        if (this.cloud) await uploadVerified(this.cloud.objects, this.cloud.prefix + "settings-longvp.json", temporary,
+          undefined, settingsStage);
         await fs.rename(temporary, this.file); temporary = null;
         this.diag.source = "saved"; this.diag.updatedAt = doc.updatedAt;
         this.diag.readError = this.diag.saveError = null;
@@ -119,11 +120,12 @@ export class LongVpSettings {
   }
 }
 
-export function longVpSettingsRouter(store: LongVpSettings) {
+export function longVpSettingsRouter(store: LongVpSettings, trace?: SettingsTrace) {
   const router = express.Router();
+  if (trace) router.use(trace.middleware);
   router.use((_req, res, next) => { res.set("Cache-Control", "no-store"); next(); });
   router.get("/", async (_req, res) => {
-    try { res.json(await store.get()); }
+    try { res.json(await settingsOperation(() => store.get(), () => !!store.snapshot().readError)); }
     catch { res.status(500).json({ error: "settings_read_failed" }); }
   });
   router.put("/", express.json({ limit: "8kb" }), async (req, res) => {
@@ -133,7 +135,7 @@ export function longVpSettingsRouter(store: LongVpSettings) {
     }
     const values = (body as { values?: unknown }).values, fields = validateSettings(values);
     if (Object.keys(fields).length) { res.status(400).json({ error: "invalid_settings", fields }); return; }
-    try { res.json(await store.put(values as SettingsValues)); }
+    try { res.json(await settingsOperation(() => store.put(values as SettingsValues), () => false)); }
     catch { res.status(500).json({ error: "settings_save_failed" }); }
   });
   router.use(((error, _req, res, _next) => {

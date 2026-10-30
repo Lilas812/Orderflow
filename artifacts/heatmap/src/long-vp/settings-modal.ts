@@ -1,5 +1,6 @@
 import "../components/settings-ui.css";
 import { ACTIVE_INSTRUMENT } from "../instrument.ts";
+import { requestSettingsDocument } from "../data/settings-request.ts";
 import { INTEGER_RANGES, defaults, readDocument, validateSettings, type SettingsDocument, type SettingsKey, type SettingsValues } from "./settings-schema.ts";
 
 type Spec = { key: SettingsKey; label: string; group: string } & (
@@ -25,23 +26,7 @@ export const LONGVP_FIELDS: Spec[] = [
 
 const url = () => `${import.meta.env.BASE_URL}api/settings/longvp`;
 async function request(values?: SettingsValues): Promise<SettingsDocument> {
-  const c = new AbortController(), timer = setTimeout(() => c.abort(), 10000);
-  try {
-    const res = await fetch(url(), { method: values ? "PUT" : "GET", cache: "no-store", credentials: "include", signal: c.signal,
-      ...(values ? { headers: { "Content-Type": "application/json" }, body: JSON.stringify({ values }) } : {}) });
-    let body: unknown = null;
-    try { body = await res.json(); } catch { body = null; }
-    if (!res.ok) {
-      const b = body as { fields?: Record<string, string>; error?: string } | null;
-      throw Error(Object.values(b?.fields ?? {}).join(" / ") || b?.error || (values ? `設定を保存できませんでした（HTTP ${res.status}）` : `設定を読めませんでした（HTTP ${res.status}）`));
-    }
-    const doc = readDocument(body);
-    if (!doc) throw Error("設定の応答が不正です");
-    return doc;
-  } catch (e) {
-    if (c.signal.aborted) throw Error("設定の通信が10秒でタイムアウトしました");
-    throw e;
-  } finally { clearTimeout(timer); }
+  return requestSettingsDocument(url(), values, readDocument);
 }
 export const fetchLongVpSettings = () => request();
 export const putLongVpSettings = (values: SettingsValues) => request(values);

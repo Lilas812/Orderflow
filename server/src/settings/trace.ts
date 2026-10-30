@@ -5,12 +5,14 @@ import type { RequestHandler } from "express";
 import type { Log } from "../logger.ts";
 
 type Stage = "cloud_fetch" | "local_read" | "local_save" | "source_hash" | "upload" | "verification"
+  | "cloud_exists" | "cloud_download" | "cloud_list"
   | "backup_source_hash" | "backup_upload" | "backup_verification";
 type Timing = { calls: number; ms: number; failed: number };
 interface Context {
   trace: SettingsTrace;
   id: string;
   method: "GET" | "PUT";
+  endpoint: "settings" | "longvp";
   startUs: number;
   start: number;
   disconnected: boolean;
@@ -61,7 +63,7 @@ export function settingsOperation<T>(work: () => Promise<T>, readFallback: () =>
 }
 
 function identity(c: Context) {
-  return { requestId: c.id, method: c.method, startedAtUs: c.startUs };
+  return { requestId: c.id, method: c.method, endpoint: c.endpoint, startedAtUs: c.startUs };
 }
 
 export interface TraceHistory {
@@ -144,7 +146,8 @@ export class SettingsTrace {
   }
   readonly middleware: RequestHandler = (req, res, next) => {
     if (!this.active || (req.method !== "GET" && req.method !== "PUT")) { next(); return; }
-    const c: Context = { trace: this, id: randomUUID(), method: req.method, startUs: stamp(),
+    const c: Context = { trace: this, id: randomUUID(), method: req.method,
+      endpoint: req.baseUrl.endsWith("/longvp") ? "longvp" : "settings", startUs: stamp(),
       start: performance.now(), disconnected: false, queues: {}, stages: {} };
     this.write("settings_trace_start", { ...identity(c), ...this.runtime() });
     let ended = false;

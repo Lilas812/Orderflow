@@ -66,9 +66,9 @@ export class LocalSettings implements SettingsPersistence {
     return this.serial(() => settingsStage("local_read", async () => {
       try { return (await this.read()).document; }
       catch {
-        this.diag.source = "defaults"; this.diag.updatedAt = null; this.diag.readError = "settings_read_failed";
+        this.diag.readError = "settings_read_failed";
         this.log("settings_read_error", { reason: "settings_read_failed" });
-        return this.defaultDoc();
+        throw Error("settings_read_failed");
       }
     }));
   }

@@ -55,17 +55,31 @@ export class LongVpStore {
   revision = 0;
   private wanted: string[] = [];
   private destroyed = false;
+  private lastPollAt = -Infinity;
   private rollsController: AbortController | null = null;
   private onChange: () => void;
   constructor(onChange: () => void) { this.onChange = onChange; }
 
   start() {
+    if (this.destroyed || this.timer !== null) return;
     void this.loadRolls(); void this.pollToday();
+    this.armTimer();
+  }
+  private armTimer() {
+    if (this.timer !== null) clearInterval(this.timer);
     this.timer = setInterval(() => void this.pollToday(), 60_000);
+  }
+  /** Resume a throttled/frozen page only when the unchanged 60s period is due. */
+  resume() {
+    if (!this.destroyed && !this.todayController && Date.now() - this.lastPollAt >= 60_000) {
+      void this.pollToday();
+      this.armTimer(); // Do not also fire the old, already-due interval on resume.
+    }
   }
   destroy() {
     this.destroyed = true;
     if (this.timer !== null) clearInterval(this.timer);
+    this.timer = null;
     this.controller?.abort(); this.todayController?.abort(); this.rollsController?.abort();
     this.days.clear();
   }
@@ -79,7 +93,7 @@ export class LongVpStore {
     this.rollsController = c;
     try {
       const r = await getJson("api/longvp/rolls", c.signal);
-      if (this.destroyed) return;
+      if (this.destroyed || c !== this.rollsController) return;
       if (r.status === 503) { this.rollsState = "disabled"; this.rollsError = "長期VPは無効です"; }
       else {
         this.rolls = parseRolls(r.body);
@@ -94,13 +108,14 @@ export class LongVpStore {
   }
   async pollToday() {
     if (this.destroyed) return;
+    this.lastPollAt = Date.now();
     this.todayController?.abort();
     const c = new AbortController(); this.todayController = c;
     const timer = setTimeout(() => c.abort(), 15000);
     if (!this.today) { this.todayState = "loading"; this.changed(); }
     try {
       const r = await getJson("api/longvp/today", c.signal);
-      if (c !== this.todayController) return;
+      if (this.destroyed || c !== this.todayController) return;
       if (r.status === 503) { this.todayState = "disabled"; this.todayError = "当日分は準備中か無効です（503）"; this.today = null; }
       else {
         const next = parseDay(r.body);
@@ -108,9 +123,9 @@ export class LongVpStore {
         this.today = next; this.todayState = "idle"; this.todayError = "";
       }
     } catch (e) {
-      if (c !== this.todayController) return;
+      if (this.destroyed || c !== this.todayController) return;
       this.todayState = "error"; this.todayError = c.signal.aborted ? "当日分の取得がタイムアウトしました" : message(e);
-    } finally { clearTimeout(timer); }
+    } finally { clearTimeout(timer); if (c === this.todayController) this.todayController = null; }
     this.changed();
   }
 
