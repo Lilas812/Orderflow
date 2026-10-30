@@ -9,7 +9,9 @@ export function exceptionDetails(error: unknown, depth = 0): unknown {
       : typeof detail.message === "string" ? detail.message.slice(0, 2000) : "non_error_exception",
       ...(typeof detail.statusCode === "number" ? { statusCode: detail.statusCode } : {}) };
   }
+  const code = (error as Error & { code?: unknown }).code;
   return { name: error.name, message: error.message.slice(0, 2000), stack: error.stack?.slice(0, 8000),
+    ...(typeof code === "string" ? { code: code.slice(0, 2000) } : typeof code === "number" ? { code } : {}),
     ...(error.cause !== undefined ? { cause: exceptionDetails(error.cause, depth + 1) } : {}) };
 }
 

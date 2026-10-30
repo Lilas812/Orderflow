@@ -3,6 +3,7 @@ import { createReadStream } from "node:fs";
 import * as fs from "node:fs/promises";
 import { createHash, randomUUID } from "node:crypto";
 import path from "node:path";
+import type { ConditionalCloud } from "../import/longvp-cloud.ts";
 import { Storage } from "@google-cloud/storage";
 
 export class ObjectGenerationConflict extends Error {
@@ -11,6 +12,7 @@ export class ObjectGenerationConflict extends Error {
 
 /** Only filenames cross this boundary for market data. No downloadAsBytes. */
 export interface Objects {
+  readonly conditional?: ConditionalCloud;
   exists(name: string): Promise<boolean>;
   download(name: string, file: string): Promise<void>;
   upload(name: string, file: string): Promise<void>;

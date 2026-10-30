@@ -36,6 +36,7 @@ export class AppLongVp {
   private job: Promise<void> | null = null;
   private pollJob: Promise<void> | null = null;
   private timer: ReturnType<typeof setInterval> | null = null;
+  private deadlineTimer: ReturnType<typeof setTimeout> | null = null;
   private initialized = false;
   private stopped = false;
   private timeline: Roll[] = [];
@@ -93,6 +94,7 @@ export class AppLongVp {
     if (this.job || this.timer || this.stopped) return;
     this.launchCheckpoint();
     this.launch();
+    this.armDeadline();
     this.timer = setInterval(() => {
       if (this.stopped) return;
       this.diagnostics.waiting();
@@ -113,13 +115,39 @@ export class AppLongVp {
         || prepareDue || (this.now() >= boundary && boundary > this.lastFinalizedUs))) this.launch();
     }, 60000);
   }
+  private armDeadline() {
+    if (this.stopped) return;
+    const now = this.now(), date = parts(now).date;
+    for (let i = 0; i < 8; i++) {
+      const d = shiftDate(date, i), due = atET(d, 17, 55); // CT16:55, DST-aware.
+      if (tradingDate(d) && due > now) {
+        this.deadlineTimer = setTimeout(() => {
+          void this.saveRecordedDeadline().catch(error => {
+            if (!this.stopped) this.deps.log("long_vp_deadline_failed",
+              { symbol: this.repository.symbol, error: exceptionDetails(error) });
+          }).finally(() => this.armDeadline());
+        }, Math.max(1, (due - now) / 1000));
+        return;
+      }
+    }
+  }
+  /** Use the recorded-only checkpoint's bounded contract evidence, never extrapolated expiry. */
+  async saveRecordedDeadline() {
+    const date = parts(this.now()).date;
+    if (this.stopped || !tradingDate(date) || this.now() < atET(date, 17, 55)) return;
+    if (this.checkpointJob) await this.checkpointJob;
+    if (this.stopped || this.checkpointBoundary() === this.checkpointKey) return;
+    this.launchCheckpoint();
+    await this.checkpointJob;
+  }
   private launch() {
     this.job = this.run().catch(error => {
       if (!this.stopped) {
         this.state = "failed";
         this.error = error instanceof Error && /^[a-z0-9_]+$/.test(error.message)
           ? error.message : "longvp_failed";
-        this.deps.log("long_vp_failed", { reason: this.error, error: exceptionDetails(error) });
+        this.deps.log("long_vp_failed", { reason: this.error, symbol: this.repository.symbol,
+          error: exceptionDetails(error) });
         this.retryAtUs = this.now() + Math.min(900, 60 * 2 ** Math.min(this.failures++, 4)) * 1e6;
       }
     }).finally(() => { this.job = null; });
@@ -141,7 +169,8 @@ export class AppLongVp {
   private launchCheckpoint() {
     this.checkpointJob = this.checkpoint().catch(error => {
       if (!this.stopped) this.deps.log("long_vp_failed", {
-        reason: "daily_checkpoint_failed", error: exceptionDetails(error), mode: "recorded_only" });
+        reason: "daily_checkpoint_failed", symbol: this.repository.symbol,
+        error: exceptionDetails(error), mode: "recorded_only" });
     }).finally(() => { this.checkpointJob = null; });
   }
   /** Independent of network-history jobs and their store queue, including at CT16:55. */
@@ -399,6 +428,7 @@ export class AppLongVp {
   async stop() {
     this.stopped = true; this.state = "stopped"; this.abort.abort();
     if (this.timer) clearInterval(this.timer);
+    if (this.deadlineTimer) clearTimeout(this.deadlineTimer);
     await Promise.allSettled([this.job, this.pollJob, this.checkpointJob]);
   }
 }

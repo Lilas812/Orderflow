@@ -476,3 +476,87 @@ mtime_ms = 1793381402753
 storage_uri = "gcs://replit-rams-assets-pike/rams/assets/repl:c326af06-2355-4bfb-a52e-f433587c4cd9/234d1445-11e9-4c2b-87d8-0401f8811216/b7492ae3-e515-4dbc-9bf2-e338c8d41bb4"
 storage_version_token = "1793381462014209"
 content_type = "text/csv"
+
+[[outputs]]
+id = "8dYpeGfxLaPLljPs1jK2U"
+uri = "file://data/longvp-front-month-reports/volume-rule-ct-boundaries/report.csv"
+type = "table"
+title = "NQ・GC 取引日別の期近候補一覧"
+description = "23取引日ずつの期近・次点・出来高・既存限月との比較。CT17時〜翌16時、両端の部分日を明記。本番未反映。"
+logical_id = "58895897-79d6-4c6e-a52f-24f53d6a445c"
+content_hash = "sha256:e1dc3c78899649c00e935402c0af8e2af033a935c9cb535ec2e6b30cda22d55e"
+size = 6006
+mtime_ms = 1793379156395
+storage_uri = "gcs://replit-rams-assets-pike/rams/assets/repl:c326af06-2355-4bfb-a52e-f433587c4cd9/58895897-79d6-4c6e-a52f-24f53d6a445c/014f94e4-e93b-422a-b7e3-491360bb1d04"
+storage_version_token = "1793379197153100"
+content_type = "text/csv"
+
+[[outputs]]
+id = "MRSy48Coj5y-NBM2OV9dL"
+uri = "file://data/longvp-maintenance/delivery/report.html"
+type = "html"
+title = "LONG VP 反映準備・本番調査報告（未反映）"
+description = "原本4ファイルのバックアップとハッシュ、42日分の候補照合、不足原因、保存停止の調査、復帰手順。"
+logical_id = "0f368c37-7edc-4609-8f9b-a45ace23b580"
+content_hash = "sha256:32c506d862f802a13f116bde3be28279087d96929dc738a7adf748ce686ddb73"
+size = 15594
+mtime_ms = 1793380331130
+storage_uri = "gcs://replit-rams-assets-pike/rams/assets/repl:c326af06-2355-4bfb-a52e-f433587c4cd9/0f368c37-7edc-4609-8f9b-a45ace23b580/5f35487a-0ee1-4c86-ba72-cff0dcd63b64"
+storage_version_token = "1793380333173792"
+content_type = "text/html"
+
+[[outputs]]
+id = "JCe3HJdpBN2GuowiFX3yU"
+uri = "file://data/longvp-maintenance/hourly-gap-evidence/hourly.csv"
+type = "table"
+title = "10/26・10/27：全46時間の原約定比較"
+description = "購入データとprod/tradesの件数・枚数・差、旧LONG VPとの比較。UTC時刻とCT時間を併記。"
+logical_id = "e0d5458d-7c80-4fd7-99fd-c458c55eedb9"
+content_hash = "sha256:296a164b8ef6c94c7b3c9e576ce45357ab28ca534abc70c81e6ff269aa34bba2"
+size = 5882
+mtime_ms = 1793380127518
+storage_uri = "gcs://replit-rams-assets-pike/rams/assets/repl:c326af06-2355-4bfb-a52e-f433587c4cd9/e0d5458d-7c80-4fd7-99fd-c458c55eedb9/d013152e-50a1-4ab9-b9e7-3140d350e831"
+storage_version_token = "1793380334389791"
+content_type = "text/csv"
+
+[[outputs]]
+id = "RSVAZ2MvmxjWxMGRx6K2x"
+uri = "file://data/longvp-maintenance/delivery/maintenance.html"
+type = "html"
+title = "本番の保守手順：42日反映と修正版の一括作業"
+description = "今回は未実施。停止枠15〜25分の見込み、最新原本保全、全日照合、起動後の不足再取得確認、復帰手順。"
+logical_id = "51ba6db4-1260-4f69-acdd-7bd714a1243a"
+content_hash = "sha256:5e8af605742366d63148d9b9bdf6c251ec85fbc1e046c4ce13e0266aee276ce8"
+size = 16280
+mtime_ms = 1793381347041
+storage_uri = "gcs://replit-rams-assets-pike/rams/assets/repl:c326af06-2355-4bfb-a52e-f433587c4cd9/51ba6db4-1260-4f69-acdd-7bd714a1243a/e995726a-f372-442c-a120-742d78d5c012"
+storage_version_token = "1793381348720448"
+content_type = "text/html"
+
+[[outputs]]
+id = "RvC0VI-4tghSc_nMNp1xh"
+uri = "file://data/longvp-maintenance/delivery/applied-result.html"
+type = "html"
+title = "購入LONG VP 42日：本番反映結果"
+description = "42日照合成功、停止後原本4件のバックアップとハッシュ、復元方法。公開・起動後確認は未実施。"
+logical_id = "a256df5b-0189-4064-8f5c-2a9f5037d23d"
+content_hash = "sha256:e8fb6651d29eff1de79ad17c14b80ef6eb8730ef22b7df5376a80527fdc2d124"
+size = 6454
+mtime_ms = 1793381925138
+storage_uri = "gcs://replit-rams-assets-pike/rams/assets/repl:c326af06-2355-4bfb-a52e-f433587c4cd9/a256df5b-0189-4064-8f5c-2a9f5037d23d/de91c5ed-e56f-4375-90e9-98e3ce604b8a"
+storage_version_token = "1793381932312661"
+content_type = "text/html"
+
+[[outputs]]
+id = "sNOC7FYIfGaKYo4bm17l6"
+uri = "file://data/longvp-maintenance/delivery/applied-42-days.csv"
+type = "table"
+title = "本番42日分の出来高・世代・ハッシュ照合"
+description = "全42日について承認枚数、本番VP枚数、1分足枚数、complete、クラウド世代、SHA-256を記録。不一致0件。"
+logical_id = "ed0a75dd-7cf9-434a-a000-4f3d957e1da1"
+content_hash = "sha256:80f8d0227a4e4353b6f4c3296e82f7f2240d90aed15acca6760f539b2e57cc94"
+size = 5270
+mtime_ms = 1793381843977
+storage_uri = "gcs://replit-rams-assets-pike/rams/assets/repl:c326af06-2355-4bfb-a52e-f433587c4cd9/ed0a75dd-7cf9-434a-a000-4f3d957e1da1/5b35c87d-d211-4807-80b1-cb2d7e390e5e"
+storage_version_token = "1793381933566676"
+content_type = "text/csv"

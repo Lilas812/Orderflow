@@ -17,6 +17,9 @@ export function timeoutSplit(start: number, end: number) {
 export class WindowSplitRequired extends WindowUnavailableError {
   constructor() { super("network_or_timeout"); }
 }
+// Both callers use the same split signal and minimum-window policy.
+export { WindowSplitRequired as NetworkWindowSplitError };
+export const networkSplitPoint = timeoutSplit;
 export interface HistoryNetworkStats {
   requests: number; fetchedBookRows: number; fetchedTradeRows: number;
   errors: number; retries: number; exhaustedRequests: number;

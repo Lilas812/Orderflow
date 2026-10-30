@@ -15,6 +15,15 @@ export interface RollData {
   detail: { beforeUs: number; afterUs: number; beforePrice: number; afterPrice: number; gapSeconds: number;
     fromSinceUs?: number };
 }
+export function improvesDay(old: DayData, next: DayData) {
+  if (next.gaps.some(([a, b]) => !old.gaps.some(([x, y]) => x <= a && b <= y))) return false;
+  const key = (d: DayData, r: DayData["vp30m"][number]) => `${r[0]}:${r[1]}:${d.contracts[r[4]].contract}`;
+  const rows = new Map(next.vp30m.map(r => [key(next, r), r]));
+  return old.vp30m.every(r => {
+    const n = rows.get(key(old, r));
+    return n !== undefined && n[2] >= r[2] && n[3] >= r[3] && (n[5] ?? 0) >= (r[5] ?? 0);
+  });
+}
 export function validDate(date: string) {
   return /^\d{4}-\d\d-\d\d$/.test(date) && Number.isFinite(Date.parse(date + "T12:00:00Z"))
     && new Date(date + "T12:00:00Z").toISOString().slice(0, 10) === date;
@@ -114,15 +123,6 @@ export function serializeDay(date: string, aggregate: LongAggregate, timeline: R
         ? [v.startUs / 1e6, v.price, v.buy, v.sell, index(v.contract, v.startUs), v.undirected]
         : [v.startUs / 1e6, v.price, v.buy, v.sell, index(v.contract, v.startUs)]),
     gaps, complete: !provisional && gaps.length === 0, builtAtUs: nowUs };
-}
-export function improvesDay(old: DayData, next: DayData) {
-  if (next.gaps.some(([a, b]) => !old.gaps.some(([x, y]) => x <= a && b <= y))) return false;
-  const key = (d: DayData, r: DayData["vp30m"][number]) => `${r[0]}:${r[1]}:${d.contracts[r[4]].contract}`;
-  const rows = new Map(next.vp30m.map(r => [key(next, r), r]));
-  return old.vp30m.every(r => {
-    const n = rows.get(key(old, r));
-    return n !== undefined && n[2] >= r[2] && n[3] >= r[3] && (n[5] ?? 0) >= (r[5] ?? 0);
-  });
 }
 export function edgeDifference(from: string, to: string, atUs: number,
   before: { tsUs: number; price: number } | null, after: { tsUs: number; price: number } | null): RollData {

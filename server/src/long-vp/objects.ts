@@ -119,7 +119,30 @@ export class LongObjects {
     validateDay(day, this.symbol);
     const json = Buffer.from(JSON.stringify(day)), compressed = gzipSync(json);
     if (json.length * 8 > this.maxBytes) throw Error("longvp_day_exceeds_memory_budget");
-    const { downloadVersion, uploadConditional } = this.objects;
+    let { downloadVersion, uploadConditional } = this.objects;
+    // Operator/test adapters expose the same CAS through ConditionalCloud. Keep one save loop,
+    // including the current-generation check after readback, for both storage interfaces.
+    if ((!downloadVersion || !uploadConditional) && this.objects.conditional) {
+      const cloud = this.objects.conditional;
+      const conflict = (error: unknown): never => {
+        if ([404, 409, 412].includes(Number((error as { code?: number }).code)))
+          throw new ObjectGenerationConflict();
+        throw error;
+      };
+      downloadVersion = async (name, file, generation) => {
+        try {
+          const latest = generation ?? (await cloud.stat(name))?.generation;
+          if (!latest) return null;
+          await cloud.download(name, latest, file);
+          return latest;
+        } catch (error) { return conflict(error); }
+      };
+      uploadConditional = async (name, file, generation) => {
+        try { return await cloud.put(name, file, generation === "0" ? null : generation,
+          {}, { contentType: "application/gzip" }); }
+        catch (error) { return conflict(error); }
+      };
+    }
     if (!downloadVersion || !uploadConditional) throw Error("longvp_generation_support_required");
     const name = this.prefix + `days/${day.tradingDate}.json.gz`;
     return this.temporary(async file => {

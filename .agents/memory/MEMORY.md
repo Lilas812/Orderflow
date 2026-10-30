@@ -24,3 +24,5 @@
 - [Workspace再起動後の隔離検証](workspace-restart-isolation.md) — 保存済みファイルと処理完了、停止操作なしと既存受信の継続を区別する。
 - [購入履歴の反映時の保全](databento-promotion-safety.md) — 取込成功や日次合計の大小だけで本番の日次ファイルを置換しない。限月・UTC区間・原約定を照合する。
 - [公開調査の権限境界](production-evidence-authority.md) — フォークで公開情報が未公開扱いでも、既知の公開アプリの停止と断定しない。
+- [購入出来高による期近選定](purchased-front-month-policy.md) — NQ・GCはCT17〜翌16時の最多出来高で日ごとに選び、満期を後戻りしない。一覧提示後は承認まで停止。
+- [稼働中LONG VPへの外部反映](longvp-external-maintenance.md) — 外部CAS成功後も古いキャッシュから上書きされ得るため、稼働writerの排他は別に確保する。
