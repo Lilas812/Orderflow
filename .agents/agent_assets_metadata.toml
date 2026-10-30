@@ -406,3 +406,17 @@ mtime_ms = 1793347331684
 storage_uri = "gcs://replit-rams-assets-pike/rams/assets/repl:c326af06-2355-4bfb-a52e-f433587c4cd9/4ecb79a1-262c-44b0-ba1b-58c42b341603/a2209077-4141-49cd-9771-9ef873a2760c"
 storage_version_token = "1793347651102213"
 content_type = "image/png"
+
+[[outputs]]
+id = "Ma1Xur9e1CgSOb_9nBzUV"
+uri = "file://data/databento-import/browser/step3-longvp.png"
+type = "image"
+title = "購入実データのLONG VP確認"
+description = "NQZ26・2026-10-01の隔離表示。日次VP・価格・VWAP・CVDを確認。本番未反映で、欠けと当日未提供の警告は残しています。"
+logical_id = "d9ca0a42-7768-4f07-99a1-a85725a9d8fd"
+content_hash = "sha256:c0b2b3798d932b6b8bfd3d66aa94645573faeb65df887bd0364090ba74d4416e"
+size = 116009
+mtime_ms = 1793361214068
+storage_uri = "gcs://replit-rams-assets-pike/rams/assets/repl:c326af06-2355-4bfb-a52e-f433587c4cd9/d9ca0a42-7768-4f07-99a1-a85725a9d8fd/dafdb08c-1436-4595-91ee-82561a5644a9"
+storage_version_token = "1793361603453290"
+content_type = "image/png"

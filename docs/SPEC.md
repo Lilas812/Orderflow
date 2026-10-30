@@ -2,6 +2,8 @@
 
 HEATMAPの最新約定表示と日次CVD／VWAPについては、ユーザー承認の追加仕様 [DAILY_INDICATORS.md](DAILY_INDICATORS.md) を併読する。該当する配信タイミング・日次集計の補足として適用する。
 
+購入済みDatabento約定のオフライン隔離取り込みは [DATABENTO_IMPORT_SPEC.md](DATABENTO_IMPORT_SPEC.md) に従う。通常の収集・公開データを自動で置き換えない。
+
 最終更新：2026-10-29（見た目の作り直し（Phase 14）と表示範囲（Phase 15）を追加）
 表記：【確定】決定済み／【案】提案で未採用／【未決定】ユーザーが決める
 
