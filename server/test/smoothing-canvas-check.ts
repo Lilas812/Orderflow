@@ -2,7 +2,13 @@
 import fs from "node:fs/promises";
 import { execFileSync } from "node:child_process";
 import { browser, delay } from "../tools/perf/cdp.ts";
-const out = "data/heatmap-smoothing";
+const option = (name: string) => process.argv.find(a => a.startsWith(`--${name}=`))?.slice(name.length + 3);
+const out = option("out") ?? "data/heatmap-smoothing";
+const seconds = Number(option("seconds") ?? 15);
+const dprs = option("dpr") ? [Number(option("dpr"))] : [1, 2];
+const styles = option("style") ? [option("style")!] : ["block", "glow"];
+if (dprs.some(n => n !== 1 && n !== 2) || styles.some(s => s !== "block" && s !== "glow")
+  || !Number.isFinite(seconds) || seconds <= 0) throw Error("invalid_benchmark_options");
 await fs.mkdir(out, { recursive: true });
 const port = 9233, profile = `--user-data-dir=/tmp/heatmap-perf-browser-${process.pid}-${port}`;
 const hz = Number(execFileSync("getconf", ["CLK_TCK"], { encoding: "utf8" }).trim());
@@ -29,16 +35,16 @@ try {
   await p.cdp.call("Network.enable");
   p.cdp.on("Network.loadingFinished", e => { results.networkBytes += e.encodedDataLength ?? 0; });
   for(let n=0;n<100;n++){if(await p.cdp.evaluate("!!window.smoothingHarness"))break;await delay(100);}
-  for (const dpr of [1,2]) {
+  for (const dpr of dprs) {
     await p.cdp.call("Emulation.setDeviceMetricsOverride",{width:1280,height:800,deviceScaleFactor:dpr,mobile:false});
     results.assertions.push({dpr,...await p.cdp.evaluate("window.smoothingHarness.assertions()")});
-    for(const style of ["block","glow"]) for(const legacy of [true,false]) {
+    for(const style of styles) for(const legacy of [true,false]) {
       const c0=await cpu(),t0=Date.now(),n0=results.networkBytes;
-      const r = await p.cdp.evaluate(`window.smoothingHarness.run(${legacy},${JSON.stringify(style)},15)`);
+      const r = await p.cdp.evaluate(`window.smoothingHarness.run(${legacy},${JSON.stringify(style)},${seconds})`);
       results.scenarios.push({...r,cpuSeconds:await cpu()-c0,wallSeconds:(Date.now()-t0)/1000,networkBytes:results.networkBytes-n0});
       await fs.writeFile(`${out}/canvas.json`,JSON.stringify(results,null,2));
     }
-    for(const style of ["block","glow"]) for(const time of ["mean","max"]) for(const price of ["auto","none"]) {
+    if (!process.argv.includes("--skip-images")) for(const style of styles) for(const time of ["mean","max"]) for(const price of ["auto","none"]) {
       await p.cdp.evaluate(`window.smoothingHarness.comparison("${time}","${price}","${style}")`);
       const shot=await p.cdp.call("Page.captureScreenshot",{format:"png"});
       await fs.writeFile(`${out}/${style}-${time}-${price}-dpr${dpr}.png`,Buffer.from(shot.data,"base64"));

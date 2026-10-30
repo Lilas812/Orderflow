@@ -10,6 +10,7 @@ import { VolumeProfile, sessionStartSec } from "../src/vp/state.ts";
 import { defaults } from "../src/settings/schema.ts";
 import { INSTRUMENTS, type MarketSymbol } from "../../lib/market/instruments.ts";
 import type { Trade } from "../src/types.ts";
+import type { Column } from "../src/aggregate/columns.ts";
 
 const arg = (key: string) => process.argv.find(a => a.startsWith(`--${key}=`))?.slice(key.length + 3);
 const port = Number(arg("port") ?? 18786), before = arg("before");
@@ -20,6 +21,15 @@ const ProfileClass: typeof VolumeProfile = legacyProfile
   ? (await import(pathToFileURL(path.join(legacyProfile, "server/src/vp/state.ts")).href)).VolumeProfile : VolumeProfile;
 const front = arg("front") ?? (before ? path.join(before, "artifacts/heatmap/dist/public") : path.resolve("artifacts/heatmap/dist/public"));
 const now = Math.floor(Date.now() / 1000), start = sessionStartSec(now);
+const smoothing = arg("smoothing") === "1";
+let settingsGets = 0, settingsPuts = 0;
+const books = new Map<MarketSymbol, Column[]>();
+function book(symbol: MarketSymbol, tsSec: number, size = tsSec % 10 === 0 ? 100 : 10): Column {
+  const base = symbol === "NQ" ? 84000 : 27000;
+  return { tsSec, source: "history",
+    bids: Array.from({ length: 40 }, (_, i) => ({ price: base - i - 1, size })),
+    asks: Array.from({ length: 40 }, (_, i) => ({ price: base + i + 1, size })) };
+}
 let delayMs = 0;
 const log = (event: string, detail?: unknown) => { if (event === "hub_closed") console.log(JSON.stringify({ dummy: true, event, detail })); };
 const rows = new Map<MarketSymbol, Trade[]>(), profiles = new Map<MarketSymbol, VolumeProfile>();
@@ -29,6 +39,8 @@ const wsSockets = new Set<Socket>();
 let closedWsSent = 0;
 const stages: { symbol: string; seq: number; recvUs: number; normalizedAtUs: number; normalizationMs: number }[] = [];
 for (const symbol of ["NQ", "GC"] as const) {
+  if (smoothing) books.set(symbol, Array.from({ length: 1800 }, (_, i) => book(symbol, now - 1801 + i))
+    .filter(c => c.tsSec < now - 303 || c.tsSec > now - 300));
   const base = symbol === "NQ" ? 84000 : 27000, profile = new ProfileClass(now);
   const data: Trade[] = [
     { tsUs: (start + 60) * 1e6, recvUs: (start + 60) * 1e6, seq: 100000, price: base, size: 40, side: "buy", contract: `${symbol}Z26` },
@@ -41,7 +53,7 @@ for (const symbol of ["NQ", "GC"] as const) {
     read: async (from, to) => {
       const snapshot = data.filter(t => t.tsUs >= from * 1e6 && t.tsUs < to * 1e6);
       if (delayMs) await new Promise(r => setTimeout(r, delayMs));
-      return { columns: from <= now - 2 && to > now - 2 ? [{
+      return { columns: smoothing ? books.get(symbol)!.filter(c => c.tsSec >= from && c.tsSec < to) : from <= now - 2 && to > now - 2 ? [{
         tsSec: now - 2, source: "history", gap: false,
         bids: [{ price: base - 1, size: 40 }], asks: [{ price: base + 1, size: 40 }],
       }] : [], trades: snapshot };
@@ -55,6 +67,10 @@ for (const symbol of ["NQ", "GC"] as const) {
     },
   };
   const hub = new HubClass(source, log, undefined, symbol); hubs.set(symbol, hub);
+  if (smoothing) {
+    const c = books.get(symbol)!.at(-1)!;
+    hub.book({ tsUs: c.tsSec * 1e6, recvUs: Date.now() * 1000, source: c.source, bids: c.bids, asks: c.asks });
+  }
   receivers.set(symbol, new Receiver(log, { trade: t => {
     stages.push({ symbol, seq: t.seq, recvUs: t.recvUs, normalizedAtUs: Date.now() * 1000,
       normalizationMs: performance.now() - normalizeStarted });
@@ -65,6 +81,17 @@ const server = createServer(async (req, res) => {
   const u = new URL(req.url ?? "/", "http://dummy");
   const json = (body: unknown, status = 200) => { res.writeHead(status, { "Content-Type": "application/json", "Cache-Control": "no-store" }); res.end(JSON.stringify(body)); };
   if (u.pathname === "/__dummy/delay") { delayMs = Number(u.searchParams.get("ms") ?? 0); return json({ dummy: true, delayMs }); }
+  if (smoothing && u.pathname === "/__dummy/column") {
+    const symbol = u.searchParams.get("symbol") === "GC" ? "GC" : "NQ";
+    const c = book(symbol, Number(u.searchParams.get("sec") ?? Math.floor(Date.now() / 1000) - 1),
+      Number(u.searchParams.get("size") ?? 73));
+    const rows = books.get(symbol)!, old = rows.findIndex(r => r.tsSec === c.tsSec);
+    if (old >= 0) rows[old] = c; else rows.push(c);
+    const hub = hubs.get(symbol)!;
+    hub.column(c); hub.book({ tsUs: c.tsSec * 1e6, recvUs: Date.now() * 1000,
+      source: c.source, bids: c.bids, asks: c.asks });
+    return json({ dummy: true, column: c });
+  }
   if (u.pathname === "/__dummy/tick") {
     const symbol = u.searchParams.get("symbol") === "GC" ? "GC" : "NQ";
     const price = Number(u.searchParams.get("price") ?? (symbol === "NQ" ? 21000 : 2700));
@@ -82,12 +109,16 @@ const server = createServer(async (req, res) => {
       price: symbol === "NQ" ? 84000 : 27000, size: 7, side: "sell" };
     rows.get(symbol)!.push(t); profiles.get(symbol)!.add(t); return json({ dummy: true });
   }
-  if (u.pathname === "/__dummy/status") return json({ dummy: true, pid: process.pid, now, start, stages,
+  if (u.pathname === "/__dummy/status") return json({ dummy: true, smoothing, settingsGets, settingsPuts, pid: process.pid, now, start, stages,
     cpu: process.cpuUsage(), rss: process.memoryUsage().rss,
     wsWireSent: closedWsSent + [...wsSockets].reduce((sum, socket) => sum + socket.bytesWritten, 0),
     hubs: [...hubs.values()].map(h => h.snapshot()), profiles: [...profiles].map(([s, p]) => [s, p.summary()]) });
   if (u.pathname === "/__dummy/away") { res.end("<title>ダミー隔離</title>ダミー隔離"); return; }
-  if (u.pathname === "/api/settings") return json({ version: 4, updatedAt: null, values: defaults });
+  if (u.pathname === "/api/settings") {
+    if (req.method === "PUT") settingsPuts++; else settingsGets++;
+    return json({ version: 4, updatedAt: null, values: { ...defaults,
+      ...(smoothing ? { heatUpperMode: "size", heatUpperSize: 200, heatGamma: 1, heatLowerMode: "off" } : {}) } });
+  }
   try {
     const file = path.join(front, u.pathname === "/" ? "index.html" : u.pathname);
     if (!file.startsWith(front + "/")) return json({ error: "invalid_path" }, 400);

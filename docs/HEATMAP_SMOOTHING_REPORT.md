@@ -1,4 +1,94 @@
-# HEATMAP平均化・平滑化：保留中
+# HEATMAP平均化・平滑化：隔離確認結果（追従キャッシュ修正待ち）
+
+## 再開した残りの確認（2026-10-30）
+
+GCの方向不明数量修正後、ユーザーの「次の候補を進めて」で再開した。候補commitは`f2eae66e83849f859e9791c7d8239e1f94192e03`。**平均化を再適用していない。今回は製品コード・設定・保存データを変更せず、検証fixture／手順／報告のみを追加した。** 既存177試験・型検査・build・16画像は有効なまま再利用した。今回追加した検証コードについてserver型検査は合格。
+
+### 実アプリの操作確認
+
+実製品dist、実Receiver／Hub／WS、dummy設定I/O、上流接続なし。各銘柄のseedは1796列×80明示価格、間に4秒欠損。時刻の進行で初期1800秒窓の列数が変わるため、以下の実測では実受信列数も記録する。
+
+- 初期「平均／自動」、NQを「最大／なし」にしてreload後も保持、GCは独立して「平均／自動」、GCで変更後NQへ戻してもNQ設定を保持。openerなしの別タブは独立して初期値。全操作で**設定PUT0**、サーバーversion4／固定色上限200・gamma1は不変。
+- カーソル移動12回で十字カーソルが動き、HEATMAPのdepth描画数は不変。パンでstartUs変更・follow=false、ホイールで時間幅変更、価格軸上下ドラッグで価格幅160→23.457113940856 ticks。
+- 実document.hidden=trueの背景タブ中、約定3枚と後着板修正73枚を受信。depth描画数7→7、復帰後8へ増加。数量はserver VP50→53枚、ブラウザ約定キャッシュ2→3件。viewport・zoom・follow=falseは完全一致のまま。カーソルのために全板再計算はしない。
+- 現在板は実Canvas.fillTextで`73`を描き、平均数量へ置換しない。画像`current-book-raw-73.png`、`restored-late-correction.png`。
+- HEATMAP→FOOTPRINTは画面遷移／旧画面破棄でHEATMAP Canvasなし。共有server sourceへの次の4枚を採用し、Hub接続1のまま、NQ合計53→57枚。これを背景タブの停止と混同しない。
+- 画面リンクは`debug=1`を引き継がないため、当初の戻り確認用debug待機は失敗した。製品の画面読取失敗ではない。別の限定検証で、直前のドラッグで保存されたviewportを実製品読込へ復元して確認した結果：**follow=falseでは価格幅23.457…を保持、follow=trueでは160へ戻る**。`main.ts::runHeatmap`の復元条件が`!savedHeatView.follow`であることと一致。比較元旧commitにも同じ条件が存在し、平均化の新規差分ではない。この既存課題は今回修正していない。
+
+証拠：`data/heatmap-smoothing/remaining-ui/native-ui.json`、`native-extra.json`、`view-memory.json`とPNG。最初のPlaywright確認はfixtureの0枚行が既存wireのsize>0検査で拒否されて中断、再開時は終了済みブラウザ本体に新contextを作れず未実施。その失敗記録も保持した。その後、別の検証専用native Chromiumで上記の残項目を確認した。既知0の平均は既存単体試験で確認済みだが、**現行wireは明示0行を表現できないため実WSでの0行試験とは主張しない**。行の欠落はunknownのまま。
+
+### 不公平だったDPR1/blockだけの再測定
+
+専用Vite18812・単独Chrome、ビルドや他の検証ブラウザと重ねず実施。以前と同じ600列×160価格・600秒・Canvas800×400 CSS px・固定上限200／下限off／gamma1、250msごと1列の補正、各15秒59サンプル。旧は同じソースの`setSmoothing(null)`、新はmean/auto。数学や全16画像、他の既存7条件は再実行していない。
+
+| DPR1 block | 旧 | 新 |
+|---|---:|---:|
+| 初回draw ms | 196.8 | 83.6 |
+| 通常draw p50/p95/max ms | 0.9 / 1.5 / 1.7 | 4.0 / 5.8 / 9.6 |
+| Chrome CPU秒／約15秒 | 0.68 | 0.90 |
+| 最終JS heap MiB | 24.95 | 16.29 |
+| 測定中通信 | 0 | 0 |
+
+通常描画は旧より重い。初回は順序固定・単回のため冷間最適化や統計的改善とは扱わない。`data/heatmap-smoothing/fair-dpr1-block/canvas.json`。既存のglow追加CPUも未解消。
+
+### 実WS経路・最新表示・メモリ
+
+条件ごとに**新しいfixtureと新しいChrome**を使い、1タブ前景（開始／終了document.hidden=false、接続1）、glow／mean-auto、1280×800 CSS viewport。初期1796列、80価格。250msに1約定、毎秒1板更新、15秒＋最終drain。61約定・183枚を各条件へ入力。2つのseed約定のうち1つは初期30分窓外のためブラウザキャッシュは1→62件、日次合計は50→233枚で、欠落／二重加算なし。下記は受信後、実Canvasを更新したバッチ単位（複数約定が同一描画へまとまる場合あり）。
+
+| 指標 | NQ DPR1 | GC DPR2 |
+|---|---:|---:|
+| 実測秒 | 15.57 | 15.59 |
+| 受信→latest描画 p50/p95/max ms | 1.8 / **6.1** / 41.4 | 2.5 / **47.7** / 54.8 |
+| 描画済みlatestバッチ数 | 61 | 58 |
+| 実Canvas depth更新数 | 31 | 28 |
+| 実Canvas depth p50/p95/max ms | 7.9 / **135** / 165.1 | 23.6 / **685** / **914.6** |
+| server送信→描画 p95/max ms | 7 / 71 | **433 / 761** |
+| 正規化 p95/max ms | 0.111 / 0.464 | 0.196 / 2.512 |
+| Chrome CPU秒 | 3.53 | 10.29 |
+| server CPU秒 | 0.187 | 0.177 |
+| Chromeプロセス群RSS標本最大MiB | 936.2 | 1167.3 |
+| JS heap標本最大MiB | 57.96 | 123.15 |
+| 最終派生キャッシュMiB | 32.97 | 47.98 |
+| server側WS実送信byte増分 | 7,954 | 7,868 |
+
+RSSはChrome親子のRSS合算で共有ページの重複計上を含み、専有メモリやピークの保証ではない。heapも250ms／1秒の標本最大で精密なpeak／leak検査ではない。キャッシュ48MiBは配列本体の制限で、Canvas・一時frame・trade mask・他レイヤーを含むブラウザ全体の上限ではない。
+
+前景の**ブラウザmessage受信後→描画p95 100ms**はこの入力で達成した。ただしサーバー送信後からの遅延は残り、低流量・単独隔離での結果を高流量／公開CPU改善の証拠としない。入力tsは秒丸めした合成データでupstreamAge p95はNQ864／GC920ms。実上流の鮮度の測定ではない。`data/heatmap-smoothing/live/real-ws.json`に全段階・FrameProfile・CPU・heap・wire・閉鎖確認を保存。
+
+### 今回見つかった不具合：追従でキャッシュ全再計算
+
+**合格扱いにしない。** 静止viewの既存試験では出ず、実WS追従で重いフレームが発生した。`SmoothingRaster.frame`は秒単位の浮動小数from/toをそのまま文字列キーにする一方、`followStartUs`は画素格子で計算した開始時刻を整数µsへ丸める。そのため画面が1物理画素進んでも、重なるはずの旧区間キーが一致しない。
+
+同じimmutable列・同じ数量・同じ幾何で、追加データなしにheadだけ進める隔離再現：
+- 幅928：初回928列。開始時刻不変の次3回は0列再計算。1画素進んだとき**928列全部再計算**。
+- 幅1856：初回1856列。位置不変なら0列。1画素進む2回とも**1856列全部再計算**。
+
+証拠：`data/heatmap-smoothing/live/follow-cache.json`。この再現は高さ16の純粋表示計算で、Canvas負荷測定の代用ではない。実Canvasの重いフレームと同一原因だと全て断定せず、不要な全再計算があることまでを確認した。実Canvas FrameProfileの通常更新でも重いdepth frameがあり、送信後遅延を隠さない。
+
+最小修正案：**時間格子の安定した識別と表示位置を分離**し、1画素追従時は旧区間の集約・色を再利用する。重なり時間・端の重みは維持し、数量・色値を粗く丸めて誤魔化さない。任意パン／ズーム／後着修正／mode変更時は必要な部分だけ適切に無効化する。変更対象は表示側キャッシュと回帰試験のみ。元に戻す場合はこの表示側差分だけ戻せる。保存・配信・集計・設定PUTを変える必要はない。**製品修正は未実施、許可待ち。** 追従中zoom復元の既存課題は別件として記録し、この最小修正へ混ぜない。
+
+### 実行・終了
+
+```sh
+pnpm --filter @workspace/receiver run typecheck
+node server/test/smoothing-ui-check.ts
+node server/test/smoothing-ui-check.ts --extra
+node server/test/smoothing-view-memory-check.ts
+node server/test/smoothing-canvas-check.ts --out=data/heatmap-smoothing/fair-dpr1-block --dpr=1 --style=block --seconds=15 --skip-images
+node server/test/smoothing-live-check.ts
+```
+
+UI本体の操作pass、extraは価格zoom／現在板73／画面離脱を確認後debug消失の待機で失敗、復元条件は別の限定試験で上記結果。失敗を全UI合格と書かない。本番書込・Publish・既存workflow再起動／停止・上流追加接続なし。
+
+### 今回の終了記録
+
+- 操作検証Chrome19799、追加操作20492、復元条件21493、実WS21020／21189、CanvasベンチのChromeはすべてBrowser.close／親PID終了・debugポート閉鎖を確認。失敗した検証もfinallyで閉鎖している。
+- 最後のfixture PID19767はHub NQ0／GC0・設定PUT0を記録してSIGTERM、PID ESRCH。性能fixtureの各PIDもそれぞれ終了。
+- Vite18812も停止。最終撮影のChrome22100と子PIDもすべてESRCH。**検証Chromium残存0、18812／18814／18815／9233／9234すべて閉鎖**。`data/heatmap-smoothing/cleanup-final.json`。
+- 通常workspaceプレビューの追加撮影は板待機の`workspace-preview-no-upstream.jpg`。隔離の実板確認画像・負荷測定の証拠とは混同しない。既存受信・通常workflowには停止／再起動操作なし。
+
+---
+## 以下はGC取り込みで中断する前の記録
 
 2026-10-30。途中でGC購入ZIPが追加され、ユーザーが「GCの取り込みを先にする」を選択したため、**完了扱いにはしない**。差分・既存の合格結果を保持している。
 
