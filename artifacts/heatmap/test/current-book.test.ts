@@ -3,8 +3,20 @@ import test from "node:test";
 import { currentBookRows, CurrentBookRenderer } from "../src/chart/current-book.ts";
 import { computePixelMax } from "../src/chart/aggregate.ts";
 import type { HeatColumn, Viewport } from "../src/domain.ts";
+import { glowBookColumn, type BookGlowBuffers } from "../src/chart/glow.ts";
 
 const view: Viewport = { startUs: 10_000_000, durationSec: 10, centerPriceTicks: 100, priceSpanTicks: 20 };
+test("current-book glow arrays are reused without retaining old quantities", () => {
+  const buffers: BookGlowBuffers = {}, scale = { upper: 100, lower: 0, gamma: 1 };
+  glowBookColumn(book(), view, 400, scale, buffers);
+  const rgba = buffers.rgba, core = buffers.core, blur = buffers.blur, positions = buffers.positions;
+  for (const b of [book([[99, 73]], []), null, book()]) {
+    const actual = glowBookColumn(b, view, 400, scale, buffers);
+    assert.equal(buffers.rgba, rgba); assert.equal(buffers.core, core);
+    assert.equal(buffers.blur, blur); assert.equal(buffers.positions, positions);
+    assert.deepEqual(actual, glowBookColumn(b, view, 400, scale));
+  }
+});
 function book(bids = [[99, 5], [98, 20]], asks = [[101, 10], [103, 30]]): HeatColumn {
   const side = (levels: number[][]) => ({
     prices: Int32Array.from(levels.map(l => l[0]!)), sizes: Uint32Array.from(levels.map(l => l[1]!)),

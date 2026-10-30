@@ -420,3 +420,17 @@ mtime_ms = 1793361214068
 storage_uri = "gcs://replit-rams-assets-pike/rams/assets/repl:c326af06-2355-4bfb-a52e-f433587c4cd9/d9ca0a42-7768-4f07-99a1-a85725a9d8fd/dafdb08c-1436-4595-91ee-82561a5644a9"
 storage_version_token = "1793361603453290"
 content_type = "image/png"
+
+[[outputs]]
+id = "hJ6QwfNuYyiYzlL5jKHR-"
+uri = "file://data/heatmap-smoothing/partial-after/GC-dpr3.png"
+type = "image"
+title = "GC・DPR3：修正後の隔離画面"
+description = "ダミー入力による実Canvas。背景の実効DPRは2、数字などの前景はDPR3。未公開。"
+logical_id = "ea122903-7af4-4f0a-bea1-6c817162884a"
+content_hash = "sha256:e224affd7de901b93243e4d51a08c5d24ba3f065eb7d10c43c9583e5d3555791"
+size = 827516
+mtime_ms = 1793374516284
+storage_uri = "gcs://replit-rams-assets-pike/rams/assets/repl:c326af06-2355-4bfb-a52e-f433587c4cd9/ea122903-7af4-4f0a-bea1-6c817162884a/cc4403b9-2d9d-43cb-a9d6-7b94139d3d18"
+storage_version_token = "1793375187451041"
+content_type = "image/png"

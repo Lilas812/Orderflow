@@ -200,3 +200,83 @@ CPUは専用Chromeの親・子プロセスの`/proc` user+system時間差。GC�
 - **未確認**：実アプリのタブ内設定・別タブ・再読み込み、NQ／GC、現在板の数字、追従・pan・zoom・十字カーソル、非表示復帰、実WS受信→最新部分描画。GC取り込み完了後に、必要な未確認分だけ続行する。
 - 合成ベンチのglow CPU増加、キャッシュ本体以外の一時画像／trade maskメモリも最終評価に含める必要がある。公開の重さが改善したとは扱わない。
 - 本番書込・Publish・上流追加接続なし。
+
+## 背景DPR上限・部分更新・バッファ再利用（2026-10-31）
+
+### 実施内容と版
+
+- 比較元：`d8925c893f561151011233bdfff53c7fd539fa46`。開始時の未コミット差分はなし。修正後は同commit＋今回の未コミット差分。公開していない。
+- `chart/coordinates.ts: backgroundDpr`、`main.ts: alignFollowToPhysicalPixel / resetTimeView`：背景と追従の画素格子を実効DPRへそろえる。CSS座標・時刻・数量は変えない。
+- `chart/smoothing.ts: SmoothingRaster.frame`：RGBA画像・32bitビュー・前回列IDと描画版・作業リスト・参照配列・カーネルを保持する。整数画素の移動は行ごとのmemmove、変更した列とfade/glow隣接列だけ再合成。非整数パンで時間区間が変わる場合、ズーム・サイズ・設定変更は必要な全列を更新する。列参照だけでなく描画版も照合し、後着修正を採用する。
+- `chart/renderer.ts: HeatmapRenderer.draw`：同じImageDataを保持し、Canvas自身の整数移動＋dirty stripのputImageDataへ変更。データなしで消した場合は保持状態も無効化する。
+- `chart/current-book.ts: CurrentBookRenderer.draw / currentBookRows`、`chart/glow.ts: glowBookColumn`：色帯のみ実効DPR、数字はネイティブDPR。DPR3では低解像度の帯Canvasを数字のCanvasへ合成する。帯の数量・色・glow配列とImageDataは同寸法なら再利用する。
+- 価格軸・価格ライン・バブル・文字・点線などの独立層、保存列、約定、CVD/VWAP等の数量計算、配信、サーバー処理は変更していない。派生列の48MiB・2時間制限は維持。保持RGBAと列ID配列は画面寸法に比例する別枠であり、48MiBに含めたとは扱わない。
+
+### 仕様にない値
+
+ユーザー承認値：**ヒートマップ背景と現在板の色帯だけ `min(devicePixelRatio, 2)`**。その他の層と現在板の数字は端末本来のDPRを維持する。DPR3の照合基準はDPR2での全更新画像であり、従来のネイティブDPR3画像との同一性ではない。保護された仕様本文・サーバー設定versionは変更していない。
+
+### 試験と実Canvas照合
+
+- `pnpm --filter @workspace/heatmap test`：**183/183合格**。
+- `pnpm --filter @workspace/heatmap typecheck`、`pnpm --filter @workspace/receiver typecheck`：合格。
+- `pnpm --filter @workspace/heatmap build`：合格。製品エントリー `dist/public/assets/index-CdOo-ZK5.js`。
+- `node server/test/partial-canvas-check.ts`：隔離Vite18812、実Chromium9235でDPR1/2/3。NQ/GCの価格ティック、block/glow、追従の両方向移動・停止、後着修正・列欠損、任意パン、時間/価格ズーム、時間/価格集約方式・gamma変更、約定によるfade境界変更を確認。
+- **312フレームすべてで全RGBA画素一致**。うち180フレームで全画面未満の部分更新を実際に通った。基準Rendererは各回派生状態をリセットした全更新。同寸法のImageData参照も全26更新で一致した。
+- DPR3で背景は640×320、価格軸と現在板の数字のCanvasは960×480（CSS320×160の試験）。現在板73枚の文字のtransformは3、帯のbackgroundDprは2。DPR1/2も各々の解像度と元数量を確認。
+- 証拠：`data/heatmap-smoothing/partial-canvas/results.json`、`dpr1.png`〜`dpr3.png`。画素一致の根拠は画像を目視した印象ではなく、実getImageDataの全バイトassert。
+- 関連検証ファイル：`test/smoothing.test.ts`、`test/current-book.test.ts`、`tools/partial-harness.ts`、`partial-check.html`、`server/test/partial-canvas-check.ts`。既存`tools/smoothing-harness.ts`は再利用される戻り配列を比較前にsnapshot化した。
+
+### 同一条件の短時間比較
+
+各条件ごとに新しい隔離fixture・Chromiumを起動。前景1タブ、CSS1280×800、背景のCSS922.15625×576.78125、初期1796列×80段、mean/auto/glow、固定上限200・下限off・gamma1。250msごとの61約定・183枚、1秒ごとの板更新、同じ表示範囲。設定・保存I/Oはダミー、実上流接続はない。
+
+約15秒注入＋500ms drain。実壁時計は通常15.56〜15.60秒、修正前DPR3は重い処理待ちにより16.44〜16.97秒。CPUはChromeの親子プロセス全体のuser＋system差で、複数プロセスのため壁時計を超え得る。CanvasはFrameProfileのdepth=trueの`heatmapMs`（計算コアの速度ではなく実Canvas描画）、p95は昇順のfloor(n×0.95)。receive→paintはブラウザ受信ハンドラー以降であり、上流からの全遅延ではない。
+
+すべて **修正前→修正後**。ms／CPU秒／メモリMiB／wire bytes。
+
+|銘柄・端末DPR|Canvas p95 ms|受信→最新描画 p95 ms|Chrome CPU 秒|派生列キャッシュ→列＋保持RGBA MiB|sampled JS heap peak MiB|Chrome RSS合計 sampled peak MiB|WS送信 bytes|
+|---|---:|---:|---:|---:|---:|---:|---:|
+|NQ・1|11.9→8.1|14.6→4.4|2.90→2.52|10.2→10.2＋2.0|48.3→27.7|914.5→912.3|7965→7941|
+|NQ・2|61.3→33.0|15.3→18.1|5.70→4.79|40.8→40.8＋8.1|69.3→67.1|1101.2→1090.6|7925→7910|
+|NQ・3|1686.7→20.4|112.4→14.5|19.01→8.26|48.0→40.9＋8.1|329.5→67.2|1681.9→1347.6|10862→8047|
+|GC・1|17.2→7.9|7.4→11.9|2.69→2.27|10.2→10.2＋2.0|47.2→29.2|881.6→861.0|7755→7888|
+|GC・2|30.5→35.8|12.6→12.0|5.13→4.67|40.8→40.8＋8.1|123.9→66.6|1137.9→1086.0|7953→7921|
+|GC・3|1318.0→60.2|104.1→17.0|19.06→7.17|48.0→40.8＋8.1|327.7→66.6|1617.1→1361.3|10947→7933|
+
+- **33ms目標：NQのDPR2/3は達成、GCのDPR2/3は未達。GC・DPR2の今回p95は悪化した。** 全条件が改善したとは報告しない。
+- 受信→最新描画は修正後6条件ともp95 100ms以内。ただしNQ2とGC1のp95は前より増えた。高流量・実ライブ・公開環境の解決を示すものではない。
+- Canvas標本数：前NQ1/2/3=31/31/13、GC1/2/3=32/32/14。後NQ1/2/3=31/31/31、GC1/2/3=31/31/29。修正前DPR3の受信標本はNQ27/GC26にまとめられ、修正後は全条件61。少数標本・短時間のp95を長時間保証にしない。
+- 保持RGBAはJS ImageDataと同じバッファで、二重加算していない。列ID/版番号配列はDPR2で約14.4KiBを別途使用する。RGB/配列ビューの小さなヘッダー等は表の派生配列bytesに含まれず、JS heap側に含まれる。RSS合計は共有ページの重複を含み、実際の専有RAMでもサーバーRSSでもない。
+- 各入力は61件・183枚。サーバーVP/日次指標fixtureの総量233枚とブラウザの初期1件＋61件も保持。fixtureは保存I/Oがダミーであり、実保存の試験ではない。通信量の差は圧縮・時刻・描画停滞時の送信まとめ等の影響を含み、プロトコル削減として扱わない。
+- 生データ：`data/heatmap-smoothing/partial-before/real-ws.json`、`partial-after/real-ws.json`、`partial-after/comparison.json`。全6条件は`node server/test/smoothing-live-check.ts --matrix --out=...`で再実行可能。今回使用した6条件用runnerは標本不足のDPR3も記録するため、受信標本の最少値を1にした版。実行時のrunnerも`data/heatmap-smoothing/partial-runner.mts.txt`と`partial-profile-runner.mts.txt`へ原文のまま保全した。
+
+### 未達部分の追加内訳と次案（実装していない）
+
+別の15秒計測でCanvas APIの壁時計ラップと200µs CPU samplingを追加した。これは本測定35.8/60.2msの同じフレームではなく、その値への遡及的な分解ではない。追加計測のGC3はp95 19.8msへ変動したが、本表の60.2msを置き換えず未達判定を維持する。
+
+|追加計測のp95該当フレーム|GC DPR2|GC DPR3|
+|---|---:|---:|
+|HEATMAP Canvas更新|36.2ms|19.8ms|
+|背景putImageData合計|24.8ms|7.0ms|
+|背景drawImage（当該フレーム）|0.0ms|0.0ms|
+|背景の残り（数量集約・色・fade/glow・保持画像操作・その他JS等）|11.4ms|12.8ms|
+|現在板の層|0.2ms|4.4ms|
+|その他の層・スケジューラ残差|0.1ms|0.2ms|
+
+GC3の当該フレームのCPUスタック相当値：blur約0.289ms、SmoothingRaster内の他処理約9.569ms。時間・価格集約は当該窓でサンプルがないが0msの意味ではない。全30個のdepthフレームでは時間/価格集約0.864ms、blur7.807ms、その他frame内174.940ms。サンプルの相当時間は正確な壁時計内訳でも、Chrome総CPU秒でもない。ネイティブAPI待ちや未分類時間を勝手に平均化へ割り当てない。
+
+根拠のある次案：
+
+1. **dirty strip専用の小さな再利用RGBA/ImageDataへ詰め、CPU側の小Canvasから背景へ合成する**、または背景Contextの`willReadFrequently`有無を隔離比較する。現状はdirty矩形を指定しても全画面サイズのImageDataを渡しており、GC2追加計測では転送APIが24.8ms。小strip化でここを1〜5msにできると仮定すれば同フレームは約12.4〜16.4msになる計算。ただし実測予測ではなく、GPU同期/Canvas内部コピーが変わるため33msの保証はできない。背景の転送処理だけに限定し、全画素照合を再利用する。
+2. **色・fade/glowの列シグネチャ走査をdirty範囲へ限定**する案。今回のGC3全depth窓でframe内その他のサンプルが大きい。ただし保持RGBA移動・信号比較・色合成の正確な内訳をさらに分けない限り削減量は確定できない。時間/価格集約やblurの追加最適化を主因と断定しない。数量集計やネイティブ解像度の前景層には広げない。
+
+証拠：`data/heatmap-smoothing/partial-profile/{real-ws.json,breakdown.json,GC-dpr3.cpuprofile}`。一時runnerがCPU profileの出力名を固定していたため元の`GC-dpr2.cpuprofile`は最後のGC3の内容。正しい名前へ同内容をコピーした。GC2のCPU profileは残っておらず、GC2の内訳は保存されたCanvas APIラップ結果に基づく。
+
+### 画面・終了・未確認
+
+- 製品Canvasの画面証拠：`data/heatmap-smoothing/partial-after/NQ-dpr1.png`〜`GC-dpr3.png`。追加のWorkspace外観確認`workspace-preview.jpg`は上流停止・確定列待ちの表示であり、実データ描画の証拠には使わない。
+- 比較12条件＋追加内訳2条件のChromeは全て終了・debug port閉鎖。各fixtureはブラウザ終了後のNQ/GC hub接続0を確認し、SIGTERM後PID消滅。実Canvas照合のChrome3個も終了した。
+- Screenshot用の別Chrome root35082と子6個もSIGTERMで終了し、全7PIDの消滅を確認。Vite18812も停止。最終確認で自分の記録済みroot PID残存なし、18812/18815/9233/9235全てECONNREFUSED。`partial-after/process-cleanup.json`、`screenshot-cleanup.json`に記録。
+- 既存受信・管理workflowの停止/再起動、本番書込・Publish・上流追加接続は行っていない。
+- **未確認**：GCの33ms目標の安定達成、長時間/高流量、実端末のGPU差、実ライブと公開環境。追加の最適化・公開へ進まず停止。

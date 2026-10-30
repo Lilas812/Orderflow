@@ -29,7 +29,9 @@ const summary = (a: number[]) => {
     p95: a[Math.floor(a.length * .95)] ?? null, max: a.at(-1) ?? null };
 };
 const records = [];
-for (const [symbol, dpr] of [["NQ", 1], ["GC", 2]] as const) {
+const cases: readonly (readonly ["NQ" | "GC", number])[] = process.argv.includes("--matrix")
+  ? [["NQ", 1], ["NQ", 2], ["NQ", 3], ["GC", 1], ["GC", 2], ["GC", 3]] : [["NQ", 1], ["GC", 2]];
+for (const [symbol, dpr] of cases) {
   const child = spawn(process.execPath, ["server/test/latest-indicators-fixture.ts", "--port=18815", "--smoothing=1"], { stdio: "ignore" });
   let chrome: Awaited<ReturnType<typeof browser>> | undefined;
   const result: Record<string, any> = { symbol, dpr, synthetic: true, initialColumns: 1796, levelsPerColumn: 80,
@@ -88,12 +90,16 @@ for (const [symbol, dpr] of [["NQ", 1], ["GC", 2]] as const) {
     if (result.before.hidden || result.after.hidden || samples.length < 30
       || after.hubs.reduce((n: number, h: any) => n + h.connected, 0) !== 1) throw Error("invalid_measurement_conditions");
     result.targetMet = result.receiveToPaint.p95 <= 100;
+    result.canvasSizes = await p.cdp.evaluate("Array.from(document.querySelectorAll('canvas')).map(c=>({id:c.id,width:c.width,height:c.height,cssWidth:c.getBoundingClientRect().width,cssHeight:c.getBoundingClientRect().height}))");
     // Outside the measured interval; captures actual product Canvas, not a mock.
     const screenshot = await p.cdp.call("Page.captureScreenshot", { format: "png" });
     await fs.writeFile(`${out}/${symbol}-dpr${dpr}.png`, Buffer.from(screenshot.data, "base64"));
   } catch (e) { result.error = String(e); }
   finally {
     if (chrome) result.browserClosed = await chrome.close();
+    try { result.finalHubStatus = await (await fetch("http://127.0.0.1:18815/__dummy/status")).json(); }
+    catch (e) { result.finalHubError = String(e); }
+    result.serverPID = child.pid;
     child.kill("SIGTERM");
     await Promise.race([new Promise(r => child.once("exit", r)), delay(3000)]);
     try { process.kill(child.pid!, 0); result.serverClosed = false; } catch (e: any) { result.serverClosed = e.code === "ESRCH"; }

@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { temporalQuantities, projectQuantities, mergeQuantity, SmoothingRaster } from "../src/chart/smoothing.ts";
 import { readSmoothing, saveSmoothing } from "../src/data/smoothing-settings.ts";
 import type { HeatColumn } from "../src/domain.ts";
-import { followStartUs } from "../src/chart/coordinates.ts";
+import { backgroundDpr, followStartUs } from "../src/chart/coordinates.ts";
 const column = (sec: number, size: number, price = 10): HeatColumn => ({ timeUs: sec * 1e6, source: "history",
   bids: { prices: Int32Array.of(price), sizes: Uint32Array.of(size) },
   asks: { prices: new Int32Array(), sizes: new Uint32Array() } });
@@ -97,4 +97,45 @@ test("rounded follow edges use their actual duration: fully known pixels retain 
     const image = new SmoothingRaster().frame(columns, view, width, 1, options, scale, "block", null);
     for (let x = 0; x < width; x++) assert.deepEqual(image.slice(x * 4, x * 4 + 4), reference);
   }
+});
+
+test("retained RGBA, dirty strips and both-direction scroll match full repaint at effective DPR", () => {
+  const head = 1_793_350_000;
+  for (const dpr of [1, 2, 3]) for (const style of ["block", "glow"] as const) {
+    const width = 64 * backgroundDpr(dpr), height = 12 * backgroundDpr(dpr);
+    const raster = new SmoothingRaster();
+    let cols = Array.from({ length: 90 }, (_, i) => column(head - 80 + i, i % 11 === 0 ? 0 : (i * 17) % 150));
+    let shared: Uint8ClampedArray | undefined;
+    for (let step = 0; step < 24; step++) {
+      const time = step % 7 === 0 ? "max" : "mean", price = step % 5 === 0 ? "none" : "auto";
+      const durationSec = step >= 17 ? 71.123 : 60;
+      const startUs = step >= 12 && step <= 15 ? (head - 45) * 1e6 + step * 123_457
+        : followStartUs((head + (step < 8 ? step : 16 - step)) * 1e6, durationSec, width);
+      const view = { startUs, durationSec, centerPriceTicks: 10.125, priceSpanTicks: step > 20 ? 12 : 25 };
+      if (step === 4) { cols = [...cols]; cols[40] = column(head - 40, 137); }
+      if (step === 10) cols = cols.filter((_, i) => i !== 42);
+      const scale = { upper: step > 18 ? 170 : 200, lower: 0, gamma: step > 18 ? .7 : 1 };
+      const actual = raster.frame(cols, view, width, height, { time, price }, scale, style, null);
+      if (shared) assert.equal(actual, shared, "reuse full-size RGBA even across pan/zoom/settings");
+      shared = actual;
+      assert.deepEqual(actual, new SmoothingRaster().frame(cols, view, width, height, { time, price }, scale, style, null),
+        `DPR=${dpr} style=${style} step=${step}`);
+    }
+    assert.equal(backgroundDpr(dpr), Math.min(dpr, 2));
+  }
+});
+
+test("stationary and one-pixel follow preserve the image and restrict dirty columns", () => {
+  const cols = Array.from({ length: 120 }, (_, i) => column(i, i % 100));
+  const raster = new SmoothingRaster(), options = { time: "mean", price: "auto" } as const;
+  const view = { startUs: 0, durationSec: 120, centerPriceTicks: 10, priceSpanTicks: 1 };
+  const scale = { upper: 200, lower: 0, gamma: 1 };
+  const first = raster.frame(cols, view, 120, 4, options, scale, "glow", null);
+  assert.equal(raster.frame(cols, view, 120, 4, options, scale, "glow", null), first);
+  assert.equal(raster.dirtyRanges.length, 0);
+  const moved = { ...view, startUs: 1e6 };
+  raster.frame(cols, moved, 120, 4, options, scale, "glow", null);
+  assert.equal(raster.shiftPixels, 1); assert.equal(raster.fullRepaint, false);
+  assert.ok(raster.dirtyRanges.reduce((n, [a,b]) => n+b-a, 0) < 30);
+  assert.deepEqual(first, new SmoothingRaster().frame(cols, moved, 120, 4, options, scale, "glow", null));
 });

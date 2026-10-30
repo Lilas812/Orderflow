@@ -2,7 +2,7 @@ import "./index.css";
 import { ColumnCache } from "./data/cache.ts";
 import { RealtimeClient, type ConnectionState, type HelloMessage, type SocketStatus } from "./data/socket.ts";
 import { US_PER_SECOND, clampViewport, type Viewport, bestMidpoint } from "./domain.ts";
-import { BOOK_OVERLAY_FRACTION, followStartUs, timeUsToX, xToTimeUs, zoomPriceAt, zoomTimeAt } from "./chart/coordinates.ts";
+import { BOOK_OVERLAY_FRACTION, backgroundDpr, followStartUs, timeUsToX, xToTimeUs, zoomPriceAt, zoomTimeAt } from "./chart/coordinates.ts";
 import { HeatmapRenderer, type DrawMetrics } from "./chart/renderer.ts";
 import { formatAxisTicks, type DisplayZone } from "./chart/timezone.ts";
 import { CurrentTradeState } from "./data/trade-aggregate.ts";
@@ -490,7 +490,7 @@ function syncRetentionAndRequests(): void {
 function alignFollowToPhysicalPixel(): void {
   const head = Math.max(cache.latestTimeUs ?? 0, latestTradeHeadUs ?? 0);
   if (!head) return;
-  const width = Math.max(1, Math.round(canvas.clientWidth * (window.devicePixelRatio || 1)));
+  const width = Math.max(1, Math.round(canvas.clientWidth * backgroundDpr(window.devicePixelRatio)));
   viewport.startUs = followStartUs(head, viewport.durationSec, width);
 }
 function setViewport(next: Viewport, pan = false): void {
@@ -557,7 +557,7 @@ function enableAutoPrice(): void {
 function resetTimeView(): void {
   const reference = cache.latestTimeUs ?? hello?.serverTimeUs ?? Date.now() * 1_000;
   viewport = resetTimeViewport(viewport, hello?.mode === "replay" ? replayHeadUs ?? reference : reference,
-    Math.max(1, Math.round(canvas.clientWidth * (window.devicePixelRatio || 1))),
+    Math.max(1, Math.round(canvas.clientWidth * backgroundDpr(window.devicePixelRatio))),
     hello?.mode === "replay" ? "replay" : "live");
   follow = true;
   refreshVisibleRange();

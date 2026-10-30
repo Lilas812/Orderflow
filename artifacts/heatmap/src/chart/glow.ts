@@ -338,16 +338,32 @@ function buildSizes(refs: (HeatColumn | null)[], topPrice: number, priceCount: n
 }
 
 /** One glow column for a single book (current-book band): no fade, horizontal neighbours equal to itself. */
-export function glowBookColumn(book: HeatColumn | null, view: Viewport, heightPx: number, scale: GlowScale) {
+export interface BookGlowBuffers {
+  positions?: Float32Array; core?: Float32Array; blur?: Float32Array; rgba?: Uint8ClampedArray;
+  k?: number; kernel?: Float32Array;
+}
+export function glowBookColumn(book: HeatColumn | null, view: Viewport, heightPx: number, scale: GlowScale,
+  reuse?: BookGlowBuffers) {
   const k = glowK(heightPx / view.priceSpanTicks);
   const margin = Math.ceil(glowRadius(k) / k) + 1;
   const top = view.centerPriceTicks + view.priceSpanTicks / 2, bottom = top - view.priceSpanTicks;
   const topPrice = Math.ceil(top + 0.5) - 1 + margin;
   const priceCount = Math.max(1, topPrice - (Math.floor(bottom - 0.5) + 1 - margin) + 1);
-  const entry = buildSizes([book], topPrice, priceCount);
-  const positions = new Float32Array(priceCount);
-  for (let p = 0; p < priceCount; p++) positions[p] = colorPosition(entry.sizes[p]!, scale.upper, scale.lower, scale.gamma);
-  const core = coreColumn(positions, k);
-  const blur = verticalBlur(core, gaussianKernel(k));
-  return { rgba: composeColumn(core, k, blur, blur, blur), k, topPrice, priceCount };
+  const positions = reuse?.positions?.length === priceCount ? reuse.positions : new Float32Array(priceCount);
+  positions.fill(0);
+  if (book) for (const side of [book.bids, book.asks]) for (let i = 0; i < side.prices.length; i++) {
+    const row = topPrice - side.prices[i]!;
+    if (row >= 0 && row < priceCount) positions[row] = Math.max(positions[row]!, side.sizes[i]!);
+  }
+  for (let p = 0; p < priceCount; p++) positions[p] = colorPosition(positions[p]!, scale.upper, scale.lower, scale.gamma);
+  const length = priceCount * k;
+  const core = reuse?.core?.length === length ? reuse.core : new Float32Array(length);
+  const blur = reuse?.blur?.length === length ? reuse.blur : new Float32Array(length);
+  const rgba = reuse?.rgba?.length === length * 4 ? reuse.rgba : new Uint8ClampedArray(length * 4);
+  const kernel = reuse?.k === k && reuse.kernel ? reuse.kernel : gaussianKernel(k);
+  coreColumn(positions, k, core as Float32Array<ArrayBuffer>);
+  verticalBlur(core, kernel, blur as Float32Array<ArrayBuffer>);
+  composeColumn(core, k, blur, blur, blur, rgba as Uint8ClampedArray<ArrayBuffer>);
+  if (reuse) Object.assign(reuse, { positions, core, blur, rgba, k, kernel });
+  return { rgba, k, topPrice, priceCount };
 }

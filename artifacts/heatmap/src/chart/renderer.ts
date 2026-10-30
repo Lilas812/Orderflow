@@ -10,6 +10,7 @@ import { priceTicksToY } from "./coordinates.ts";
 import type { TradeAggregator } from "../data/trade-aggregate.ts";
 import { DEFAULT_SETTINGS } from "../data/settings.ts";
 import { SmoothingRaster, DEFAULT_SMOOTHING, type SmoothingOptions } from "./smoothing.ts";
+import { backgroundDpr } from "./coordinates.ts";
 
 export type HeatStyle = "glow" | "block";
 
@@ -115,7 +116,7 @@ export class HeatmapRenderer {
     const drawStart = performance.now();
     const rect = this.canvas.getBoundingClientRect();
     if (rect.width < 1 || rect.height < 1) return;
-    const dpr = window.devicePixelRatio || 1;
+    const dpr = backgroundDpr(window.devicePixelRatio);
     const width = Math.max(1, Math.round(rect.width * dpr));
     const height = Math.max(1, Math.round(rect.height * dpr));
     const resized = width !== this.physicalWidth || height !== this.physicalHeight;
@@ -139,11 +140,22 @@ export class HeatmapRenderer {
         && [c.bids, c.asks].some(side => side.prices.some((p, i) => p + .5 > bottom && p - .5 < top && side.sizes[i]! > 0)));
       const { scaleMs } = this.refreshScale(columns, view, hasPriceData, hasVisible);
       const start = performance.now();
-      this.context.fillStyle = "#000"; this.context.fillRect(0, 0, width, height);
       if (hasPriceData && this.threshold !== null) {
         const image = this.smoothingRaster.frame(columns, view, width, height, this.smoothing,
           { upper: this.threshold, lower: this.lower, gamma: this.options.heatGamma }, this.style, this.trades);
-        this.context.putImageData(new ImageData(image as Uint8ClampedArray<ArrayBuffer>, width, height), 0, 0);
+        if (this.imageData?.data !== image)
+          this.imageData = new ImageData(image as Uint8ClampedArray<ArrayBuffer>, width, height);
+        if (this.smoothingRaster.fullRepaint) this.context.putImageData(this.imageData, 0, 0);
+        else {
+          const shift = this.smoothingRaster.shiftPixels;
+          if (shift) this.context.drawImage(this.canvas, Math.max(0, shift), 0, width - Math.abs(shift), height,
+            Math.max(0, -shift), 0, width - Math.abs(shift), height);
+          for (const [from, to] of this.smoothingRaster.dirtyRanges)
+            this.context.putImageData(this.imageData, 0, 0, from, 0, to - from, height);
+        }
+      } else {
+        this.context.fillStyle = "#000"; this.context.fillRect(0, 0, width, height);
+        this.smoothingRaster.reset();
       }
       if (redrawAxis) { if (hasPriceData) drawPriceAxis(this.axis, view); else clearPriceAxis(this.axis); }
       this.colorDirty = false;
@@ -152,7 +164,9 @@ export class HeatmapRenderer {
         lower: this.lower, gamma: this.options.heatGamma, style: this.style,
         rasterRebuilt: this.smoothingRaster.metrics.recomputedColumns > 0,
         recomputedColumns: this.smoothingRaster.metrics.recomputedColumns,
-        cachedProfileBytes: this.smoothingRaster.metrics.cachedBytes };
+        cachedProfileBytes: this.smoothingRaster.metrics.cachedBytes,
+        partialRaster: !this.smoothingRaster.fullRepaint,
+        repaintPixels: this.smoothingRaster.dirtyRanges.reduce((n, [a, b]) => n + (b - a) * height, 0) };
       return;
     }
     if (this.style === "glow") {

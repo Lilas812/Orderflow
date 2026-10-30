@@ -1,7 +1,7 @@
 import type { HeatColumn, Viewport } from "../domain.ts";
-import { priceTicksToY, timeUsToX } from "./coordinates.ts";
+import { backgroundDpr, priceTicksToY, timeUsToX } from "./coordinates.ts";
 import { colorize } from "./renderer.ts";
-import { glowBookColumn } from "./glow.ts";
+import { glowBookColumn, type BookGlowBuffers } from "./glow.ts";
 import { BOOK_NUMBER_RIGHT_INSET, bookBandEnd, bookNumberFont, bookNumberRows, type BookNumberRow } from "./book-numbers.ts";
 
 /** Confirmed column's right edge, not the timestamp of the provisional book. */
@@ -12,8 +12,9 @@ export function bookBandStart(rightEdgeUs: number | null, view: Viewport, width:
 }
 
 /** One value per physical row, with the same tick-cell coverage as the heatmap. */
-export function currentBookRows(book: HeatColumn | null, view: Viewport, height: number, sellRows?: Uint8Array): Uint32Array {
-  const rows = new Uint32Array(height);
+export function currentBookRows(book: HeatColumn | null, view: Viewport, height: number, sellRows?: Uint8Array,
+  reuse?: Uint32Array): Uint32Array {
+  const rows = reuse?.length === height ? reuse : new Uint32Array(height); rows.fill(0);
   sellRows?.fill(0);
   if (!book) return rows;
   for (const side of [book.bids, book.asks]) {
@@ -42,10 +43,15 @@ export class CurrentBookRenderer {
   private readonly canvas: HTMLCanvasElement;
   private readonly context: CanvasRenderingContext2D;
   private scratch: HTMLCanvasElement | null = null;
+  private band: HTMLCanvasElement | null = null;
+  private rows: Uint32Array = new Uint32Array(0);
+  private colors = new Uint8ClampedArray(0);
+  private columnImage: ImageData | null = null;
+  private glowBuffers: BookGlowBuffers = {};
   private samples: number[] = [];
   metrics = { drawMs: 0, meanMs: 0, maxMs: 0, drawCount: 0, paintedRows: 0, timeUs: null as number | null, p99: 1,
     bandStart: null as number | null, bandEnd: null as number | null, numbers: 0, groupTicks: 1,
-    style: "glow" as "glow" | "block" };
+    style: "glow" as "glow" | "block", backgroundDpr: 1 };
   lastNumbers: BookNumberRow[] = [];
 
   constructor(canvas: HTMLCanvasElement) {
@@ -68,6 +74,18 @@ export class CurrentBookRenderer {
     }
     const ctx = this.context;
     ctx.clearRect(0, 0, width, height);
+    const bandDpr = backgroundDpr(dpr);
+    const bandWidth = Math.max(1, Math.round(rect.width * bandDpr));
+    const bandHeight = Math.max(1, Math.round(rect.height * bandDpr));
+    let bandContext = ctx;
+    if (bandDpr !== dpr) {
+      this.band ??= document.createElement("canvas");
+      if (this.band.width !== bandWidth || this.band.height !== bandHeight) {
+        this.band.width = bandWidth; this.band.height = bandHeight;
+      }
+      bandContext = this.band.getContext("2d")!;
+      bandContext.clearRect(0, 0, bandWidth, bandHeight);
+    }
     const scale = { upper: p99, lower, gamma };
     const numbers = bookNumberRows(book, view, rect.height, scale);
     // Measure each drawn number with its own (bold or regular) font: the band stops 5px before the widest.
@@ -78,33 +96,45 @@ export class CurrentBookRenderer {
     }
     const bandStart = book && numbers.length ? bookBandStart(rightEdgeUs, view, width) : null;
     const bandEnd = Math.round(bookBandEnd(rect.width, widest) * dpr);
+    const paintStart = book && numbers.length ? bookBandStart(rightEdgeUs, view, bandWidth) : null;
+    const paintEnd = Math.round(bookBandEnd(rect.width, widest) * bandDpr);
     let paintedRows = 0;
-    if (bandStart !== null && bandEnd > bandStart) {
-      ctx.globalAlpha = 1;
-      ctx.fillStyle = "#000000";
-      ctx.fillRect(bandStart, 0, bandEnd - bandStart, height);
+    if (paintStart !== null && paintEnd > paintStart) {
+      bandContext.globalAlpha = 1;
+      bandContext.fillStyle = "#000000";
+      bandContext.fillRect(paintStart, 0, paintEnd - paintStart, bandHeight);
       if (style === "block") {
-        const rows = currentBookRows(book, view, height);
-        const colors = colorize(rows, p99, undefined, lower, gamma);
-        for (let y = 0; y < height; y++) {
+        this.rows = currentBookRows(book, view, bandHeight, undefined, this.rows);
+        if (this.colors.length !== bandHeight * 4) this.colors = new Uint8ClampedArray(bandHeight * 4);
+        const rows = this.rows, colors = colorize(rows, p99, this.colors, lower, gamma);
+        for (let y = 0; y < bandHeight; y++) {
           if (rows[y]! < 1 || rows[y]! <= lower) continue;
           const i = y * 4;
-          ctx.fillStyle = `rgb(${colors[i]},${colors[i + 1]},${colors[i + 2]})`;
-          ctx.fillRect(bandStart, y, bandEnd - bandStart, 1);
+          bandContext.fillStyle = `rgb(${colors[i]},${colors[i + 1]},${colors[i + 2]})`;
+          bandContext.fillRect(paintStart, y, paintEnd - paintStart, 1);
           paintedRows++;
         }
       } else {
-        const column = glowBookColumn(book, view, height, scale);
+        const column = glowBookColumn(book, view, bandHeight, scale, this.glowBuffers);
         this.scratch ??= document.createElement("canvas");
-        this.scratch.width = 1; this.scratch.height = column.rgba.length / 4;
+        if (this.scratch.width !== 1 || this.scratch.height !== column.rgba.length / 4) {
+          this.scratch.width = 1; this.scratch.height = column.rgba.length / 4;
+        }
         const sctx = this.scratch.getContext("2d")!;
-        sctx.putImageData(new ImageData(column.rgba as Uint8ClampedArray<ArrayBuffer>, 1, column.rgba.length / 4), 0, 0);
-        const yTop = priceTicksToY(column.topPrice + 0.5, view, height);
-        ctx.imageSmoothingEnabled = true;
-        ctx.drawImage(this.scratch, 0, 0, 1, column.rgba.length / 4, bandStart, yTop, bandEnd - bandStart,
-          column.priceCount * height / view.priceSpanTicks);
-        paintedRows = height;
+        if (this.columnImage?.height !== column.rgba.length / 4)
+          this.columnImage = new ImageData(1, column.rgba.length / 4);
+        this.columnImage.data.set(column.rgba);
+        sctx.putImageData(this.columnImage, 0, 0);
+        const yTop = priceTicksToY(column.topPrice + 0.5, view, bandHeight);
+        bandContext.imageSmoothingEnabled = true;
+        bandContext.drawImage(this.scratch, 0, 0, 1, column.rgba.length / 4, paintStart, yTop, paintEnd - paintStart,
+          column.priceCount * bandHeight / view.priceSpanTicks);
+        paintedRows = bandHeight;
       }
+    }
+    if (bandContext !== ctx) {
+      ctx.imageSmoothingEnabled = false;
+      ctx.drawImage(this.band!, 0, 0, bandWidth, bandHeight, 0, 0, width, height);
     }
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.textAlign = "right"; ctx.textBaseline = "middle";
@@ -121,6 +151,6 @@ export class CurrentBookRenderer {
     this.metrics = { drawMs, meanMs: this.samples.reduce((a, b) => a + b, 0) / this.samples.length,
       maxMs: Math.max(...this.samples), drawCount: this.metrics.drawCount + 1, paintedRows,
       timeUs: book?.timeUs ?? null, p99, bandStart, bandEnd: bandStart === null ? null : bandEnd,
-      numbers: numbers.length, groupTicks: numbers[0]?.ticks ?? 1, style };
+      numbers: numbers.length, groupTicks: numbers[0]?.ticks ?? 1, style, backgroundDpr: bandDpr };
   }
 }

@@ -2,6 +2,8 @@ import type { Viewport } from "../domain.ts";
 import { US_PER_SECOND, clampViewport } from "../domain.ts";
 
 export const BOOK_OVERLAY_FRACTION = 0.2;
+/** User-approved cap for colour backgrounds only; never use for text/overlays. */
+export function backgroundDpr(deviceDpr: number): number { return Math.min(deviceDpr || 1, 2); }
 
 /** End of the newest confirmed column sits at the 80% physical-pixel anchor. */
 export function followStartUs(latestColumnUs: number, durationSec: number, physicalWidth: number): number {

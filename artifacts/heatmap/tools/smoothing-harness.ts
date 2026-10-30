@@ -50,7 +50,7 @@ function assertions() {
   const raster = new SmoothingRaster(), smallView = {...view,durationSec:10,centerPriceTicks:100,priceSpanTicks:1};
   const selected = Array.from({length:10},(_,s)=>({ ...make(s), bids:{prices:Int32Array.of(100),sizes:Uint32Array.of(s?10:100)},asks:{prices:new Int32Array(),sizes:new Uint32Array()} }));
   const scale = {upper:200,lower:0,gamma:1};
-  const a = raster.frame(selected, smallView,1,1,{time:"mean",price:"auto"},scale,"block",null);
+  const a = raster.frame(selected, smallView,1,1,{time:"mean",price:"auto"},scale,"block",null).slice();
   const b = raster.frame(selected, smallView,1,1,{time:"max",price:"auto"},scale,"block",null);
   if (a.slice(0,3).every((n,i)=>n===b[i])) throw Error("unsaturated_colours_equal");
   renderer.setSmoothing({time:"mean",price:"auto"});

@@ -49,6 +49,7 @@ interface Entry {
   id: number; refs: readonly HeatColumn[]; from: number; to: number;
   values: Float32Array; coverage: Float32Array; core: Float32Array; blur: Float32Array;
   rgba: Uint8ClampedArray; sig: string; paintSig: string; generation: number; bytes: number;
+  pixels: Uint32Array; paintVersion: number;
 }
 /** Only display-derived profiles. Same 2h/48MiB ceiling as existing display tiles.
  * Cache keys contain physical pixel edges and geometry; no RGB resampling. */
@@ -60,8 +61,26 @@ export class SmoothingRaster {
   private tradeRevision = -1;
   private tradeKey = "";
   private eaten = new Map<number, { mask: Uint8Array; signature: string }>();
+  private list: Entry[] = [];
+  private refs: HeatColumn[] = [];
+  private bySecond = new Map<number, HeatColumn>();
+  private image = new Uint8ClampedArray(0);
+  private words = new Uint32Array(0);
+  private lastIds = new Int32Array(0);
+  private lastPaint = new Int32Array(0);
+  private lastPixel = NaN;
+  private lastStart = NaN;
+  private lastDx = NaN;
+  private imageHeight = 0;
+  private imageValid = false;
+  private kernelK = 0;
+  private kernel: Float32Array = new Float32Array(0);
+  /** Half-open dirty strips in the retained image; shift is positive to the left. */
+  readonly dirtyRanges: [number, number][] = [];
+  shiftPixels = 0;
+  fullRepaint = true;
   metrics = { recomputedColumns: 0, cachedBytes: 0, coreColumns: 0, paintColumns: 0 };
-  reset() { this.entries.clear(); this.bytes = 0; this.geometry = ""; this.tradeRevision = -1; }
+  reset() { this.entries.clear(); this.bytes = 0; this.geometry = ""; this.tradeRevision = -1; this.imageValid = false; }
   frame(columns: readonly HeatColumn[], view: Viewport, width: number, height: number,
     options: SmoothingOptions, scale: { upper: number; lower: number; gamma: number },
     style: "block" | "glow", trades: TradeAggregator | null) {
@@ -77,23 +96,24 @@ export class SmoothingRaster {
       ? Math.round((firstPixel + x) * pixelUs) / 1e6 : start + x * dx;
     const geometry = `${height}|${view.centerPriceTicks}|${view.priceSpanTicks}|${options.time}|${options.price}`;
     if (geometry !== this.geometry) { this.reset(); this.geometry = geometry; }
-    const bySecond = new Map<number, HeatColumn>();
+    const bySecond = this.bySecond; bySecond.clear();
     // Last version of a second wins. Never feed display interpolation to statistics.
     for (const c of columns) bySecond.set(Math.floor(c.timeUs / 1e6), c);
     const top = view.centerPriceTicks + view.priceSpanTicks / 2;
-    const list: Entry[] = [];
+    const list = this.list; list.length = 0;
     let recomputed = 0, cores = 0, paints = 0;
     for (let x = 0; x < width; x++) {
       const from = edge(x), to = edge(x + 1);
-      const refs: HeatColumn[] = [];
+      const refs = this.refs; refs.length = 0;
       for (let s = Math.floor(from); s < Math.ceil(to); s++) { const c = bySecond.get(s); if (c) refs.push(c); }
       const key = `${from}|${to}`;
       let e = this.entries.get(key);
       if (!e || e.refs.length !== refs.length || e.refs.some((c, i) => c !== refs[i])) {
         if (e) { this.bytes -= e.bytes; this.entries.delete(key); }
         const p = projectQuantities(temporalQuantities(refs, from, to), to - from, top, view.priceSpanTicks, height, options);
-        e = { ...p, id: ++this.nextId, refs, from, to, core: new Float32Array(height),
-          blur: new Float32Array(height), rgba: new Uint8ClampedArray(height * 4), sig: "", paintSig: "",
+        const rgba = new Uint8ClampedArray(height * 4);
+        e = { ...p, id: ++this.nextId, refs: refs.slice(), from, to, core: new Float32Array(height),
+          blur: new Float32Array(height), rgba, pixels: new Uint32Array(rgba.buffer), paintVersion: 0, sig: "", paintSig: "",
           generation: 0, bytes: height * 20 + refs.length * 8 };
         this.bytes += e.bytes; recomputed++;
       } else this.entries.delete(key);
@@ -126,7 +146,8 @@ export class SmoothingRaster {
       this.tradeRevision = trades.revision; this.tradeKey = tradeKey;
     }
     const step = Math.max(1, Math.round(1 / dx)), k = glowK(height / view.priceSpanTicks);
-    const kernel = gaussianKernel(k);
+    if (this.kernelK !== k) { this.kernel = gaussianKernel(k); this.kernelK = k; }
+    const kernel = this.kernel;
     const strength = (y: number) => {
       if (height < view.priceSpanTicks) return 1;
       const p = top - (y + .5) * view.priceSpanTicks / height;
@@ -137,12 +158,12 @@ export class SmoothingRaster {
     const state = (x: number, y: number) => !list[x] || !list[x]!.coverage[y] ? 2 : position(list[x]!.values[y]!) > 0 ? 1 : 0;
     for (let x = 0; x < width; x++) {
       const e = list[x]!;
-      const neighbours: string[] = [];
+      let neighbours = "";
       for (let o = -6; o <= 4; o++) {
         const nx = x + o * step;
-        neighbours.push(`${list[nx]?.id ?? 0}:${this.eaten.get(nx)?.signature ?? ""}`);
+        neighbours += `${list[nx]?.id ?? 0}:${this.eaten.get(nx)?.signature ?? ""};`;
       }
-      const sig = `${style}|${scale.upper}|${scale.lower}|${scale.gamma}|${neighbours.join(";")}`;
+      const sig = `${style}|${scale.upper}|${scale.lower}|${scale.gamma}|${neighbours}`;
       if (sig === e.sig) continue;
       for (let y = 0; y < height; y++) {
         const fade = style === "glow" ? fadeFactor(o => state(x + o * step, y),
@@ -152,7 +173,23 @@ export class SmoothingRaster {
       verticalBlur(e.core, kernel, e.blur as Float32Array<ArrayBuffer>);
       e.sig = sig; e.generation++; cores++;
     }
-    const image = new Uint8ClampedArray(width * height * 4);
+    if (this.lastIds.length !== width || this.imageHeight !== height) {
+      this.image = new Uint8ClampedArray(width * height * 4);
+      this.words = new Uint32Array(this.image.buffer);
+      this.lastIds = new Int32Array(width); this.lastPaint = new Int32Array(width);
+      this.imageHeight = height; this.imageValid = false;
+    }
+    const shift = aligned && Number.isFinite(this.lastPixel) && dx === this.lastDx
+      ? firstPixel - this.lastPixel : view.startUs === this.lastStart && dx === this.lastDx ? 0 : NaN;
+    this.fullRepaint = !this.imageValid || !Number.isInteger(shift) || Math.abs(shift) >= width;
+    this.shiftPixels = this.fullRepaint ? 0 : shift;
+    this.dirtyRanges.length = 0;
+    // Typed row memmove, not a strided JS copy of every RGBA channel.
+    if (!this.fullRepaint && shift) for (let y = 0; y < height; y++) {
+      const row = y * width;
+      if (shift > 0) this.words.copyWithin(row, row + shift, row + width);
+      else this.words.copyWithin(row - shift, row, row + width + shift);
+    }
     for (let x = 0; x < width; x++) {
       const e = list[x]!, left = list[x - 1], right = list[x + 1];
       const sig = `${e.generation}|${left?.generation ?? 0}:${left?.id ?? 0}|${right?.generation ?? 0}:${right?.id ?? 0}`;
@@ -166,15 +203,24 @@ export class SmoothingRaster {
             : COLOR_LUT[gi + channel]! * .9 * (1 - a) + COLOR_LUT[ci + channel]! * a);
           e.rgba[y * 4 + 3] = 255;
         }
-        e.paintSig = sig; paints++;
+        e.paintSig = sig; e.paintVersion++; paints++;
       }
-      for (let y = 0; y < height; y++) {
-        const src = y * 4, dst = (y * width + x) * 4;
-        image[dst] = e.rgba[src]!; image[dst + 1] = e.rgba[src + 1]!;
-        image[dst + 2] = e.rgba[src + 2]!; image[dst + 3] = 255;
+      const previousX = x + this.shiftPixels;
+      if (this.fullRepaint || previousX < 0 || previousX >= width
+        || this.lastIds[previousX] !== e.id || this.lastPaint[previousX] !== e.paintVersion) {
+        const last = this.dirtyRanges.at(-1);
+        if (last?.[1] === x) last[1] = x + 1;
+        else this.dirtyRanges.push([x, x + 1]);
       }
     }
+    for (const [from, to] of this.dirtyRanges) for (let y = 0; y < height; y++)
+      for (let x = from; x < to; x++) this.words[y * width + x] = list[x]!.pixels[y]!;
+    for (let x = 0; x < width; x++) {
+      this.lastIds[x] = list[x]!.id; this.lastPaint[x] = list[x]!.paintVersion;
+    }
+    this.imageValid = true; this.lastStart = view.startUs; this.lastDx = dx;
+    this.lastPixel = aligned ? firstPixel : NaN;
     this.metrics = { recomputedColumns: recomputed, cachedBytes: this.bytes, coreColumns: cores, paintColumns: paints };
-    return image;
+    return this.image;
   }
 }
