@@ -90,6 +90,7 @@ export function mountFootprint(root: HTMLElement): () => void {
   let dataDirty = false, lastDraw = 0;
   let W = 1, H = 1, dpr = 1;
   const timings: number[] = [];
+  let paintedGroups: ReturnType<FootprintStore["bars"]> = [];
   let drawCount = 0, lastDetail = true;
   let cursorPt: { x: number; y: number } | null = null;
 
@@ -136,6 +137,7 @@ export function mountFootprint(root: HTMLElement): () => void {
     client.setVisible(Math.max(0, Math.floor(from)), Math.ceil(to));
     const contract = activeContract();
     const groups = store.bars(from, to);
+    paintedGroups = groups;
     const latest = store.latest;
     if (latest && contractKey(latest) === contract) {
       const y = priceToY(latest.price, view, L.plotH);
@@ -500,13 +502,13 @@ export function mountFootprint(root: HTMLElement): () => void {
   const dbg = window as Window & { __footprintDebug?: unknown };
   if (new URLSearchParams(location.search).get("debug") === "1") Object.defineProperty(dbg, "__footprintDebug", {
     configurable: true, get: () => {
-      const L = layout(), [from, to] = visibleSpan(view, tf, L.plotW);
+      const L = layout();
       return {
         view: { ...view }, timeframe: tf, detail: lastDetail, contract: activeContract(), layout: L,
         state: { connection: client.state, generation: store.generation, nowSec: nowSec(), liveOpenSec: store.liveOpenSec,
           coverage: store.coverage, gaps: store.gaps, noData: store.noData, evicted: store.evicted, quality: client.quality, lastError: client.lastError },
         requests: client.requests.map(r => ({ ...r })), queued: client.queued.map(r => [...r]),
-        bars: store.bars(from, to).map(({ startSec, group }) => {
+        bars: paintedGroups.map(({ startSec, group }) => {
           const b = group.get(activeContract());
           return { startSec, state: store.stateOf(startSec, startSec + tf, nowSec()), bar: b ? { ...b, prices: [...b.prices], buy: [...b.buy], sell: [...b.sell] } : null };
         }),
@@ -515,6 +517,13 @@ export function mountFootprint(root: HTMLElement): () => void {
         cursor: cursorInfo(),
       };
     },
+  });
+  if (new URLSearchParams(location.search).get("debug") === "1") Object.defineProperty(window, "__footprintCounters", {
+    configurable: true, get: () => ({
+      draws: drawCount, barBuilds: store.barBuilds, trades: store.tradeCount,
+      hidden: document.hidden, generation: store.generation, view: { ...view }, timeframe: tf,
+      requests: client.requests.length, connection: client.state,
+    }),
   });
 
   client.start();
@@ -529,6 +538,7 @@ export function mountFootprint(root: HTMLElement): () => void {
     window.clearInterval(ticker); resize.disconnect(); client.stop();
     document.removeEventListener("visibilitychange", onVisibility);
     delete dbg.__footprintDebug;
+    Reflect.deleteProperty(window, "__footprintCounters");
     root.replaceChildren();
   };
   window.addEventListener("pagehide", destroy, { once: true });

@@ -378,3 +378,17 @@ mtime_ms = 1793309941880
 storage_uri = "gcs://replit-rams-assets-pike/rams/assets/repl:c326af06-2355-4bfb-a52e-f433587c4cd9/1133f3f0-a377-45ec-8b3b-59710fb0f2af/68ffd8ca-86fc-4d67-9d2f-045e6b2c0311"
 storage_version_token = "1793309982933203"
 content_type = "text/markdown"
+
+[[outputs]]
+id = "NfqfGCYp6zfuFcfTMrnNK"
+uri = "file://data/footprint-completion/background-after.png"
+type = "image"
+title = "FOOTPRINT復帰後の描画"
+description = "隔離入力。非表示中の追加21枚が対象足へ反映され、VOL 36・DELTA +22になった実ブラウザ画面。"
+logical_id = "669f75ad-039f-4368-8512-00937039f74a"
+content_hash = "sha256:e8c81fcac11345bad6ecfc079862b5325cb373cc370e47f6813da9a4fc9ab261"
+size = 67164
+mtime_ms = 1793340757884
+storage_uri = "gcs://replit-rams-assets-pike/rams/assets/repl:c326af06-2355-4bfb-a52e-f433587c4cd9/669f75ad-039f-4368-8512-00937039f74a/3cb71390-702c-4d0b-a6fb-d1f2c353e6aa"
+storage_version_token = "1793342833125147"
+content_type = "image/png"

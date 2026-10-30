@@ -193,3 +193,132 @@ baf0a420d51914cda3e28d67d7ad1f4ad1160a34294895fa42c979ec774997df  docs/SPEC.md
 ## 7. 次のタスク候補
 
 未確認の実ブラウザ条件の補完、および許可後の反映と実負荷確認。今回は実行せず、ここで区切る。
+
+## 8. 残存確認の追記（2026-10-30、日本時間）
+
+この追記で、上記の未確認項目のうち、非表示・復帰、別タブ／再読み込み、Canvas実描画比較、WSの版組合せを補完した。前回の全体合格結果は再利用し、機能を作り直していない。実ライブ・公開環境の検証済みを意味しない。
+
+### 8.1 実施内容
+
+- すべての市場入力は隔離fixture。127.0.0.1の18777～18781だけでサービスを起動し、TICK STREAM・本番DB・App Storageには接続していない。
+- 実Chromium 140.0.7339.16をCDPで操作。別BrowserContextの窓を「非表示タブ」の代用にせず、同じ窓の別タブを前面化し、対象の実際の `document.hidden` がtrueになることを確認した。可視性を偽装するスクリプトは使っていない。
+- 診断の読取り自体が足を再構築する問題だけを最小修正した。描画・集計コア・保存・WS製品仕様の変更はない。
+
+### 8.2 変更ファイル
+
+|ファイル|内容|
+|---|---|
+|`artifacts/heatmap/src/footprint/app.ts` / `mountFootprint()`|全量debug getter内の足構築をやめ、最後に描画した足への参照を返す。debug時だけ副作用のない `__footprintCounters` を公開し、終了時に削除する。|
+|`server/test/footprint-fixture.ts`|手動入力、遅延応答、版別フロント／旧Hub、固定時計、TCP転送量、実Pipeline読取メソッドの無通信adapterを追加。製品の起動経路では使用しない。|
+|`server/test/footprint-cdp.mjs`|所有ブラウザの起動、実タブ操作、viewport指定、PNG取得、終了確認。|
+|`server/test/footprint-completion.mjs`|非表示、後着、画面切替、銘柄変更、遅延、再読み込み。未変更の合格ケースは再利用する。|
+|`server/test/footprint-follow-check.mjs`|追従ONの非表示・復帰／画面切替、debug getterの非干渉確認。|
+|`server/test/footprint-tab-change.mjs`|別タブで実際に5s→15s／1mボタンを操作し、両タブを再読み込み。|
+|`server/test/footprint-measure-build.mjs`|旧／新の一時コピーへ同じ計測用初期viewport指定を入れてビルド。製品ソースには入れない。|
+|`server/test/footprint-canvas-measure.mjs`|実Canvasを含むrAF、OS CPU・RSS、V8 heap、HTTP・WSの区間計測。|
+|`server/test/footprint-ws-matrix.mjs`|実Pipeline→実Hub→ブラウザ、旧LONG VP、旧サーバーの非対応表示。|
+|本報告書・`.agents/memory/footprint-decisions.md`|結果と、観測が集計を発生させない検証上の注意を追記。|
+
+原因：従来の全量debug getterが、観測する際に足を生成していた。非表示中の再構築停止を調べる観測器として使うと、観測そのものがカウンターを増やす。最後の描画結果を返す方式にし、受信数／描画数／足構築数は専用の読取り専用getterで取得する。数量、銘柄、履歴統合、描画内容には手を入れていない。
+
+### 8.3 確認手順と期待値
+
+|項目|期待値|実測結果・証拠|
+|---|---|---|
+|ネイティブなバックグラウンド化|非表示中は描画・足構築が増えず、受信は継続|`hidden=true`。描画4→4、足構築30→30、約定69→72件。復帰後に描画5／足構築45。`acceptance.json` の `native-background`。|
+|非表示中のライブ＋後着履歴|復帰で一度だけ反映し、価格セルも変わる|2約定×2枚＋後着1約定17枚を追加。対象足はVOL15→36、DELTA+1→+22、価格行に買い21枚が現れる。14本の数量を独立に再集計し不一致0。Canvas hash `2011d215`→`65d56c88`。前後PNGを目視確認。|
+|閲覧位置・ズーム・追従OFF|復帰で保存値を維持|`endSec=1793340464`、`barW=92`、`rowH=16`、`centerPrice=84000`、`follow=false` が完全一致。|
+|追従ON|追従を保って、復帰時は現在へ進む|非表示中は描画3→3、足構築9→9、約定0→1。復帰時もfollow=true、時刻端は10秒前進。幅／価格ズーム維持。画面切替後もfollow=true。`follow.json`。|
+|全量debugの観測非干渉|読んでも足構築数が増えない|非表示中に全量getterを2回読んでも足構築数不変。|
+|アプリ内の画面切替|旧画面の処理終了、共通入力継続、復帰で再読取|実装はCSS非表示ではなくdocument遷移。旧JS実行contextの破棄とFootprint getter消滅を確認。HEATMAP表示中もfixture入力4件を処理。戻ると保存viewport完全一致、74件を使う14本の照合で不一致0。|
+|別タブの銘柄／足種|他タブに混ざらない|NQとGCを独立して開き、NQ→GC→NQの変更中も他方のGC／1mは維持。追加でUIボタンを操作し、NQを15s、GCを1mへ変更。両方を再読込後もNQ／15s、GC／1m。`tab-change.json`。|
+|遅延応答|旧接続の応答を新銘柄に入れない|NQ要求を1600ms遅延させ、待機中にGCへ遷移。新画面の契約・価格行・数量はGCのみで、他方のGCタブも維持。`acceptance.json` の遅延receipt。|
+|再読み込み|履歴二重加算・接続増殖なし|NQを2回reloadし、それぞれ72件／14本の独立数量照合で不一致0。2タブ時の接続数は各回2本。GC側も選択維持、882件を使う15本の照合で不一致0。|
+
+画面切替とバックグラウンド化を同じものとして測っていない。画面リンクでは旧documentとその下流WSは終了し、移動先が自身の下流WSを開く。共通サーバーの市場収集・入力処理を止める操作はない。バックグラウンド化では、同じdocumentとWSが存続する。
+
+初回NQはsessionStorageの銘柄キーが未保存でも仕様どおりNQとなる。キーに文字列NQが必ず存在することを期待する試験にはしていない。遅延NQ要求の破棄に伴う旧peerのinvalidRequests計数1は確認したが、新銘柄への数量混入や接続増殖として扱っていない。
+
+### 8.4 Canvasの固定条件比較
+
+#### 条件・測定範囲
+
+- 比較元：`eabbe9011be1c86379b94123189b54f11785e212`。比較先：`9d07a120ce095a803cf301ee040e11e509ce52bf`＋今回の診断読取修正。
+- Chromium 140、600×800 CSS px、DPR=1、NQ、固定120秒。同じ120約定（1件／秒、7価格、枚数1～5）、同じ120本の板列（各400買い＋400売り）をfixtureで用意。
+- 固定表示区間はUnix秒 `[1793341500,1793341620)`。旧／新HEATMAPとも受信後の実際の開始位置・終了位置が同じことをassertした。
+- FOOTPRINTも同じ区間。可視本数は5s=24本、1m=2本。取得・描画候補に含める範囲外の余白足は可視本数に数えていない。5sは縮小表示、1mは数量詳細表示。
+- 各ケースで1回warmup後に別documentへ移り、アプリのメモリcacheが空の状態で初期表示を測る。エンジンはwarm。新旧の一時コピーに同じ初期viewport入力だけを追加し、初回hello後もその指定を復元した。製品ソース・保存形式・描画処理にはこの計測用入力を加えていない。
+- 通常更新は1.1秒間隔で4約定（各2枚）を追加。全ケースとも受信数120→124をassert。操作は同じ位置で横ズーム入力4回（-70、+70、-70、+70）、間隔220ms。操作中の時間幅は変わり、各画面の幅上限もそのまま適用する。
+- 初期表示区間は約1.32～1.43秒、更新約4.43秒、操作約0.91秒。原標本に実測時間を保存。
+- 表の描画時間は、主Canvasへ実際にCanvas 2Dコマンドを発行するrAF callbackの時間。足の計算コアだけの測定ではなく、実描画を含むframe処理時間。Canvas命令の発行＋前処理を含み、GPU完了／画面presentの遅延ではない。補助Canvasだけを描くcallbackはこの平均に含めず、ブラウザ全体のCPU値には含める。
+- CPUはブラウザ本体と子プロセスの `/proc` CPU tick差分（10ms粒度）。CPU%は1コア=100%。メモリはCDPのV8 heapと、所有ブラウザ全プロセスのRSS合計。RSSは共有ページを重複計上し得るため、実使用物理メモリやサーバー容量判断の値にはしない。
+- HTTPはCDPのencoded bytes。WSはfixtureの実TCP socketの送受信byte差分（Upgrade／WS framing／圧縮後本体を含む、loopbackの非TLS）。解凍後payloadもJSONへ別記した。計測用のNode制御要求はブラウザ通信に含めない。
+- 全測定区間でアプリWSは1本。他の検証ブラウザは動かしていない。既存受信への停止・制限・負荷入力はしていない。
+
+|対象・区間|描画frame数|平均／最大 ms|ブラウザCPU ms（%）|V8 heap MiB|RSS合計 MiB|HTTP byte|WS送信／受信 byte|
+|---|---:|---:|---:|---:|---:|---:|---:|
+|旧HEATMAP 初期|5|7.78 / 27.30|310（21.7）|4.58|881.7|130647|17602 / 557|
+|旧HEATMAP 更新|10|1.93 / 2.90|340（7.7）|4.33|951.6|0|5081 / 0|
+|旧HEATMAP 操作|5|2.22 / 2.90|130（14.3）|5.25|954.6|0|296 / 0|
+|新HEATMAP 初期|7|6.33 / 27.30|360（25.2）|4.74|880.1|131938|17602 / 557|
+|新HEATMAP 更新|10|2.20 / 3.50|330（7.5）|4.60|946.9|0|4918 / 0|
+|新HEATMAP 操作|5|2.42 / 4.20|80（8.8）|5.22|949.5|0|325 / 0|
+|FOOTPRINT 5s 初期|2|6.50 / 11.30|140（10.6）|2.00|847.6|172624|2228 / 582|
+|FOOTPRINT 5s 更新|4|0.98 / 1.40|120（2.7）|2.50|914.7|0|93 / 0|
+|FOOTPRINT 5s 操作|4|1.02 / 1.20|20（2.2）|2.38|915.0|0|0 / 0|
+|FOOTPRINT 1m 初期|3|4.57 / 10.10|140（10.6）|2.34|852.6|172624|2628 / 644|
+|FOOTPRINT 1m 更新|4|0.90 / 1.10|110（2.5）|2.32|916.0|0|102 / 0|
+|FOOTPRINT 1m 操作|4|0.87 / 1.00|40（4.4）|2.69|916.0|0|72 / 122|
+
+短期1回の比較であり、「性能改善」や統計的に有意な「回帰なし」とは結論しない。新HEATMAPは更新平均+0.27ms、操作平均+0.20ms、初期CPU+50msで、同時に別指標は低下している。公開環境の高CPU・既存欠け・長時間のメモリ問題が解決したという結果でもない。
+
+### 8.5 WSの変更理由・実経路
+
+今回 `hub.ts`・`pipeline.ts` の製品コードは変更していない。FOOTPRINT実装で変更した理由を、上の比較元との差分で確認した。
+
+- `hub.ts`：`view=footprint` を識別し、板／VP／従来の初期板履歴を送らない。足の数量計算に必要な正規化前提の個別約定を送り、`hello.generation` で同一／別世代を区別する。既存 `range` 要求から約定専用読取を使い、batch上限・送信待ち上限・切断時のAbortを適用する。view未指定の旧画面の経路は残す。
+- `pipeline.ts` / `readFootprintRange()`：保存済み約定を既存の読取sessionで走査し、未flush分を受信識別子で重複除去して補う。coverage・欠け・確認済み無約定を付け、時刻終了だけで完全性を保証しない。`ownsFootprintLive()` はL境界で履歴／ライブを区切る。
+- `storage/local.ts`：読取visitorの中断が既存の書込queueを失敗状態にしないようにする。板や他クライアントの読取を壊さないための変更。
+
+|組合せ|実測結果|証拠・制限|
+|---|---|---|
+|新フロント＋新Hub＋実Pipeline読取|NQ／GCとも接続・履歴・ライブ・後着統合を独立照合し合格|18780の実WS。実 `Pipeline.readFootprintRange()`／`ownsFootprintLive()` をそのまま呼び、永続I/Oのみメモリadapter。読取5回・close5回。Pipeline constructor／上流接続は実行していない。|
+|旧フロント＋新サーバー HEATMAP|120板列・120約定を描画し、更新後124約定|Canvas比較のbeforeケース。blankを成功としたのではなく、実描画カウンター・入力件数・PNGを確認。|
+|旧フロント＋新サーバー LONG VP|日次VP、価格ライン、VA、週CVDのダミー1日分を表示|`old-front-longvp.png`。debugの価格域と実PNGを確認。欠けた9取引日の表示はそのまま残す。|
+|新フロント＋旧Hub FOOTPRINT|非対応。合格扱いしない|旧Hubの実コードを別portで実行。世代情報のないhelloを `invalid_hello` として拒否し、close 1008。画面にERROR／「取得エラー: invalid_hello」が出る。|
+
+FOOTPRINTを利用する反映ではフロントbundleだけでなく、対応するHub、Pipeline、Sourceの接続部分、読取sessionの変更を含むサーバーが必要。旧サーバー相手には自動再接続も起こり得るため、その構成を常用しない。旧サーバーへ接続した空画面を「データなしで正常」とは扱わない。今回は公開・再Publish・既存受信の再起動はしていない。
+
+### 8.6 実行した確認・証拠
+
+前回の全体試験（サーバー189件、フロント172件）の合格結果は再利用。製品の診断getter変更後、関係する `footprint.test.ts`（前後）と `view-memory.test.ts` の計22件を再実行し、22合格・失敗0。
+
+```
+node --test artifacts/heatmap/test/footprint.test.ts artifacts/heatmap/test/view-memory.test.ts server/test/footprint.test.ts
+pnpm run typecheck
+pnpm --filter @workspace/receiver run typecheck
+pnpm --filter @workspace/receiver run build
+```
+
+全workspace型検査、追加fixtureのサーバー型検査、最終製品ビルドはすべて成功。ビルド成果物は `artifacts/heatmap/dist/public/`。計測用一時bundleは `/tmp/` 側であり製品成果物と区別する。
+
+証拠は `data/footprint-completion/`：
+
+- `acceptance.json`、`follow.json`、`tab-change.json`、`ws-matrix.json`。
+- `canvas-measure.json`：主Canvas描画frameの全標本、実時間、CPU原値、heap/RSS、通信前後値、表示区間、入力数、所有ブラウザ終了結果。
+- `background-before.png`／`background-after.png`：対象足の数量・価格セルの前後差。
+- `canvas-before.png`／`canvas-after.png`／`canvas-fp5.png`／`canvas-fp60.png`：比較時の実描画。
+- `pipeline-NQ.png`／`pipeline-GC.png`、`gc-reload.png`、`tab-gc-1m.png`。
+- `old-front-longvp.png`、`old-server-incompatible.png`：互換表示と明示エラー。
+- `cleanup-before.json`／`cleanup.json`：停止前の接続0、所有サーバーPID、停止後のPID・port・Chromium残存、既存プロセス生存。
+
+試験ハーネスの修正は、初回NQの未保存キーを誤って不合格にしないこと、古くなった固定テープに最新足を要求しないこと、旧版helloによる表示位置の上書きも含めて実表示区間をassertすること、PNGが1px高にならないよう実viewportを指定すること。これらを製品不具合の修正として数えていない。成功済みの未変更ケースを段階的に再利用している。
+
+### 8.7 仕様との差分・未確認・終了
+
+- 新しい仕様決定はない。保護された仕様書、設定、依存、デプロイ構成は変更していない。
+- 実ライブ、実際のSDK／REST／App Storageを含む統合、公開環境、長時間負荷、実機iPad Safariは今回未確認。隔離のダミー入力による結果に限定する。
+- 検証用の全ブラウザは終了APIの結果だけでなく、所有PIDの終了とローカルのChrome／Chromiumプロセス残存0を確認した。検証WSは停止前に全portで0。
+- 終了対象はfixtureのPID29128、29161、34055、35535、36400（途中の計測用旧PID31591も終了済み）。15:44:57 JST時点で各PID消滅、18777～18781がすべてECONNREFUSED、Chrome／Chromium残存0を確認した。事前から稼働していた7PID（174、176、268、415、28134、28181、28182）はすべて生存し、停止／再起動を行っていない。
+- 上流の追加接続、実市場への入力、本番書込、公開、再Publishは行っていない。測定用の外部接続制限も新設していない。
+- 次の作業は開始しない。実ライブの独立照合や実機Safari確認は、別の許可された作業として扱う。
