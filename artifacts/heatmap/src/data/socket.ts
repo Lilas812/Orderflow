@@ -59,10 +59,11 @@ export interface SocketListeners {
   onRangeComplete?(reqId: number): void;
   onLatestBook(column: HeatColumn): void;
   onTrades(count: number): void;
-  onTradeBatch?(trades: readonly Trade[], reqId: number | null): void;
+  onTradeBatch?(trades: readonly Trade[], reqId: number | null, timing?: { receivedAt: number; sentAtUs: number | null }): void;
   onError(message: string): void;
   onReplayEnded(): void;
   onVp?(message: Record<string, unknown>): void;
+  onDaily?(message: Record<string, unknown>): void;
   onBytesPerMinute(bytes: number): void;
   onRangeRequest(range: TimeRange): void;
 }
@@ -74,11 +75,12 @@ const defaultEnvironment: SocketEnvironment = {
   now: () => Date.now(),
 };
 
-export function buildSocketUrl(locationLike: Pick<Location, "protocol" | "host" | "search">, symbol: MarketSymbol = ACTIVE_SYMBOL): string {
+export function buildSocketUrl(locationLike: Pick<Location, "protocol" | "host" | "search">, symbol: MarketSymbol = ACTIVE_SYMBOL, daily = false): string {
   const scheme = locationLike.protocol === "https:" ? "wss:" : "ws:";
   const url = new URL(`${scheme}//${locationLike.host}/api/ws`);
   if (symbol !== "NQ") url.searchParams.set("symbol", symbol);
   const params = new URLSearchParams(locationLike.search);
+  if (daily && params.get("daily") !== "0") url.searchParams.set("daily", "1");
   if (params.get("mode") === "replay") {
     url.searchParams.set("mode", "replay");
     for (const key of ["from", "speed"]) {
@@ -187,7 +189,7 @@ export class RealtimeClient {
     this.listeners.onConnection(this.reconnectDelay === 1_000 ? "connecting" : "reconnecting");
     let socket: SocketLike;
     try {
-      socket = this.env.createSocket(buildSocketUrl(this.locationLike, this.symbol));
+      socket = this.env.createSocket(buildSocketUrl(this.locationLike, this.symbol, !!this.listeners.onDaily));
     } catch {
       this.scheduleReconnect();
       return;
@@ -263,6 +265,7 @@ export class RealtimeClient {
   }
 
   private handleJson(message: Record<string, unknown>): void {
+    if (message.type === "sessionIndicators") { this.listeners.onDaily?.(message); return; }
     if (message.type !== "hello" && !this.verifiedHello) return;
     if (message.type === "vp" || message.type === "vpUpdate") {
       this.listeners.onVp?.(message); return;
@@ -304,7 +307,8 @@ export class RealtimeClient {
         }
       } else {
         this.cache.addTrades(trades);
-        this.listeners.onTradeBatch?.(trades, null);
+        this.listeners.onTradeBatch?.(trades, null, { receivedAt: performance.now(),
+          sentAtUs: typeof message.sentAtUs === "number" ? message.sentAtUs : null });
       }
       this.listeners.onTrades(trades.length);
       return;

@@ -31,6 +31,10 @@ export class VolumeProfile {
   buy = 0;
   sell = 0;
   private levels = new Map<number, { buy: number; sell: number; revision: number }>();
+  private seconds = new Map<number, { buy: number; sell: number; weighted: number; unknown: number; revision: number }>();
+  private lastTradeUs = 0;
+  private dailyChanges = new Map<number, number>();
+  private dailyFloor = 0;
   constructor(second: number) {
     this.start = sessionStartSec(second); this.upToSec = second;
     this.end = sessionStartSec(this.start + 27 * 3600);
@@ -39,6 +43,8 @@ export class VolumeProfile {
     if (second >= this.end) {
       this.start = sessionStartSec(second); this.end = sessionStartSec(this.start + 27 * 3600);
       this.levels.clear(); this.buy = this.sell = 0; this.generation++;
+      this.seconds.clear(); this.lastTradeUs = 0;
+      this.dailyChanges.clear(); this.dailyFloor = 0;
       // All post-startup sessions are already owned by the running live/replay feed.
       this.loading = false;
     }
@@ -50,6 +56,17 @@ export class VolumeProfile {
     level[trade.side] += trade.size; level.revision = ++this.revision;
     this[trade.side] += trade.size;
     this.levels.set(trade.price, level);
+    const second = Math.floor(trade.tsUs / 1e6) * 1e6;
+    const row = this.seconds.get(second) ?? { buy: 0, sell: 0, weighted: 0, unknown: 0, revision: 0 };
+    row[trade.side] += trade.size; row.weighted += trade.price * trade.size;
+    if (!trade.contract) row.unknown += trade.size;
+    row.revision = this.revision; this.seconds.set(second, row);
+    this.dailyChanges.delete(second); this.dailyChanges.set(second, row.revision);
+    if (this.dailyChanges.size > 512) {
+      const [old, revision] = this.dailyChanges.entries().next().value!;
+      this.dailyChanges.delete(old); this.dailyFloor = Math.max(this.dailyFloor, revision);
+    }
+    this.lastTradeUs = Math.max(this.lastTradeUs, trade.tsUs);
   }
   summary() {
     return { sessionStartSec: this.start, upToSec: this.upToSec, loading: this.loading,
@@ -58,6 +75,19 @@ export class VolumeProfile {
   complete(start: number): void {
     if (start !== this.start) return;
     this.loading = false; this.generation++;
+  }
+  /** Absolute per-second counters: retransmission is replacement, never addition.
+   * Uses the SAME accepted rows/ownership as VP, not another history job. */
+  dailyMessage(after?: number) {
+    const full = after === undefined || after < this.dailyFloor;
+    const seconds = full ? [...this.seconds.keys()]
+      : [...this.dailyChanges].filter(([, revision]) => revision > after!).map(([t]) => t);
+    return { type: "sessionIndicators", sessionStartSec: this.start, full,
+      revision: this.revision, loading: this.loading, quality: "received_not_guaranteed",
+      upToUs: this.lastTradeUs, adjusted: false,
+      points: seconds.sort((a, b) => a - b).map(t => {
+        const r = this.seconds.get(t)!; return [t, r.buy, r.sell, r.weighted, r.unknown];
+      }) };
   }
   message(after?: number): VpMessage {
     return { type: after === undefined ? "vp" : "vpUpdate", sessionStartSec: this.start,

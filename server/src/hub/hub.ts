@@ -38,6 +38,7 @@ export interface FootprintHistory {
   quality: "recorded_not_guaranteed";
 }
 interface Peer {
+  daily?: boolean; dailyRevision?: number; dailyGeneration?: number;
   footprint: boolean; abort: AbortController;
   connectedAtUs: number; origin: ConnectionOrigin;
   id: number; range: { reqId: number; fromSec: number; toSec: number } | null; closeReason?: string;
@@ -148,7 +149,8 @@ export class Hub {
       socket.on("close", () => this.clock.cancel(t));
       return;
     }
-    const p: Peer = { footprint: url.searchParams.get("view") === "footprint", abort: new AbortController(),
+    const p: Peer = { daily: url.searchParams.get("daily") === "1",
+      footprint: url.searchParams.get("view") === "footprint", abort: new AbortController(),
       connectedAtUs: this.clock.now() * 1000, origin,
       id: this.counts.totalConnections + 1, range: null, socket, mode: "live", initializing: true, closed: false, columns: [], trades: [],
       queuedBytes: 0, lastStatus: "", lastStatusAt: 0, jobs: Promise.resolve() };
@@ -200,6 +202,7 @@ export class Hub {
         this.json(p, { type: "hello", symbol: this.symbol, tickSize: INSTRUMENTS[this.symbol].tickSize, columnSeconds: 1,
           serverTimeUs: this.clock.now() * 1000, mode: p.mode, savedRange: saved });
         const to = params?.fromSec ?? Math.floor(this.clock.now() / 1000);
+        if (!params) p.vp = this.source.vp?.();
         const view = await this.range(p, 0, Math.max(0, to - 1800), to);
         if (p.closed) return;
         if (params) {
@@ -339,13 +342,27 @@ export class Hub {
   }
   flush() {
     for (const p of this.peers) {
-      if (!this.healthy(p) || p.initializing) continue;
+      if (!this.healthy(p)) continue;
+      // Live trades must not wait for the initial disk/cloud history snapshot.
+      // The client's range transaction merges concurrent delivery identities.
+      if (p.mode === "live" && p.trades.length) {
+        const trades = p.trades; p.trades = [];
+        if (p.initializing) p.queuedBytes = Math.max(0,
+          p.queuedBytes - trades.reduce((n, t) => n + Buffer.byteLength(JSON.stringify(t)), 0));
+        this.json(p, { type: "trades", trades, sentAtUs: this.clock.now() * 1000 });
+      }
+      if (p.daily && p.vp) {
+        const full = p.dailyGeneration !== p.vp.generation;
+        if (full || p.dailyRevision !== p.vp.revision) {
+          const daily = p.vp.dailyMessage(full ? undefined : p.dailyRevision);
+          if (this.json(p, { ...daily, symbol: this.symbol })) {
+            p.dailyGeneration = p.vp.generation; p.dailyRevision = p.vp.revision;
+          }
+        }
+      }
+      if (p.initializing) continue;
       if (p.mode === "live") {
         if (!p.footprint && this.latestBook) this.send(p, encodeFrame(3, 0, [boardColumn(this.latestBook)]), true);
-        if (p.trades.length) {
-          const trades = p.trades; p.trades = [];
-          this.json(p, { type: "trades", trades });
-        }
       }
       if (!p.replayEnded) this.sendVp(p);
       if (!p.replayEnded) this.status(p);

@@ -145,7 +145,7 @@ test("ダミー：6台目拒否・閉じた枠の再利用", async () => {
   assert.equal(hub.snapshot().connected, 5); assert.equal(hub.snapshot().rejectedConnections, 1);
   sockets[0].close(1000); await hub.connect(new Socket(), url()); assert.equal(hub.snapshot().connected, 5); hub.stop();
 });
-test("ダミー：初回読込中の列・約定を保持し、重なりだけ除く。同じ内容の別約定は保持", async () => {
+test("ダミー：初回読込中も約定を先行配信。履歴との識別子と同内容の別約定を保持", async () => {
   let release!: () => void;
   const gate = new Promise<void>(r => { release = r; }), clock = new Clock(), src = source();
   const first = trade(9999e6, 1), second = trade(9999e6, 2);
@@ -154,10 +154,14 @@ test("ダミー：初回読込中の列・約定を保持し、重なりだけ�
     trades: [first].filter(t => t.tsUs >= a * 1e6 && t.tsUs < b * 1e6) }; };
   const hub = new Hub(src, () => {}, clock), s = new Socket(), connecting = hub.connect(s, url());
   hub.column(col(9999)); hub.column(col(10000)); hub.trade(first); hub.trade(second);
-  clock.advance(250); assert.equal(s.output.length, 1); // hello only
+  clock.advance(250); assert.equal(s.output.length, 2); // hello + latest trades, not history-gated
+  assert.deepEqual(s.json().find(j => j.type === "trades").trades.map((t: Trade) => t.seq), [1, 2]);
   release(); await connecting; clock.advance(250);
   assert.deepEqual(s.frames().filter(f => f.columns.length).map(f => [f.kind, f.columns.map(c => c.tsSec)]), [[2, [9999]], [1, [10000]]]);
-  assert.deepEqual(s.json().find(j => j.type === "trades").trades.map((t: Trade) => t.seq), [2]); hub.stop();
+  assert.equal(s.json().filter(j => j.type === "trades").length, 1); // no second delivery at rangeDone
+  const history = s.json().filter(j => j.type === "rangeTrades").flatMap(j => j.trades) as Trade[];
+  assert.equal(history.find(t => t.seq === first.seq)!.recvUs, first.recvUs);
+  hub.stop();
 });
 test("ダミー：rangeの空区間を埋めず、kind2直後にrangeTrades。不正要求はerror", async () => {
   const hub = new Hub(source([col(10), col(12)], [trade(10e6)]), () => {}, new Clock()), s = new Socket();

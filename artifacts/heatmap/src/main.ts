@@ -29,6 +29,8 @@ import { loadView, saveView } from "./view-memory.ts";
 import { viewSwitchHtml } from "./long-vp/nav.ts";
 import { CrosshairOverlay } from "./chart/crosshair.ts";
 import { ACTIVE_SYMBOL, initializeInstrumentUi } from "./instrument.ts";
+import { DailyState } from "./data/daily.ts";
+import { DailyIndicatorRenderer } from "./chart/daily-renderer.ts";
 
 declare global {
   interface Window {
@@ -132,6 +134,7 @@ root.innerHTML = `
           </canvas>
           <canvas class="book-canvas current-book-overlay" id="current-book" aria-label="Current buy and sell quantities overlaid on the rightmost 20%"></canvas>
           <canvas class="trade-overlay" id="trade-overlay" aria-label="Trade price line, volume bubbles and current price"></canvas>
+          <canvas class="trade-overlay" id="daily-vwap" aria-label="Daily session VWAP, yellow, unadjusted"></canvas>
           <div id="empty-state" class="state-message" role="status" aria-live="polite">Waiting for feed · no synthetic data</div>
           <div id="status-banner" class="status-banner" role="status" aria-live="polite"></div>
           <pre id="debug-panel" class="debug-panel" hidden></pre>
@@ -192,6 +195,40 @@ const debugPanel = required<HTMLPreElement>("debug-panel");
 const scaleValue = required<HTMLSpanElement>("scale-value");
 const renderer = new HeatmapRenderer(canvas, axisCanvas, () => drawScheduler.request("heat"));
 const cache = new ColumnCache();
+const dailyState = new DailyState(ACTIVE_SYMBOL);
+const dailyOptions = { vwap: true, cvd: true };
+try {
+  const stored = JSON.parse(sessionStorage.getItem("heatmap.daily-indicators") ?? "null");
+  if (typeof stored?.vwap === "boolean") dailyOptions.vwap = stored.vwap;
+  if (typeof stored?.cvd === "boolean") dailyOptions.cvd = stored.cvd;
+} catch { /* Blocked tab storage never triggers a settings PUT. */ }
+const dailyRegion = document.createElement("section");
+dailyRegion.className = "region daily-cvd-region";
+dailyRegion.innerHTML = '<canvas class="book-canvas" id="daily-cvd" aria-label="Daily CVD, buy minus sell cumulative quantity"></canvas>';
+board.append(dailyRegion);
+const dailyAxis = document.createElement("section");
+dailyAxis.className = "region daily-cvd-axis";
+dailyAxis.innerHTML = '<canvas class="book-canvas" id="daily-cvd-axis" aria-label="CVD quantity axis"></canvas>';
+board.append(dailyAxis);
+const dailyRenderer = new DailyIndicatorRenderer(required("daily-vwap"), required("daily-cvd"), required("daily-cvd-axis"));
+const dailyControls = document.createElement("span");
+dailyControls.className = "daily-controls";
+dailyControls.innerHTML = '<button type="button" id="toggle-daily-vwap">VWAP</button><button type="button" id="toggle-daily-cvd">CVD</button><span id="daily-quality"></span>';
+root.querySelector(".masthead")?.append(dailyControls);
+function syncDailyOptions() {
+  board.classList.toggle("daily-on", dailyOptions.cvd);
+  dailyRegion.hidden = dailyAxis.hidden = !dailyOptions.cvd;
+  for (const key of ["vwap", "cvd"] as const)
+    required<HTMLButtonElement>(`toggle-daily-${key}`).setAttribute("aria-pressed", String(dailyOptions[key]));
+}
+syncDailyOptions();
+for (const key of ["vwap", "cvd"] as const) {
+  required(`toggle-daily-${key}`).addEventListener("click", () => {
+    dailyOptions[key] = !dailyOptions[key]; syncDailyOptions();
+    try { sessionStorage.setItem("heatmap.daily-indicators", JSON.stringify(dailyOptions)); } catch { /* Tab-only. */ }
+    scheduleDraw(); renderTimeAxis();
+  });
+}
 const bookRenderer = new CurrentBookRenderer(required<HTMLCanvasElement>("current-book"));
 let settingsLoaded = false;
 let settingsGeneration = 0;
@@ -223,6 +260,10 @@ let depthDrawCount = 0;
 let overlayDrawCount = 0;
 let displayZone: DisplayZone = "jst";
 const debugMode = new URLSearchParams(window.location.search).get("debug") === "1";
+if (debugMode) Object.defineProperty(window, "__heatmapDaily", {
+  configurable: true,
+  get: () => ({ ...dailyState.snapshot(), options: { ...dailyOptions }, metrics: { ...dailyRenderer.metrics } }),
+});
 
 let viewport: Viewport = {
   startUs: (Date.now() * 1_000) - LIVE_RESET_SEC * US_PER_SECOND,
@@ -248,6 +289,12 @@ let receivedColumnRevision = 0;
 let requestCount = 0;
 let connection: ConnectionState = "connecting";
 let latestStatus: SocketStatus | null = null;
+const tradeAgeLabel = document.createElement("span");
+tradeAgeLabel.id = "trade-age";
+root.querySelector(".market-state")?.append(tradeAgeLabel);
+let latestTradeHeadUs: number | null = null;
+let pendingTradeTiming: { receivedAt: number; sentAtUs: number | null; recvUs: number; tsUs: number; seq: number } | null = null;
+const latestPaintSamples: { receiveToPaintMs: number; serverSendToPaintMs: number | null; upstreamAgeMs: number; seq: number }[] = [];
 let hello: HelloMessage | null = null;
 let lastConnectionMessage = "";
 let lastDataError = "";
@@ -279,6 +326,8 @@ const client = new RealtimeClient(cache, {
     hello = message;
     vpState.reset(); vpLoading.hidden = false;
     currentTrade.reset(); initialQuote.reset();
+    latestTradeHeadUs = null; pendingTradeTiming = null;
+    dailyState.reset();
     initialCutoffUs = (message.mode === "replay" ? replayFromSec()! * US_PER_SECOND
       : Math.floor(message.serverTimeUs / US_PER_SECOND) * US_PER_SECOND) - 1;
     bigFeed.beginInitial(initialCutoffUs);
@@ -346,11 +395,36 @@ const client = new RealtimeClient(cache, {
     vpLoading.hidden = !vpState.loading;
     drawScheduler.request("vp");
   },
-  onTradeBatch: (trades, reqId) => {
+  onDaily: message => {
+    if (dailyState.accept(message)) drawScheduler.request("daily");
+  },
+  onTradeBatch: (trades, reqId, timing) => {
     if (reqId === 0) initialQuote.accept(trades, initialCutoffUs);
     else if (reqId === null) {
       currentTrade.accept(trades);
       if (replayHeadUs !== null) for (const t of trades) replayHeadUs = Math.max(replayHeadUs, t.tsUs);
+      for (const t of trades) latestTradeHeadUs = Math.max(latestTradeHeadUs ?? 0, t.tsUs);
+      if (timing && trades.length) {
+        const last = trades.at(-1)!;
+        pendingTradeTiming = { ...timing, recvUs: last.recvUs, tsUs: last.tsUs, seq: last.seq };
+      }
+      // A forming second and an unfinalized/missing book cannot hold the price
+      // position back. Browsing remains pinned; depth raster is not requested.
+      const oldStart = viewport.startUs;
+      if (follow) alignFollowToPhysicalPixel();
+      if (oldStart !== viewport.startUs) {
+        // Shift the existing depth bitmap only; no P99, recolor or history scan.
+        // Its confirmed columns keep their actual time while trades lead it.
+        const ctx = canvas.getContext("2d");
+        if (ctx && canvas.width && canvas.height) {
+          const dx = (oldStart - viewport.startUs) / (viewport.durationSec * US_PER_SECOND) * canvas.width;
+          ctx.save(); ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.globalCompositeOperation = "copy";
+          ctx.drawImage(canvas, dx, 0); ctx.restore();
+        }
+        renderTimeAxis();
+      }
+      positionPriceFromData();
+      updateTradeAge();
     }
   },
   onError: (message) => {
@@ -388,7 +462,7 @@ function positionPriceFromData(): void {
   // A paused user may already have positioned/zoomed an initially empty view.
   // A later history response must not silently recenter that view.
   if (centeredOnData || !follow) return;
-  const midpoint = bestMidpoint(cache.latestBook ?? cache.columns.at(-1));
+  const midpoint = currentTrade.trade?.price ?? bestMidpoint(cache.latestBook ?? cache.columns.at(-1));
   if (midpoint === null) return;
   viewport = { ...viewport, centerPriceTicks: midpoint };
   centeredOnData = true;
@@ -404,9 +478,10 @@ function syncRetentionAndRequests(): void {
 }
 
 function alignFollowToPhysicalPixel(): void {
-  if (cache.latestTimeUs === null) return;
+  const head = Math.max(cache.latestTimeUs ?? 0, latestTradeHeadUs ?? 0);
+  if (!head) return;
   const width = Math.max(1, Math.round(canvas.clientWidth * (window.devicePixelRatio || 1)));
-  viewport.startUs = followStartUs(cache.latestTimeUs, viewport.durationSec, width);
+  viewport.startUs = followStartUs(head, viewport.durationSec, width);
 }
 function setViewport(next: Viewport, pan = false): void {
   const clamped = clampViewport(next);
@@ -482,6 +557,13 @@ function resetTimeView(): void {
 }
 
 const drawScheduler = new LayerScheduler(draw => requestAnimationFrame(draw), {
+  daily: () => {
+    const points = dailyState.series(), state = dailyState.snapshot();
+    dailyRenderer.draw(points, viewport, { ...dailyOptions, historyRevision: dailyState.historyRevision,
+      partial: true, unknown: state.unknownQuantity > 0 });
+    required("daily-quality").textContent = !state.available ? "日次配信未対応／未受信"
+      : `${state.loading ? "途中集計" : "取得分"}・未調整${state.unknownQuantity ? `・限月不明 ${state.unknownQuantity}枚` : ""}`;
+  },
   depth: (redrawAxes) => {
       const columns = cache.columns;
       renderer.setTrades(cache.tradeAggregation);
@@ -504,6 +586,13 @@ const drawScheduler = new LayerScheduler(draw => requestAnimationFrame(draw), {
     overlayDrawCount++;
   },
   after: (redrewDepth, drawStart, redrewTrades) => {
+    if (redrewTrades && pendingTradeTiming && !document.hidden) {
+      const t = pendingTradeTiming; pendingTradeTiming = null;
+      latestPaintSamples.push({ receiveToPaintMs: performance.now() - t.receivedAt,
+        serverSendToPaintMs: t.sentAtUs === null ? null : Date.now() - t.sentAtUs / 1000,
+        upstreamAgeMs: (t.recvUs - t.tsUs) / 1000, seq: t.seq });
+      if (latestPaintSamples.length > 1000) latestPaintSamples.shift();
+    }
     crosshair.request();
     if (debugMode) {
       const depthMetrics = renderer.metrics;
@@ -546,7 +635,7 @@ const drawScheduler = new LayerScheduler(draw => requestAnimationFrame(draw), {
     }
     if (debugMode) updateDebugPanel();
   },
-});
+}, true);
 
 function scheduleDraw(redrawDepth = true): void {
   if (!settingsLoaded) return;
@@ -577,7 +666,13 @@ function renderTimeAxis(): void {
   pendingTimeAxisMs += performance.now() - started;
 }
 
+function updateTradeAge(): void {
+  tradeAgeLabel.textContent = !currentTrade.trade ? "" : replayHeadUs !== null ? "REPLAY"
+    : `DATA AGE ${Math.max(0, (Date.now() * 1000 - currentTrade.trade.tsUs) / 1e6).toFixed(1)}s`;
+}
+
 function updateStatus(): void {
+  updateTradeAge();
   connectionIndicator.dataset.state = connection === "reconnecting" ? "connecting"
     : connection === "replay-ended" ? "connected" : connection;
   const text = connection === "connected"
@@ -712,6 +807,7 @@ if (debugMode) {
   Object.defineProperty(window, "__heatmapRecentTrades", { get: recentTradeSnapshot });
   Object.defineProperty(window, "__heatmapTradeOverlay", { get: () => overlayRenderer.snapshot() });
   Object.defineProperty(window, "__heatmapDeltaBars", { get: () => deltaRenderer.snapshot() });
+  Object.defineProperty(window, "__heatmapLatency", { configurable: true, get: () => latestPaintSamples.slice() });
   Object.defineProperty(window, "__heatmapFrameStats", { get: () => frameProfile.snapshot() });
   Object.defineProperty(window, "__heatmapColumnDelivery", { get: columnDeliverySnapshot });
   Object.defineProperty(window, "__heatmapDebug", {

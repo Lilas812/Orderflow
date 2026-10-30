@@ -115,6 +115,17 @@ button, input { font: inherit; }
 .trade-overlay.vp-labels { z-index: 1; }
 .delta-region { grid-column: 1; grid-row: 2; border-top: 0; }
 .delta-scale-region { grid-column: 2; grid-row: 2; border-top: 0; }
+.board.daily-on { grid-template-rows: minmax(0,79fr) minmax(36px,9.5fr) minmax(36px,9.5fr) minmax(21px,2fr); }
+.daily-cvd-region { grid-column: 1; grid-row: 3; border-top: 0; }
+.daily-cvd-axis { grid-column: 2; grid-row: 3; border-top: 0; }
+.daily-cvd-region[hidden], .daily-cvd-axis[hidden] { display: none; }
+.board.daily-on .time-region { grid-row: 4; }
+.board.daily-on .large-lower-region, .board.daily-on .vp-lower-region { grid-row: 2 / 4; }
+.daily-controls { display: flex; align-items: center; gap: 4px; font: 9px var(--font-mono); }
+.daily-controls button { border: 1px solid #45414f; background: #000; color: #777687; font: inherit; padding: 3px 5px; cursor: pointer; }
+.daily-controls button[aria-pressed="true"] { color: #ece9f5; border-color: #a64dff; }
+#toggle-daily-vwap[aria-pressed="true"] { color: #ffd60a; }
+#daily-quality { color: #c5ab66; max-width: 150px; }
 .large-lower-region { grid-column: 3; grid-row: 2; border-top: 0; }
 .vp-lower-region { grid-column: 4; grid-row: 2; border-top: 0; }
 .time-region {
