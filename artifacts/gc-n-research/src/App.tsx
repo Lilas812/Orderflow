@@ -5,6 +5,7 @@ import { Toaster } from '@/components/ui/toaster';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import NotFound from '@/pages/not-found';
 import ResearchPage from '@/pages/research';
+import OverviewPage from '@/pages/overview';
 import {
   Route,
   Switch,
@@ -21,6 +22,7 @@ function Router() {
     <RoutedErrorBoundary>
       <Switch>
         <Route path="/" component={ResearchPage} />
+        <Route path="/overview" component={OverviewPage} />
         <Route component={NotFound} />
       </Switch>
     </RoutedErrorBoundary>

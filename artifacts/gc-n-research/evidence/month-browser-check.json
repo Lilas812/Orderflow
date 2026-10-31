@@ -1,0 +1,16 @@
+{
+  "checks": [
+    "Initial October fits entire calendar month; 63 source-specific extended lines",
+    "Canvas line click exposes origin, quantity and 85 independently matched event rows",
+    "Retention and reaction-rule edits update real detail events without duplicate windows",
+    "Five-session preset, full month, time zoom, pan and fit controls operate",
+    "Threshold filter and invalid rule state are explicit and recoverable",
+    "Both denominators labeled; existing daily view and roundtrip navigation preserved",
+    "Mobile DPR2 Canvas retains nonzero 460px+ height"
+  ],
+  "month": {
+    "lines": 63,
+    "candles": 5820,
+    "touches": 1614
+  }
+}

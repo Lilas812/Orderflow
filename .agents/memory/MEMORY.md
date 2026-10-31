@@ -26,4 +26,4 @@
 - [公開調査の権限境界](production-evidence-authority.md) — フォークで公開情報が未公開扱いでも、既知の公開アプリの停止と断定しない。
 - [購入出来高による期近選定](purchased-front-month-policy.md) — NQ・GCはCT17〜翌16時の最多出来高で日ごとに選び、満期を後戻りしない。一覧提示後は承認まで停止。
 - [稼働中LONG VPへの外部反映](longvp-external-maintenance.md) — 外部CAS成功後も古いキャッシュから上書きされ得るため、稼働writerの排他は別に確保する。
-- [GC目視研究の分離](gc-research-isolation.md) — 製品・元データから分離し、前セッションNだけでラインを選ぶ。売買判断・追加バックテストへ広げない。
+- [GC目視研究の分離](gc-research-isolation.md) — 製品・原本から分離。由来セッション形成後だけ描画し、月間の記述集計を売買優位性と扱わない。

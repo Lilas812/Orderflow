@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react';
+import { Link } from 'wouter';
 import { AlertTriangle, ChevronLeft, ChevronRight, RefreshCw } from 'lucide-react';
 import { useResearchIndex, useSessionData } from '@/hooks/use-research';
 import { ResearchChart } from '@/components/research-chart';
@@ -96,6 +97,10 @@ export default function ResearchPage() {
             目視検証用。売買シグナル・バックテストではありません。N = 不明アグレッサー約定(B/Aは不使用)。
           </p>
         </div>
+
+        <Link href="/overview" data-testid="link-overview" className="inline-flex h-8 items-center rounded-sm border border-input bg-card px-2 text-xs hover:bg-accent">
+          期間俯瞰
+        </Link>
 
         <div className="flex items-end gap-1" role="group" aria-label="セッション選択">
           <button

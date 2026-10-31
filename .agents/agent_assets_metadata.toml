@@ -644,3 +644,17 @@ mtime_ms = 1793446573591
 storage_uri = "gcs://replit-rams-assets-pike/rams/assets/repl:c326af06-2355-4bfb-a52e-f433587c4cd9/59f1038b-284d-4c3c-85d0-62e0b90f4159/3bebb5d3-bd2e-4e0a-96f7-56845740bf12"
 storage_version_token = "1793446590413070"
 content_type = "text/markdown"
+
+[[outputs]]
+id = "Fc1LpsIEOHVvimdA8zDh7"
+uri = "file://artifacts/gc-n-research/evidence/month-full-page.jpg"
+type = "image"
+title = "GCZ6・10月全体のN集中価格"
+description = "実データの5分足と63本の形成後ライン、回顧Nプロファイル、日別の両比率を表示した最終画面。末尾の未収録区間は明示しています。"
+logical_id = "3cac8c66-4ad9-45bd-b9ff-eced7ef86814"
+content_hash = "sha256:18a465c69045c003efff4bafb8e28052ca2bcf793740ec47a3cdd9008b81dce3"
+size = 274347
+mtime_ms = 1793449993556
+storage_uri = "gcs://replit-rams-assets-pike/rams/assets/repl:c326af06-2355-4bfb-a52e-f433587c4cd9/3cac8c66-4ad9-45bd-b9ff-eced7ef86814/d9d52dac-aca9-4c01-9728-1530716bdad3"
+storage_version_token = "1793450151070538"
+content_type = "image/jpeg"

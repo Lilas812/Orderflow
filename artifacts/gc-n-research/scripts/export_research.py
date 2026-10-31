@@ -95,6 +95,9 @@ def payloads(sessions):
         prev = sessions.get(previous)
         result[day] = {
             'session': day, 'previousSession': previous,
+            'ownProfile': sorted(sessions[day]['profile'].values(), key=lambda x: x['priceTicks']),
+            'availableStartMs': max(start, PURCHASE_START_MS),
+            'availableEndMs': min(end, PURCHASE_END_MS),
             'partial': start < PURCHASE_START_MS or end > PURCHASE_END_MS,
             'previousPartial': bool(previous and (pstart < PURCHASE_START_MS or pend > PURCHASE_END_MS)),
             'sessionStartMs': start, 'sessionEndMs': end,
