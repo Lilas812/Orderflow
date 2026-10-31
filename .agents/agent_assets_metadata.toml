@@ -574,3 +574,73 @@ mtime_ms = 1793388806925
 storage_uri = "gcs://replit-rams-assets-pike/rams/assets/repl:c326af06-2355-4bfb-a52e-f433587c4cd9/4863f3c8-a09f-45fe-88ef-763006b537fa/38126457-7811-4992-b8c9-1a527ac5b770"
 storage_version_token = "1793389876041621"
 content_type = "text/html"
+
+[[outputs]]
+id = "uPd_xbVQ05mssMh-7OIDg"
+uri = "file://.local/outputs/gc-n-daily-volume.chart.html"
+type = "text"
+title = "N約定数量は10月22日の3,877枚が最多"
+description = "CT17:00区切り・全GC単体限月・完全な21セッション"
+logical_id = "b7ad58a0-995b-4af0-82f4-44cebb6d7b50"
+content_hash = "sha256:522b23b61b75943b571084270431621c1b6fc4ac4f438d6531f2c1db053f3b7e"
+size = 15987
+mtime_ms = 1793446451764
+storage_uri = "gcs://replit-rams-assets-pike/rams/assets/repl:c326af06-2355-4bfb-a52e-f433587c4cd9/b7ad58a0-995b-4af0-82f4-44cebb6d7b50/debeaf1c-ff3b-4ffe-8622-6780eec3c046"
+storage_version_token = "1793446453431026"
+content_type = "text/html;profile=replit-chart"
+
+[[outputs]]
+id = "aOosxNKs3T88YUnAjHVQV"
+uri = "file://.local/outputs/gc-n-daily-ratio.chart.html"
+type = "text"
+title = "通常出来高比は10月16日の2.54%が最高"
+description = "N数量 ÷ B/A数量 × 100。スプレッドは分母・分子から除外"
+logical_id = "16fb1f14-3541-470c-8f5a-d211a1032540"
+content_hash = "sha256:0dbc802241c36bc508c7e86121c3ad9df767f17ac1d72595fe6ee4a9df8f88ea"
+size = 16005
+mtime_ms = 1793446455024
+storage_uri = "gcs://replit-rams-assets-pike/rams/assets/repl:c326af06-2355-4bfb-a52e-f433587c4cd9/16fb1f14-3541-470c-8f5a-d211a1032540/db34246d-d718-4c36-9acb-d2635dec9dd0"
+storage_version_token = "1793446455724140"
+content_type = "text/html;profile=replit-chart"
+
+[[outputs]]
+id = "H8M4_pPdZBTKNghY526bI"
+uri = "file://.local/outputs/gc-n-clock-volume.chart.html"
+type = "text"
+title = "N数量の最多時間帯はCT08–09時"
+description = "完全21セッションの時刻別合計。JSTでは22–23時"
+logical_id = "ccebaee1-6815-45b6-a457-c99e636db59c"
+content_hash = "sha256:858f67e3e33641fbd0ecb47f4d5f545de829abd1540bbe153a9a3e28d071661e"
+size = 15934
+mtime_ms = 1793446457328
+storage_uri = "gcs://replit-rams-assets-pike/rams/assets/repl:c326af06-2355-4bfb-a52e-f433587c4cd9/ccebaee1-6815-45b6-a457-c99e636db59c/9c08ed8e-32e8-4d4a-9ced-8e66b505b85b"
+storage_version_token = "1793446458028554"
+content_type = "text/html;profile=replit-chart"
+
+[[outputs]]
+id = "cGEU8TAsZcXb4IAZ88u1e"
+uri = "file://.local/outputs/gc-n-match-timing.chart.html"
+type = "text"
+title = "照合が強い群と残りの群は時間分布が異なる"
+description = "各群自身の数量を100%とする。残りの群を非スプレッドと断定しない"
+logical_id = "12f96b8d-bca9-4d4d-ac79-0df8dab633a2"
+content_hash = "sha256:02effdee3a75c80cfd1efb94e57ce473d364cc2806b3a89edc68a650a7db55dc"
+size = 16001
+mtime_ms = 1793446459684
+storage_uri = "gcs://replit-rams-assets-pike/rams/assets/repl:c326af06-2355-4bfb-a52e-f433587c4cd9/12f96b8d-bca9-4d4d-ac79-0df8dab633a2/736fd4b4-7da3-4b4c-b793-39026c3ada36"
+storage_version_token = "1793446460347137"
+content_type = "text/html;profile=replit-chart"
+
+[[outputs]]
+id = "ku7oGkpyc62nm6zCbEj5J"
+uri = "file://docs/UNKNOWN_SIDE_ROLLOVER_REPORT.md"
+type = "text"
+title = "GC・N約定の日付／時間帯とロール時期の調査"
+description = "日別・時間帯TOP10、通常出来高補正、FND距離、スプレッド照合群別分布、根拠と限界をまとめた報告書。"
+logical_id = "59f1038b-284d-4c3c-85d0-62e0b90f4159"
+content_hash = "sha256:2fe48c80c883140647662972f93e18916fd3dbd6cc7b623e21183c45f70c4b25"
+size = 19265
+mtime_ms = 1793446573591
+storage_uri = "gcs://replit-rams-assets-pike/rams/assets/repl:c326af06-2355-4bfb-a52e-f433587c4cd9/59f1038b-284d-4c3c-85d0-62e0b90f4159/3bebb5d3-bd2e-4e0a-96f7-56845740bf12"
+storage_version_token = "1793446590413070"
+content_type = "text/markdown"
