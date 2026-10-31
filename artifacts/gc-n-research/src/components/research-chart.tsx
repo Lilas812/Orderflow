@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Minus, MoveHorizontal, MoveVertical, Plus, RotateCcw, Scan } from 'lucide-react';
+import { useChartTouch } from '@/hooks/use-chart-touch';
 import {
   type Candle,
   type Level,
@@ -207,8 +208,18 @@ export function ResearchChart({ data, profile, bucketTicks, levels, tz }: Props)
   }, [zoomTime, zoomPrice]);
 
   // Drag
+  const touch = useChartTouch({
+    view,
+    plot: { x0: L.candleX0, x1: L.candleX1, top: L.plotTop, bottom: L.plotBottom },
+    apply: setView, onHover: setHover,
+    constrain: (v) => {
+      const span = clamp(v.p1 - v.p0, 8, 200000), mid = (v.p0 + v.p1) / 2;
+      return { ...timeBounds(v.t0, v.t1), p0: mid - span / 2, p1: mid + span / 2 };
+    },
+  });
   const drag = useRef<{ x: number; y: number; v: View; inCandles: boolean } | null>(null);
   const onPointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    if (touch.down(e)) return;
     if (!view) return;
     const r = e.currentTarget.getBoundingClientRect();
     const x = e.clientX - r.left;
@@ -216,6 +227,7 @@ export function ResearchChart({ data, profile, bucketTicks, levels, tz }: Props)
     drag.current = { x: e.clientX, y: e.clientY, v: view, inCandles: x >= L.candleX0 && x < L.candleX1 };
   };
   const onPointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    if (touch.move(e)) return;
     const r = e.currentTarget.getBoundingClientRect();
     setHover({ x: e.clientX - r.left, y: e.clientY - r.top });
     const d = drag.current;
@@ -339,18 +351,19 @@ export function ResearchChart({ data, profile, bucketTicks, levels, tz }: Props)
       </div>
 
       <div className="relative min-h-0 flex-1 overflow-x-auto">
-        <div ref={wrapRef} className="relative h-full min-h-[400px] min-w-[720px]">
+        <div ref={wrapRef} className="relative h-full min-h-[400px] min-w-[320px] sm:min-w-[720px]">
           <canvas
             ref={canvasRef}
             tabIndex={0}
             role="img"
-            aria-label={`左: 前セッション${data.previousSession ?? '—'} N約定プロファイル、右: ${data.session} 1分足。ホイールでズーム、ドラッグでパン、矢印キーで移動、Rでリセット`}
+            aria-label={`左: 前セッション${data.previousSession ?? '—'} N約定プロファイル、右: ${data.session} 1分足。スマホは2本指でズーム、1本指で移動。PCはホイールでズーム、ドラッグでパン、矢印キーで移動、Rでリセット`}
             data-testid="canvas-research-chart"
             className="absolute inset-0 h-full w-full cursor-crosshair touch-none outline-none focus-visible:ring-2 focus-visible:ring-ring"
             onPointerDown={onPointerDown}
             onPointerMove={onPointerMove}
-            onPointerUp={endDrag}
-            onPointerCancel={endDrag}
+            onPointerUp={(e) => { if (!touch.end(e)) endDrag(); }}
+            onPointerCancel={(e) => { if (!touch.end(e, true)) endDrag(); }}
+            onLostPointerCapture={(e) => { if (!touch.end(e, true)) endDrag(); }}
             onPointerLeave={() => {
               setHover(null);
             }}

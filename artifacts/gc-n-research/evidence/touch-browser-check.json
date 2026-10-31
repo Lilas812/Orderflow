@@ -1,0 +1,9 @@
+{
+  "viewport": "402×874 DPR2",
+  "checks": [
+    "canvas-overview: native pinch in/out, 2→1 pan, cancel, fresh tap",
+    "One-finger line tap opens source details after a pinch/cancel sequence",
+    "Existing zoom button still works",
+    "canvas-research-chart: native pinch in/out, 2→1 pan, cancel, fresh tap"
+  ]
+}

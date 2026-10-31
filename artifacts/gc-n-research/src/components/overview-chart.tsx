@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ChevronLeft, ChevronRight, ChevronDown, ChevronUp, Minus, MoveHorizontal, MoveVertical, Plus, Scan } from 'lucide-react';
 import { type Tz, TZ_NAME, MINUTE_MS, clamp, formatDateTime, formatPrice, formatQty, niceTickStep } from '@/lib/research';
 import { overlapSegments, type OverviewModel, type ResearchLine } from '@/lib/overview';
+import { useChartTouch } from '@/hooks/use-chart-touch';
 
 const C = {
   plot: '#fbf8f1',
@@ -292,6 +293,10 @@ export function OverviewChart({ model, chartMinutes, tz, selectedId, onPick, buc
   // drag
   const drag = useRef<{ x: number; y: number; v: View; moved: boolean; axis: boolean } | null>(null);
   const hoverInfo = hover ? hitAt(hover.x, hover.y) : [];
+  const touch = useChartTouch({
+    view, plot: L, apply: setView, constrain: clampView, onHover: setHover,
+    onTap: (p) => { const hits = hitAt(p.x, p.y); if (hits.length) onPick(hits.map(h => h.id)); },
+  });
 
   return (
     <div className="flex h-full flex-col">
@@ -314,18 +319,20 @@ export function OverviewChart({ model, chartMinutes, tz, selectedId, onPick, buc
         </span>
       </div>
       <div className="min-h-0 flex-1 overflow-x-auto">
-        <div ref={wrapRef} className="relative h-full min-h-[460px] min-w-[640px]">
+        <div ref={wrapRef} className="relative h-full min-h-[460px] min-w-[320px] sm:min-w-[640px]">
           <canvas
             ref={canvasRef}
             data-testid="canvas-overview"
             className="absolute inset-0 h-full w-full touch-none"
             style={{ cursor: hoverInfo.length ? 'pointer' : 'crosshair' }}
             onPointerDown={(e) => {
+              if (touch.down(e)) return;
               const r = e.currentTarget.getBoundingClientRect();
               e.currentTarget.setPointerCapture(e.pointerId);
               drag.current = { x: e.clientX - r.left, y: e.clientY - r.top, v: viewRef.current, moved: false, axis: e.clientX - r.left > L.x1 };
             }}
             onPointerMove={(e) => {
+              if (touch.move(e)) return;
               const r = e.currentTarget.getBoundingClientRect();
               const x = e.clientX - r.left, y = e.clientY - r.top;
               setHover({ x, y });
@@ -346,6 +353,7 @@ export function OverviewChart({ model, chartMinutes, tz, selectedId, onPick, buc
               setView(clampView({ t0: v.t0 - dt, t1: v.t1 - dt, p0: v.p0 + dp, p1: v.p1 + dp }));
             }}
             onPointerUp={(e) => {
+              if (touch.end(e)) return;
               const d = drag.current;
               drag.current = null;
               if (d && !d.moved) {
@@ -354,6 +362,8 @@ export function OverviewChart({ model, chartMinutes, tz, selectedId, onPick, buc
                 if (hits.length) onPick(hits.map((h) => h.id));
               }
             }}
+            onPointerCancel={(e) => { if (!touch.end(e, true)) drag.current = null; }}
+            onLostPointerCapture={(e) => { if (!touch.end(e, true)) drag.current = null; }}
             onPointerLeave={() => setHover(null)}
             onDoubleClick={() => setView(fit())}
           />

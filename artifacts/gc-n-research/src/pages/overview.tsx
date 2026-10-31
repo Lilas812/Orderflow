@@ -207,7 +207,7 @@ function ChartLegend() {
       <span className={item}><span className="w-5 border-t border-dashed border-chart-1" />sourcePartial / historyShort</span>
       <span className={item}><span className="h-2.5 w-3 bg-[rgba(91,101,115,0.18)]" />未収録・休場等（無約定とは区別）</span>
       <span className={item}><span className="h-2.5 w-3 bg-[rgba(196,145,46,0.3)]" />部分セッション</span>
-      <span>ホイール=時間ズーム · Shift+ホイール/右軸ドラッグ=価格 · ドラッグ=移動 · ダブルクリック=フィット</span>
+      <span>スマホ：2本指で拡大・縮小、1本指で移動、ラインをタップで詳細。ページ移動はチャート外をスクロール。PC：ホイール=時間ズーム · Shift+ホイール/右軸ドラッグ=価格 · ドラッグ=移動 · ダブルクリック=フィット</span>
     </div>
   );
 }

@@ -7,6 +7,7 @@
 - [下流の圧縮状態](downstream-compression.md) — 250msごとの板の類似性から、サーバー→ブラウザは圧縮状態を引き継ぐ。
 - [検証時の設定副作用](verification-config-side-effects.md) — 補助ツールによるランタイムの自動追加を、設定変更禁止の作業で見落とさない。
 - [検証画像と終了の証拠](screenshot-evidence.md) — 画像IDと保存ファイル、撮影完了・WS切断とブラウザ本体終了を区別する。
+- [タッチ操作の検証証拠](touch-verification.md) — 小画面撮影と実ピンチ入力を区別し、指の同一性・移行・キャンセルまで確かめる。
 - [公開環境のメモリ予算](performance-budget.md) — 容量は現行正本で確認し、Workspace測定と公開実機を区別する。
 - [負荷測定の分離](performance-measurement-isolation.md) — 画面数と初期入力を固定し、実受信・接続数・前景と冷間初回を区別する。
 - [CDP合成ページの通信制限](synthetic-document-network.md) — 合成ページからのloopback WSがChromiumに遮断される。実通信の確認には実HTTP配信を使う。
