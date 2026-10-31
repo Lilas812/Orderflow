@@ -1,0 +1,28 @@
+kind = "web"
+previewPath = "/gc-n-research/"
+title = "GC N約定リサーチ"
+description = "購入済みGCZ6データの前セッションN約定プロファイルと次セッション1分足を共通価格軸で比較する独立研究ページ。製品API・上流接続を使用しない。"
+version = "1.0.0"
+id = "artifacts/gc-n-research"
+router = "path"
+
+[[services]]
+name = "web"
+paths = [ "/gc-n-research/" ]
+localPort = 20373
+
+[services.development]
+run = "pnpm --filter @workspace/gc-n-research run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/gc-n-research", "run", "build" ]
+serve = "static"
+publicDir = "artifacts/gc-n-research/dist/public"
+
+[[services.production.rewrites]]
+from = "/*"
+to = "/index.html"
+
+[services.env]
+PORT = "20373"
+BASE_PATH = "/gc-n-research/"
