@@ -282,6 +282,19 @@ export class AppStore extends LocalStore {
     const hours: number[] = []; for (let h = hourOf(a); h < b; h += 3600) hours.push(h);
     await this.writable("tick", hours); await super.insertUncoveredTradeRange(a, b, trades);
   }
+  override async repairMissingColumns(a: number, b: number, columns: Column[]) {
+    const hours: number[] = [];
+    for (let h = hourOf(a); h < b; h += 3600) hours.push(h);
+    await this.writable("book", hours);
+    return super.repairMissingColumns(a, b, columns);
+  }
+  override async repairEmptyTradeSeconds(a: number, b: number, trades: Trade[],
+    saved: (trades: Trade[], start: number, end: number) => void) {
+    const hours: number[] = [];
+    for (let h = hourOf(a); h < b; h += 3600) hours.push(h);
+    await this.writable("tick", hours);
+    return super.repairEmptyTradeSeconds(a, b, trades, saved);
+  }
   private async expireCache() {
     await this.run(async () => {
       for (const file of await this.allFiles()) {

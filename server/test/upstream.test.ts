@@ -71,6 +71,7 @@ test("ダミー：30秒無受信でclose、close確認前は再接続しない",
   t.mock.timers.tick(29999);
   assert.equal(first.closeCalls, 0);
   t.mock.timers.tick(1);
+  await new Promise<void>(r => setImmediate(() => setImmediate(r)));
   assert.equal(first.closeCalls, 1);
   assert.equal(receiver.metrics.counts.watchdog, 1);
   t.mock.timers.tick(5000);

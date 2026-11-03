@@ -1,6 +1,7 @@
 import { reconnectDelay } from "./backoff.ts";
 import type { Receiver } from "../ingest/receiver.ts";
 import type { Log } from "../logger.ts";
+import { workCpu } from "../diagnostics/work-cpu.ts";
 
 export type SocketEvent = Event & { data?: unknown; code?: number; wasClean?: boolean };
 export interface Socket {
@@ -31,6 +32,11 @@ export class Upstream {
   private lastMessageGapMs: number | null = null;
   private lastReceiveMs: number | null = null;
   private maxReceiveMs: number | null = null;
+  private loopPauseMs: () => number | null;
+  private watchdogGeneration = 0;
+  private watchdogDecisions = { checks: 0, receiveResumed: 0, connectionChanged: 0, localPause: 0, disconnected: 0 };
+  private pongLatencies: { at: number; ms: number }[] = [];
+  private pongCount = 0;
   private socket: Socket | null = null;
   private retryTimer: ReturnType<typeof setTimeout> | null = null;
   private watchdogTimer: ReturnType<typeof setTimeout> | null = null;
@@ -58,6 +64,7 @@ export class Upstream {
     now?: () => number; random?: () => number;
     monotonicNow?: () => number;
     eventLoopSnapshot?: () => unknown;
+    loopPauseMs?: () => number | null;
   }) {
     this.apiKey = options.apiKey;
     this.symbols = options.symbols ?? ["NQ"];
@@ -68,6 +75,7 @@ export class Upstream {
     this.random = options.random ?? Math.random;
     this.monotonicNow = options.monotonicNow ?? (() => performance.now());
     this.eventLoopSnapshot = options.eventLoopSnapshot ?? (() => null);
+    this.loopPauseMs = options.loopPauseMs ?? (() => null);
   }
 
   /** Shared raw WS activity, including ping/control messages; not trade counts.
@@ -79,9 +87,16 @@ export class Upstream {
       connectionLastReceivedUs: this.connectionLastReceivedUs,
       messageAgeMs: this.lastMessageAt === null ? null : Math.max(0, this.monotonicNow() - this.lastMessageAt),
       lastMessageGapMs: this.lastMessageGapMs, maxMessageGapMs: this.maxMessageGapMs,
-      lastReceiveMs: this.lastReceiveMs, maxReceiveMs: this.maxReceiveMs };
+      lastReceiveMs: this.lastReceiveMs, maxReceiveMs: this.maxReceiveMs,
+      watchdogDecisions: { ...this.watchdogDecisions }, pong: this.pongDiagnostics() };
   }
 
+  private pongDiagnostics() {
+    this.pongLatencies = this.pongLatencies.filter(p => p.at >= this.monotonicNow() - 60000);
+    const values = this.pongLatencies.map(p => p.ms).sort((a, b) => a - b);
+    return { windowSeconds: 60, samples: values.length, total: this.pongCount,
+      maxMs: values.at(-1) ?? null, p99Ms: values.length ? values[Math.ceil(values.length * .99) - 1] : null };
+  }
   start() {
     if (this.started) return;
     this.started = true;
@@ -142,13 +157,19 @@ export class Upstream {
       this.status.lastReceivedUs = recvUs;
       this.armWatchdog();
       try {
-        this.receiver.receive(event.data, recvUs, () => {
-          try { socket.send('{"op":"pong"}'); }
+        workCpu.measure("live", () => this.receiver.receive(event.data, recvUs, () => {
+          try {
+            socket.send('{"op":"pong"}');
+            this.pongCount++;
+            this.pongLatencies.push({ at: this.monotonicNow(), ms: Math.max(0, this.monotonicNow() - receiveStarted) });
+            // Real ping is 15s apart. Retain a hard cap even with a malformed ping flood.
+            if (this.pongLatencies.length > 4096) this.pongLatencies.shift();
+          }
           catch (error) {
             this.log("upstream_send_error", { error });
             this.reconnect("pong_error");
           }
-        });
+        }));
       } finally {
         // Measure existing synchronous normalization + callbacks; do not swallow exceptions.
         this.lastReceiveMs = Math.max(0, this.monotonicNow() - receiveStarted);
@@ -177,6 +198,7 @@ export class Upstream {
   }
 
   private clearWatchdog() {
+    this.watchdogGeneration++;
     if (this.watchdogTimer !== null) clearTimeout(this.watchdogTimer);
     this.watchdogTimer = null;
   }
@@ -185,17 +207,41 @@ export class Upstream {
     this.clearWatchdog();
     this.watchdogArmedAt = this.monotonicNow();
     this.watchdogArmedAtUs = this.now() * 1000;
+    const generation = this.watchdogGeneration;
+    const socket = this.socket;
     this.watchdogTimer = setTimeout(() => {
-      this.receiver.metrics.count("watchdog");
+      this.watchdogDecisions.checks++;
       const elapsedMs = Math.max(0, this.monotonicNow() - this.watchdogArmedAt);
-      let eventLoop: unknown;
-      try { eventLoop = this.eventLoopSnapshot(); }
-      catch { eventLoop = { available: false, reason: "snapshot_failed" }; }
-      this.log("upstream_watchdog", { silentMs: 30_000, thresholdMs: 30_000,
-        armedAtUs: this.watchdogArmedAtUs, firedAtUs: this.now() * 1000,
-        elapsedMs, overdueMs: Math.max(0, elapsedMs - 30_000),
-        receive: this.receiveDiagnostics(), eventLoop });
-      this.reconnect("watchdog");
+      const armedAtUs = this.watchdogArmedAtUs, firedAtUs = this.now() * 1000;
+      setImmediate(() => setImmediate(() => {
+        if (this.stopping) return;
+        if (this.socket !== socket || this.closeReason !== null) {
+          this.watchdogDecisions.connectionChanged++;
+          this.log("upstream_watchdog_decision", { decision: "connection_changed", elapsedMs, firedAtUs });
+          return;
+        }
+        if (this.watchdogGeneration !== generation) {
+          this.watchdogDecisions.receiveResumed++;
+          this.log("upstream_watchdog_decision", { decision: "receive_resumed", elapsedMs, firedAtUs });
+          return;
+        }
+        let eventLoop: unknown, pause: number | null = null;
+        try { eventLoop = this.eventLoopSnapshot(); pause = this.loopPauseMs(); }
+        catch { eventLoop = { available: false, reason: "snapshot_failed" }; }
+        if (pause !== null && pause >= 1000) {
+          this.watchdogDecisions.localPause++;
+          this.log("upstream_watchdog_decision", { decision: "local_event_loop_pause", elapsedMs, firedAtUs, pauseMs: pause });
+          this.armWatchdog(); return;
+        }
+        this.watchdogDecisions.disconnected++;
+        this.receiver.metrics.count("watchdog");
+        this.log("upstream_watchdog", { silentMs: 30_000, thresholdMs: 30_000,
+          decision: "no_receive_after_recheck", armedAtUs, firedAtUs,
+          elapsedMs, overdueMs: Math.max(0, elapsedMs - 30_000),
+          checkedAtUs: this.now() * 1000, recheckElapsedMs: Math.max(0, this.monotonicNow() - this.watchdogArmedAt),
+          localPauseMs: pause, receive: this.receiveDiagnostics(), eventLoop });
+        this.reconnect("watchdog");
+      }));
     }, 30_000);
   }
 

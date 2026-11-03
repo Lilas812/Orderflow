@@ -69,7 +69,7 @@ test("memory diagnostics contain numeric process measurements, not configuration
   assert.ok(snapshot.pid > 0 && snapshot.rss > 0 && snapshot.heapUsed > 0);
   assert.ok(snapshot.sampledAtUs > 0);
   assert.deepEqual(Object.keys(snapshot).sort(), [
-    "arrayBuffers", "cpu", "eventLoop", "external", "heapTotal", "heapUsed", "pid", "rss", "rssMaxBytes", "sampledAtUs",
+    "arrayBuffers", "cpu", "cpuBreakdown", "cpuPressure", "eventLoop", "external", "heapTotal", "heapUsed", "pid", "rss", "rssMaxBytes", "sampledAtUs",
   ]);
 });
 

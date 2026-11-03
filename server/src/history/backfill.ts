@@ -7,6 +7,7 @@ import { hourOf } from "../store/local.ts";
 import type { Kind, Store } from "../store/local.ts";
 import type { Metrics } from "../ingest/metrics.ts";
 import type { Log } from "../logger.ts";
+import { decodedColumns, decodedTrades, inputRows } from "./prepared.ts";
 
 export function missingRuns(store: Store, kind: Kind, start: number, end: number): [number, number][] {
   const result: [number, number][] = [];
@@ -101,7 +102,7 @@ export class Backfill {
       await this.take(kind, middle, end); await this.take(kind, start, middle);
       return;
     }
-    const empty = !response.rows.some(row => inWindow(row, start, end));
+    const empty = inputRows(response, start, end) === 0;
     if (empty) {
       this.status.emptyRequests++;
       const nowSec = this.schedule.now() / 1000;
@@ -116,10 +117,10 @@ export class Backfill {
       this.log("history_no_data", noData);
     }
     if (kind === "book") {
-      const columns = historyColumns(response.rows, start, end, this.metrics, this.source.symbol);
+      const columns = decodedColumns(response, start, end, this.metrics, this.source.symbol);
       await this.store.addColumns(columns);
     } else {
-      const trades = historyTrades(response.rows, start, end, this.metrics, this.nextSeq, this.source.symbol);
+      const trades = decodedTrades(response, start, end, this.metrics, this.nextSeq, this.source.symbol);
       await this.store.addTrades(trades);
     }
     this.log("history_range_saved", { kind, startSec: start, endSec: end, empty, attempts: retries + 1 });

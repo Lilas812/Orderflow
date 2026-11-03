@@ -6,6 +6,8 @@ import { createStatusApp, statusSnapshot } from "./status/app.ts";
 import { Pipeline } from "./pipeline.ts";
 import { Hub, attachHub } from "./hub/hub.ts";
 import { MemoryMonitor } from "./diagnostics/memory.ts";
+import { HistoryProcess } from "./history/process.ts";
+import { workCpu } from "./diagnostics/work-cpu.ts";
 import { measurementLogWriter } from "./diagnostics/measurement-log.ts";
 import { MeasurementIsolation, isolationMarker } from "./diagnostics/isolation.ts";
 import { LocalSettings } from "./settings/local.ts";
@@ -49,14 +51,18 @@ async function main() {
   let activity: () => unknown = () => ({ phase: "initializing" });
   const memory = new MemoryMonitor(log, () => activity());
   memory.start();
+  const historyProcess = new HistoryProcess(config.apiKey, log, () => ({
+    loopP99Ms: memory.eventLoop.window(10000).p99Ms,
+    throttledRatio: memory.pressure.snapshot().throttledRatio,
+  }), undefined, undefined, us => workCpu.child(us));
   const pipeline = new Pipeline(config.apiKey, () => receiver.nextSequence(), nqLog, column => hub.column(column),
-    objects ? new AppStore(root!, objects, mode.prefix, nqLog) : undefined, "NQ", historyRequest);
+    objects ? new AppStore(root!, objects, mode.prefix, nqLog) : undefined, "NQ", historyRequest, historyProcess);
   const receiver = new Receiver(nqLog, {
     book: (book) => { pipeline.book(book); hub.book(book); },
     trade: (trade) => { pipeline.trade(trade); hub.trade(trade); longVp?.trade(trade); },
   });
   const gc = createGcRuntime({ key: config.apiKey, log, request: historyRequest, objects, root,
-    prefix: mode.prefix, env: process.env, upstream: () => upstream });
+    prefix: mode.prefix, env: process.env, upstream: () => upstream, historyProcess });
   if (accumulationEnabled(process.env) && objects && root) {
     longVp = new AppLongVp({ repository: new LongObjects(objects, mode.prefix, path.join(root, "longvp-working")),
       store: pipeline.store, history: pipeline.client, metrics: pipeline.historyMetrics,
@@ -65,8 +71,11 @@ async function main() {
         backfillState: pipeline.backfill.status.state, vpHistoryState: pipeline.vpHistory.state.state }),
     });
   } else log("long_vp_disabled", longStatus());
+  pipeline.onHistoryRepair = (start, end) => longVp?.historyRepaired(start, end);
+  gc.pipeline.onHistoryRepair = (start, end) => gc.longVp?.historyRepaired(start, end);
   const upstream = new Upstream({ apiKey: config.apiKey, receiver: new MarketReceiver(receiver, gc.receiver), log, symbols: ["NQ", "GC"],
-    eventLoopSnapshot: () => memory.eventLoop.snapshot() });
+    eventLoopSnapshot: () => memory.eventLoop.snapshot(),
+    loopPauseMs: () => memory.eventLoop.window(30000).maxMs });
   const hub: Hub = new Hub({
     savedRange: () => pipeline.store.savedRange,
     read: (from, to) => pipeline.readRange(from, to),
@@ -88,7 +97,7 @@ async function main() {
     () => ({ ...hub.snapshot(), connected: hub.snapshot().connected + gc.hub.snapshot().connected,
       connections: [...hub.connections().map(c => ({ ...c, symbol: "NQ" })), ...gc.hub.connections().map(c => ({ ...c, symbol: "GC" }))],
       bySymbol: { NQ: hub.snapshot(), GC: gc.hub.snapshot() } }),
-    () => memory.snapshot(), () => isolation.snapshot(), settings,
+    () => ({ ...memory.snapshot(), historyProcess: historyProcess.snapshot() }), () => isolation.snapshot(), settings,
     process.env.HEATMAP_SERVE_FRONTEND === "1"
       ? fileURLToPath(new URL("../../artifacts/heatmap/dist/public/", import.meta.url)) : undefined, longVp, longVpSettings, settingsTrace,
     symbol => symbol === "GC" ? gc : null);
@@ -128,6 +137,7 @@ async function main() {
     // compress/replace existing data. Wait for its readers to close instead.
     await initialization?.catch(() => {});
     if (initialized) await Promise.all([pipeline.stop(), gc.pipeline.stop()]);
+    await historyProcess.stop();
     await httpClosed;
     settingsTrace?.stop();
     await memory.stop();
@@ -164,7 +174,7 @@ async function main() {
   if (shuttingDown) return;
   log("storage_initialized", { elapsedMs: performance.now() - started });
   activity = () => ({ delivery: hub.snapshot(), backfill: pipeline.backfill.snapshot().state,
-    upstreamReceive: upstream.receiveDiagnostics() });
+    upstreamReceive: upstream.receiveDiagnostics(), historyProcess: historyProcess.snapshot() });
   settingsTrace?.start();
   // Neither HTTP readiness nor WS rangeDone can be exposed before full recovery.
   http = app.listen(config.port, "0.0.0.0");

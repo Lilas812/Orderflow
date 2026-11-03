@@ -61,6 +61,7 @@ test("ダミー：watchdogの閾値と実経過・超過時間を区別し、再
   u.start(); socket.emit("open");
   clock = 45000;
   t.mock.timers.tick(30000);
+  await new Promise<void>(r => setImmediate(() => setImmediate(r)));
   const row = rows.map(r => JSON.parse(r)).find(r => r.event === "upstream_watchdog");
   assert.equal(row.details.silentMs, 30000); // old field remains compatible
   assert.equal(row.details.thresholdMs, 30000);
@@ -97,9 +98,42 @@ test("ダミー：診断取得失敗でもwatchdogのcloseを妨げない", asyn
     log: (event, details) => events.push({ event, details }), createSocket: () => socket,
     eventLoopSnapshot: () => { throw Error("dummy diagnostic failure"); } });
   u.start(); t.mock.timers.tick(30000);
+  await new Promise<void>(r => setImmediate(() => setImmediate(r)));
   assert.equal(socket.closeCalls, 1);
   assert.match(JSON.stringify(events), /snapshot_failed/);
   const stopped = u.stop(); socket.emit("close", { code: 1000 }); await stopped;
+});
+
+test("ダミー：watchdog後の2ターン内に届いた受信を先に処理し、誤切断しない", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"], now: 1000 });
+  const socket = new DummySocket(), receiver = new Receiver(() => {});
+  const upstream = new Upstream({ apiKey: "dummy", receiver, log: () => {}, createSocket: () => socket });
+  upstream.start(); socket.emit("open", {});
+  t.mock.timers.tick(30000);
+  setImmediate(() => socket.emit("message", { data: '{"type":"ping"}' }));
+  await new Promise<void>(r => setImmediate(() => setImmediate(r)));
+  assert.equal(socket.closeCalls, 0);
+  assert.equal(upstream.receiveDiagnostics().watchdogDecisions.receiveResumed, 1);
+  assert.equal(upstream.receiveDiagnostics().pong.samples, 1);
+  const stopped = upstream.stop(); socket.emit("close", { code: 1000 }); await stopped;
+});
+
+test("ダミー：直近30秒の1秒以上の停止は30秒猶予し、停止なしの真の無受信は切断", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"], now: 1000 });
+  const socket = new DummySocket(), receiver = new Receiver(() => {});
+  let pause: number | null = 1000;
+  const upstream = new Upstream({ apiKey: "dummy", receiver, log: () => {},
+    createSocket: () => socket, loopPauseMs: () => pause });
+  upstream.start(); socket.emit("open", {});
+  t.mock.timers.tick(30000);
+  await new Promise<void>(r => setImmediate(() => setImmediate(r)));
+  assert.equal(socket.closeCalls, 0);
+  assert.equal(upstream.receiveDiagnostics().watchdogDecisions.localPause, 1);
+  pause = null; t.mock.timers.tick(30000);
+  await new Promise<void>(r => setImmediate(() => setImmediate(r)));
+  assert.equal(socket.closeCalls, 1);
+  assert.equal(upstream.receiveDiagnostics().watchdogDecisions.disconnected, 1);
+  const stopped = upstream.stop(); socket.emit("close", { code: 1000 }); await stopped;
 });
 
 test("隔離HTTP：statusに診断を追加し、既存WS statusの上流形式は維持", async () => {

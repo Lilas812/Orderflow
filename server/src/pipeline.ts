@@ -12,14 +12,18 @@ import { VolumeProfile } from "./vp/state.ts";
 import { VpHistory, coverageSegments } from "./vp/history.ts";
 import type { MarketSymbol } from "../../lib/market/instruments.ts";
 import type { FootprintHistory } from "./hub/hub.ts";
+import type { HistoryProcess } from "./history/process.ts";
+import { LiveGapRepair } from "./history/live-gap.ts";
 
 export class Pipeline {
   readonly store: LocalStore;
   readonly historyMetrics: Metrics;
-  readonly client: HistoryClient;
+  readonly client: Pick<HistoryClient, "symbol" | "get" | "stats">;
   readonly backfill: Backfill;
   readonly vp: VolumeProfile;
   readonly vpHistory: VpHistory;
+  readonly repair: LiveGapRepair;
+  onHistoryRepair: (start: number, end: number) => void = () => {};
   private aggregate: ColumnAggregator;
   private log: Log;
   private seam: number | null = null;
@@ -35,17 +39,21 @@ export class Pipeline {
   private onColumn: (column: Column) => void;
 
   constructor(apiKey: string, nextSeq: () => number, log: Log, onColumn: (column: Column) => void = () => {},
-    store?: LocalStore, symbol: MarketSymbol = "NQ", request: typeof fetch = fetch) {
+    store?: LocalStore, symbol: MarketSymbol = "NQ", request: typeof fetch = fetch, historyProcess?: HistoryProcess) {
     this.log = log;
     this.onColumn = onColumn;
     // Resolve independently of the workflow's cwd; never under server/data.
     this.store = store ?? new LocalStore(fileURLToPath(new URL(
       symbol === "NQ" ? "../../data/" : "../../data/instruments/GC/", import.meta.url)), Date.now, undefined, symbol);
     this.historyMetrics = new Metrics(log);
-    this.client = new HistoryClient(apiKey, log, request, undefined, symbol);
+    this.client = historyProcess?.source(symbol) ?? new HistoryClient(apiKey, log, request, undefined, symbol);
     this.backfill = new Backfill(this.client, this.store, this.historyMetrics, nextSeq, log);
     this.vp = new VolumeProfile(Date.now() / 1000);
     this.vpHistory = new VpHistory(this.vp, this.client, this.store, this.historyMetrics, nextSeq, log);
+    this.repair = new LiveGapRepair(this.client, this.store, this.historyMetrics, nextSeq, log, (trades, start, end) => {
+      for (const trade of trades) this.vp.add(trade);
+      this.onHistoryRepair(start, end);
+    });
     this.aggregate = new ColumnAggregator(column => {
       if (this.seam === null) {
         this.seam = column.tsSec;
@@ -107,6 +115,7 @@ export class Pipeline {
         const batch = this.tradeBatch; this.tradeBatch = [];
         await this.store.addTrades(batch);
       }
+      this.repair.tick(this.gaps);
       await this.store.maintenance();
     } catch {
       this.storageError = "local_storage_failed";
@@ -128,7 +137,7 @@ export class Pipeline {
       historyCounts: { ...this.historyMetrics.counts }, historyExamples: this.historyMetrics.examples,
       storage: { ...this.store.stats,
         ...("cloudStatus" in this.store ? { appStorage: this.store.cloudStatus } : {}) }, storageError: this.storageError,
-      liveGaps: gaps, unconfirmedSecond: this.aggregate.pendingSecond,
+      liveGaps: gaps, liveGapRepair: { ...this.repair.status }, unconfirmedSecond: this.aggregate.pendingSecond,
     };
   }
   readRange(start: number, end: number) {
@@ -196,6 +205,7 @@ export class Pipeline {
     if (this.expiry) clearTimeout(this.expiry);
     await this.backfill.stop();
     await this.vpHistory.stop();
+    await this.repair.stop();
     this.aggregate.expire(Date.now() * 1000);
     if (this.seam !== null && this.tradeBatch.length) {
       const batch = this.tradeBatch; this.tradeBatch = [];

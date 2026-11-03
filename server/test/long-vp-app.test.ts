@@ -21,6 +21,34 @@ import type { Trade } from "../src/types.ts";
 import { createLogger } from "../src/logger.ts";
 
 const noop = () => {};
+test("ダミー：欠け補完後は当日と確定済み日を保存経路から再集計し、再通知で二重加算しない", async t => {
+  const { root, repo, objects } = await fixture(t), store = new DummyStore(path.join(root, "raw"));
+  await store.initialize();
+  const now = atET("2026-10-28", 18, 6);
+  store.markCovered("tick", now / 1e6 - 8 * 86400, now / 1e6); await store.flush();
+  let seq = 0;
+  const service = new AppLongVp({ repository: repo, store, metrics: new Metrics(noop),
+    nextSeq: () => ++seq, now: () => now, metadata: { roll: async () => metadata },
+    history: { get: async () => { throw Error("unexpected_dummy_request"); } }, log: noop });
+  t.after(() => service.stop());
+  await service.run();
+  const current = trade(now - 60e6, 400, 7, "buy", ++seq);
+  await store.addTrades([current]); await store.flush();
+  const second = Math.floor(current.tsUs / 1e6);
+  service.historyRepaired(second, second + 1); await service.run();
+  assert.equal(service.today()!.vp30m.reduce((n, row) => n + row[2] + row[3], 0), 7);
+  service.historyRepaired(second, second + 1); await service.run();
+  assert.equal(service.today()!.vp30m.reduce((n, row) => n + row[2] + row[3], 0), 7);
+  const old = trade(atET("2026-10-27", 18, 30), 400, 11, "buy", ++seq);
+  await store.addTrades([old]); await store.flush();
+  service.historyRepaired(old.tsUs / 1e6, old.tsUs / 1e6 + 1); await service.run();
+  const saved = [...objects.files].find(([name]) => name.endsWith("2026-10-28.json.gz"));
+  assert(saved);
+  const { gunzipSync } = await import("node:zlib");
+  const day = JSON.parse(gunzipSync(saved[1]).toString());
+  assert.equal(day.vp30m.reduce((n: number, row: number[]) => n + row[2] + row[3], 0), 11);
+});
+
 test("ダミー：日次処理は先行backfill/VPがrunningでも完了待ちせず保存する", async t => {
   const { root, repo, objects } = await fixture(t), store = new DummyStore(path.join(root, "raw"));
   await store.initialize();

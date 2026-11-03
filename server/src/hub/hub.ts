@@ -8,6 +8,7 @@ import type { ReplayClock } from "./replay.ts";
 import type { Column } from "../aggregate/columns.ts";
 import type { Trade, BookSnapshot } from "../types.ts";
 import type { Log } from "../logger.ts";
+import { workCpu } from "../diagnostics/work-cpu.ts";
 import { VolumeProfile } from "../vp/state.ts";
 import { INSTRUMENTS, marketSymbol, type MarketSymbol } from "../../../lib/market/instruments.ts";
 
@@ -106,10 +107,10 @@ export class Hub {
     if (board && !p.range && p.socket.bufferedAmount > BOARD_LIMIT) { this.counts.droppedBoards++; return false; }
     const stage = this.stage(p);
     try {
-      p.socket.send(data, error => {
+      workCpu.measure("delivery", () => p.socket.send(data, error => {
         if (error) { this.counts.sendErrors++; this.log("hub_send_error", { ...stage, reason: "send_failed",
           closedBeforeCallback: p.closed, closeReason: p.closeReason ?? "remote", readyState: p.socket.readyState }); this.close(p, 1011, "send_failed"); }
-      });
+      }));
       return true;
     } catch {
       this.counts.sendErrors++; this.log("hub_send_error", { ...stage, reason: "send_failed" }); this.close(p, 1011, "send_failed");

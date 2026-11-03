@@ -10,18 +10,20 @@ import { statusSnapshot } from "./status/app.ts";
 import type { Objects } from "./store/objects.ts";
 import type { Upstream } from "./upstream/connection.ts";
 import type { Log } from "./logger.ts";
+import type { HistoryProcess } from "./history/process.ts";
 
 /** Instrument-local state; no listener and no upstream socket are created here. */
 export function createGcRuntime(options: {
   key: string; log: Log; request: typeof fetch; objects: Objects | null; root: string | null;
   prefix: string; env: NodeJS.ProcessEnv; upstream(): Upstream;
+  historyProcess?: HistoryProcess;
 }) {
   const log: Log = (event, fields) => options.log(event, {
     ...(fields && typeof fields === "object" ? fields : { detail: fields }), symbol: "GC" });
   let longVp: AppLongVp | null = null;
   const pipeline = new Pipeline(options.key, () => receiver.nextSequence(), log, c => hub.column(c),
     options.objects ? new AppStore(path.join(options.root!, "instruments/GC"), options.objects,
-      options.prefix + "instruments/GC/", log, Date.now, "GC") : undefined, "GC", options.request);
+      options.prefix + "instruments/GC/", log, Date.now, "GC") : undefined, "GC", options.request, options.historyProcess);
   const receiver = new Receiver(log, {
     book: b => { pipeline.book(b); hub.book(b); },
     trade: t => { pipeline.trade(t); hub.trade(t); longVp?.trade(t); },

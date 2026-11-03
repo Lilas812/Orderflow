@@ -5,6 +5,7 @@ import { Readable } from "node:stream";
 import { pipeline as streamPipeline } from "node:stream/promises";
 import path from "node:path";
 import type { MarketSymbol } from "../../../lib/market/instruments.ts";
+import { workCpu } from "../diagnostics/work-cpu.ts";
 import { promisify } from "node:util";
 import { gzip as gzipCallback, gunzip as gunzipCallback } from "node:zlib";
 import { encodeColumns, decodeColumns } from "./binary.ts";
@@ -97,7 +98,7 @@ export class LocalStore implements Store {
   protected run(work: () => Promise<void>): Promise<void> {
     const job = this.queue.then(async () => {
       if (this.failure) throw this.failure;
-      await work();
+      await workCpu.measure("storage", work);
     });
     this.queue = job.catch((e: unknown) => { this.failure = e instanceof Error ? e : Error("store_failed"); });
     return job;
@@ -383,6 +384,54 @@ export class LocalStore implements Store {
   }
   replaceTradeRange(start: number, end: number, trades: Trade[]): Promise<void> {
     return this.run(() => this.insertTradeRange(start, end, trades));
+  }
+  /** The recheck and insertion share the original writer queue with live append. */
+  async repairMissingColumns(start: number, end: number, incoming: Column[]): Promise<number> {
+    let count = 0;
+    await this.run(async () => {
+      const present = new Set<number>();
+      for (let h = hourOf(start); h < end; h += 3600) {
+        for (const c of await this.readColumnRange(h, start, end)) present.add(c.tsSec);
+        for (const sec of this.columns.get(h)?.keys() ?? []) present.add(sec);
+      }
+      for (const column of incoming) {
+        if (column.tsSec < start || column.tsSec >= end || present.has(column.tsSec)) continue;
+        const hour = hourOf(column.tsSec), records = this.columns.get(hour) ?? new Map<number, Buffer>();
+        records.set(column.tsSec, encodeColumns([column])); this.columns.set(hour, records);
+        present.add(column.tsSec); count++;
+      }
+      for (let h = hourOf(start); h < end; h += 3600) if (!this.held.has(h)) await this.writeHour(h);
+    });
+    return count;
+  }
+  async repairEmptyTradeSeconds(start: number, end: number, incoming: Trade[],
+    saved: (trades: Trade[], start: number, end: number) => void) {
+    const seams: { startSec: number; endSec: number }[] = [];
+    await this.run(async () => {
+      const present = new Set<number>();
+      for (let h = hourOf(start); h < end; h += 3600) {
+        await this.visitTradeHour(h, start, end, t => { present.add(Math.floor(t.tsUs / 1e6)); });
+        for (const t of this.trades.get(h) ?? []) present.add(Math.floor(t.tsUs / 1e6));
+      }
+      for (let a = start; a < end;) {
+        if (present.has(a)) {
+          const last = seams.at(-1);
+          if (last?.endSec === a) last.endSec = a + 1;
+          else seams.push({ startSec: a, endSec: a + 1 });
+          a++; continue;
+        }
+        if (this.recordedTicks.some(([x, y]) => x <= a && a < y)) { a++; continue; }
+        let b = a + 1;
+        while (b < end && !present.has(b) && !this.recordedTicks.some(([x, y]) => x <= b && b < y)) b++;
+        const fresh = incoming.filter(t => t.tsUs >= a * 1e6 && t.tsUs < b * 1e6);
+        await this.insertTradeRange(a, b, fresh);
+        // Synchronous adoption immediately after the writer commits prevents a
+        // second repair/read from independently adding the same imported window.
+        saved(fresh, a, b);
+        a = b;
+      }
+    });
+    return seams;
   }
   /** Coverage recheck and insertion share the live append queue. */
   insertUncoveredTradeRange(start: number, end: number, trades: Trade[]): Promise<void> {

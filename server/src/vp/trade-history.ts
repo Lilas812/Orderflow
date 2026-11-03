@@ -5,6 +5,7 @@ import { historyTrades, inWindow } from "../history/decode.ts";
 import type { LocalStore } from "../store/local.ts";
 import type { Metrics } from "../ingest/metrics.ts";
 import type { Trade } from "../types.ts";
+import { decodedTrades, inputRows } from "../history/prepared.ts";
 
 export function coverageSegments(ranges: readonly [number, number][], start: number, end: number) {
   const result: { start: number; end: number; covered: boolean }[] = [];
@@ -70,15 +71,15 @@ export async function readTradeRange(options: {
       const middle = start + Math.floor((end - start) / 2);
       await take(start, middle); await take(middle, end); return;
     }
-    if (!response.rows.some(r => inWindow(r, start, end))) {
+    if (inputRows(response, start, end) === 0) {
       if ((retry > 0 || end >= schedule.now() / 1000 - 600) && retry < 3) {
         state.emptyRetries++; await schedule.wait(120000, signal);
         return take(start, end, retry + 1);
       }
       state.noData.push({ startSec: start, endSec: end, attempts: retry + 1 });
     }
-    const trades = historyTrades(response.rows, start, end, metrics, nextSeq, source.symbol);
-    if (trades.length !== response.rows.filter(r => inWindow(r, start, end)).length) {
+    const trades = decodedTrades(response, start, end, metrics, nextSeq, source.symbol);
+    if (trades.length !== inputRows(response, start, end)) {
       state.gaps.push({ startSec: start, endSec: end, reason: "invalid_history_tick" }); return;
     }
     signal.throwIfAborted();

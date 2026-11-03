@@ -5,6 +5,8 @@ import { fileURLToPath } from "node:url";
 import type { Log } from "../logger.ts";
 import { CpuMonitor } from "./cpu.ts";
 import { EventLoopMonitor } from "./event-loop.ts";
+import { CpuPressure } from "./cpu-pressure.ts";
+import { workCpu } from "./work-cpu.ts";
 
 /** Numeric diagnostics only: allocation profiles contain stacks/sizes, not object
  * contents. Never write an unrestricted heap snapshot containing credentials.
@@ -20,6 +22,7 @@ export class MemoryMonitor {
   private samples = 0;
   private cpu = new CpuMonitor();
   readonly eventLoop = new EventLoopMonitor();
+  readonly pressure = new CpuPressure();
   private readonly directory = fileURLToPath(new URL("../../../data/perf-memory/profiles/", import.meta.url));
 
   constructor(log: Log, state: () => unknown = () => ({})) {
@@ -29,7 +32,9 @@ export class MemoryMonitor {
   snapshot() {
     return { sampledAtUs: Date.now() * 1000, pid: process.pid, ...process.memoryUsage(),
       rssMaxBytes: process.resourceUsage().maxRSS * 1024, cpu: this.cpu.snapshot(),
-      eventLoop: this.eventLoop.snapshot() };
+      eventLoop: { ...this.eventLoop.snapshot(), last10s: this.eventLoop.window(10000),
+        last30s: this.eventLoop.window(30000) }, cpuPressure: this.pressure.snapshot(),
+      cpuBreakdown: workCpu.snapshot() };
   }
 
   start(): void {
@@ -47,6 +52,8 @@ export class MemoryMonitor {
   private sample(): void {
     if (this.stopped) return;
     this.cpu.sample();
+    workCpu.sample();
+    void this.pressure.sample();
     this.log("process_memory", { ...this.snapshot(), activity: this.state() });
     this.eventLoop.reset();
     this.samples++;

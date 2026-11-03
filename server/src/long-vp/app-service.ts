@@ -9,6 +9,7 @@ import { LongObjects } from "./objects.ts";
 import { coverageSegments, historyProgress, readTradeRange, readRecordedTradeRange } from "../vp/trade-history.ts";
 import type { LocalStore } from "../store/local.ts";
 import type { HistorySource } from "../history/client.ts";
+import { workCpu } from "../diagnostics/work-cpu.ts";
 import type { Metrics } from "../ingest/metrics.ts";
 import type { Trade } from "../types.ts";
 import type { Log } from "../logger.ts";
@@ -38,6 +39,9 @@ export class AppLongVp {
   private timer: ReturnType<typeof setInterval> | null = null;
   private deadlineTimer: ReturnType<typeof setTimeout> | null = null;
   private initialized = false;
+  private repairedDates = new Set<string>();
+  private repairRevision = 0;
+  private adoptedRepairRevision = 0;
   private stopped = false;
   private timeline: Roll[] = [];
   private metadataEvidence: { contract: string; sinceUs: number; untilUs: number } | null = null;
@@ -112,6 +116,7 @@ export class AppLongVp {
         && this.prepared?.date !== due;
       const retryReady = this.retryAtUs === null || this.now() >= this.retryAtUs;
       if (!this.job && retryReady && ((this.retryAtUs !== null) || !this.initialized || date !== this.todayDate
+        || this.repairRevision !== this.adoptedRepairRevision || this.repairedDates.size > 0
         || prepareDue || (this.now() >= boundary && boundary > this.lastFinalizedUs))) this.launch();
     }, 60000);
   }
@@ -330,13 +335,21 @@ export class AppLongVp {
     if (date !== this.todayDate) this.resetToday(date);
     if (!date || dayAt(t.tsUs) !== date || t.seq < this.restoreCutoffSeq) return;
     const contract = this.contract(t);
-    if (contract) this.todayLive.add(t, contract);
+    if (contract) workCpu.measure("longVp", () => this.todayLive.add(t, contract));
     else this.rollError = "unverified_live_contract";
+  }
+  historyRepaired(startSec: number, endSec: number) {
+    for (const sec of [startSec, endSec - 1]) {
+      const date = dayAt(sec * 1e6);
+      if (date) this.repairedDates.add(date);
+    }
+    this.repairRevision++;
+    this.prepared = null;
   }
   today(): DayData | null {
     if (!this.todayDate || !this.todayReady) return null;
-    return serializeDay(this.todayDate, mergeAggregates(this.todayBase, this.todayLive),
-      this.timeline, this.todayGaps, this.now(), true, this.gc);
+    return workCpu.measure("longVp", () => serializeDay(this.todayDate!, mergeAggregates(this.todayBase, this.todayLive),
+      this.timeline, this.todayGaps, this.now(), true, this.gc));
   }
   rolls() { return this.rollRows; }
   frontContract(): string | null {
@@ -347,6 +360,8 @@ export class AppLongVp {
     return this.diagnostics.run(() => this.runBatch());
   }
   private async runBatch() {
+    const repairRevision = this.repairRevision;
+    if (repairRevision !== this.adoptedRepairRevision) this.todayReady = false;
     this.state = "running"; this.error = null;
     if (!this.initialized) {
       await this.diagnostics.stage("repository_initialize", {}, () => this.initializeRepository(),
@@ -386,12 +401,13 @@ export class AppLongVp {
       this.prepared = { date, upToUs, ...built };
       this.deps.log("long_vp_day_prepared", { date, upToUs, gaps: built.gaps, trades: built.aggregate.count });
     }
-    const dates = datesBetween(from, to).filter(d => dayBounds(d).endUs + 300e6 <= current);
+    const dates = [...new Set([...datesBetween(from, to), ...this.repairedDates])]
+      .filter(d => dayBounds(d).endUs + 300e6 <= current).sort();
     this.progress = { totalDays: dates.length, processedDays: 0, date: null };
     for (const date of dates) {
       this.abort.signal.throwIfAborted();
       this.progress.date = date;
-      if (!this.repository.records.get(date)?.complete) {
+      if (!this.repository.records.get(date)?.complete || this.repairedDates.has(date)) {
         const start = performance.now(), prepared = this.prepared?.date === date ? this.prepared : null;
         let built: { aggregate: LongAggregate; gaps: [number, number][] };
         if (prepared && !prepared.gaps.length) {
@@ -423,6 +439,11 @@ export class AppLongVp {
     this.lastFinalizedUs = current;
     this.progress.date = null; this.state = "waiting";
     this.retryAtUs = null; this.failures = 0;
+    if (this.repairRevision === repairRevision) {
+      for (const date of dates) this.repairedDates.delete(date);
+      if (this.todayReady && this.todayDate) this.repairedDates.delete(this.todayDate);
+      this.adoptedRepairRevision = repairRevision;
+    }
     this.deps.log("long_vp_batch_finished", this.snapshot());
   }
   async stop() {

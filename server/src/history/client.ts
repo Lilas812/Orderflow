@@ -3,8 +3,9 @@ import type { Kind } from "../store/local.ts";
 import type { HistoryRow } from "./decode.ts";
 import type { Log } from "../logger.ts";
 import type { MarketSymbol } from "../../../lib/market/instruments.ts";
+import type { PreparedHistory } from "./prepared.ts";
 
-export interface HistoryResponse { rows: HistoryRow[]; truncated: boolean; }
+export interface HistoryResponse { rows: HistoryRow[]; truncated: boolean; prepared?: PreparedHistory; }
 export interface HistorySource { readonly symbol?: MarketSymbol; get(kind: Kind, start: number, end: number, signal: AbortSignal): Promise<HistoryResponse>; }
 export class WindowUnavailableError extends Error {
   readonly reason: string;
