@@ -3,6 +3,9 @@ import { ChevronLeft, ChevronRight, ChevronDown, ChevronUp, Minus, MoveHorizonta
 import { type Tz, TZ_NAME, MINUTE_MS, clamp, formatDateTime, formatPrice, formatQty, niceTickStep } from '@/lib/research';
 import { overlapSegments, type OverviewModel, type ResearchLine } from '@/lib/overview';
 import { useChartTouch } from '@/hooks/use-chart-touch';
+import { useFrameState } from '@/hooks/use-frame-state';
+import { useChartDpr } from '@/hooks/use-chart-dpr';
+import { prepareCanvas } from '@/lib/chart-canvas';
 
 const C = {
   plot: '#fbf8f1',
@@ -65,8 +68,10 @@ interface Props {
 export function OverviewChart({ model, chartMinutes, tz, selectedId, onPick, bucketTicks }: Props) {
   const wrapRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const overlayRef = useRef<HTMLCanvasElement>(null);
+  const dpr = useChartDpr();
   const [size, setSize] = useState({ w: 900, h: 520 });
-  const [hover, setHover] = useState<{ x: number; y: number } | null>(null);
+  const [hover, setHover] = useFrameState<{ x: number; y: number } | null>(null);
   const decor = useLineDecor(model.lines);
   const segments = useMemo(() => new Map(model.lines.map(l => [l.id, overlapSegments(l, model.lines)])), [model.lines]);
   const barMs = chartMinutes * MINUTE_MS;
@@ -80,7 +85,7 @@ export function OverviewChart({ model, chartMinutes, tz, selectedId, onPick, buc
     const pad = Math.max(4, (hi - lo) * 0.04);
     return { t0: model.timeStartMs, t1: model.timeEndMs, p0: lo - pad, p1: hi + pad };
   }, [model]);
-  const [view, setView] = useState<View>(fit);
+  const [view, setView] = useFrameState<View>(fit);
   const viewRef = useRef(view);
   viewRef.current = view;
 
@@ -158,10 +163,7 @@ export function OverviewChart({ model, chartMinutes, tz, selectedId, onPick, buc
   useEffect(() => {
     const cv = canvasRef.current;
     if (!cv) return;
-    const dpr = window.devicePixelRatio || 1;
-    cv.width = L.w * dpr; cv.height = L.h * dpr;
-    const ctx = cv.getContext('2d')!;
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    const ctx = prepareCanvas(cv, L.w, L.h, dpr);
     ctx.fillStyle = C.plot; ctx.fillRect(0, 0, L.w, L.h);
     ctx.fillStyle = C.profileBg; ctx.fillRect(0, L.top, L.profileW, L.bottom - L.top);
     const v = view;
@@ -277,7 +279,16 @@ export function OverviewChart({ model, chartMinutes, tz, selectedId, onPick, buc
     ctx.font = '10px "IBM Plex Mono", monospace';
     ctx.fillText(tz, L.x1 + 6, L.bottom + 8);
 
-    // crosshair
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [L, view, model, hitLines, decor, selectedId, tz, barMs, bucketTicks, segments, dpr]);
+
+  // Pointer movement only clears/redraws the transparent overlay.
+  useEffect(() => {
+    const cv = overlayRef.current;
+    if (!cv) return;
+    const ctx = prepareCanvas(cv, L.w, L.h, dpr);
+    ctx.clearRect(0, 0, L.w, L.h);
+    ctx.font = '10px "IBM Plex Mono", monospace';
     if (hover && hover.y > L.top && hover.y < L.bottom) {
       ctx.strokeStyle = C.cross; ctx.setLineDash([3, 3]);
       ctx.beginPath(); ctx.moveTo(0, hover.y + 0.5); ctx.lineTo(L.x1, hover.y + 0.5); ctx.stroke();
@@ -288,7 +299,7 @@ export function OverviewChart({ model, chartMinutes, tz, selectedId, onPick, buc
       ctx.fillText(formatPrice(Math.round(pOf(hover.y))), L.x1 + 6, hover.y);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [L, view, model, hitLines, decor, selectedId, hover, tz, barMs, bucketTicks, segments]);
+  }, [L, view, hover, dpr]);
 
   // drag
   const drag = useRef<{ x: number; y: number; v: View; moved: boolean; axis: boolean } | null>(null);
@@ -367,6 +378,7 @@ export function OverviewChart({ model, chartMinutes, tz, selectedId, onPick, buc
             onPointerLeave={() => setHover(null)}
             onDoubleClick={() => setView(fit())}
           />
+          <canvas ref={overlayRef} aria-hidden="true" data-testid="canvas-overview-overlay" className="pointer-events-none absolute inset-0 h-full w-full" />
           {hover && hoverInfo.length > 0 && (
             <div
               className="pointer-events-none absolute z-10 rounded-sm border border-popover-border bg-popover px-2 py-1 text-[10px] shadow-sm"

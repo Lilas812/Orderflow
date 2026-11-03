@@ -1,0 +1,34 @@
+[
+  {
+    "path": "overview",
+    "viewport": "1280x900 DPR2",
+    "hover": {
+      "fills": 148620,
+      "resizes": 120
+    },
+    "zoom": {
+      "fills": 19435,
+      "resizes": 16
+    },
+    "interactionTwoFramesP50": 33.3000000002794,
+    "interactionTwoFramesP95": 34.40000000037253,
+    "cpuTaskMs": 857.564,
+    "heapBytes": 19808864
+  },
+  {
+    "path": "daily",
+    "viewport": "1280x900 DPR2",
+    "hover": {
+      "fills": 99660,
+      "resizes": 120
+    },
+    "zoom": {
+      "fills": 5430,
+      "resizes": 16
+    },
+    "interactionTwoFramesP50": 33.3000000002794,
+    "interactionTwoFramesP95": 35.5,
+    "cpuTaskMs": 913.8870000000003,
+    "heapBytes": 19475224
+  }
+]

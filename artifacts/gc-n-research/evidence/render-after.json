@@ -1,0 +1,62 @@
+[
+  {
+    "path": "overview",
+    "viewport": "1280x900 DPR2",
+    "hover": {
+      "fills": 60,
+      "resizes": 0,
+      "byCanvas": {
+        "canvas-overview-overlay": 60
+      },
+      "drawPasses": 60,
+      "drawCpuP95Ms": 0.6000000000931323
+    },
+    "zoom": {
+      "fills": 19435,
+      "resizes": 0,
+      "byCanvas": {
+        "canvas-overview": 19427,
+        "canvas-overview-overlay": 8
+      },
+      "drawPasses": 16,
+      "drawCpuP95Ms": 4.7999999998137355
+    },
+    "interactionTwoFramesP50": 33.3000000002794,
+    "interactionTwoFramesP95": 35.700000000186265,
+    "checks": {
+      "hoverPreservesBasePixels": true
+    },
+    "cpuTaskMs": 611.2349999999998,
+    "heapBytes": 17550788
+  },
+  {
+    "path": "daily",
+    "viewport": "1280x900 DPR2",
+    "hover": {
+      "fills": 120,
+      "resizes": 0,
+      "byCanvas": {
+        "canvas-research-overlay": 120
+      },
+      "drawPasses": 60,
+      "drawCpuP95Ms": 0.5
+    },
+    "zoom": {
+      "fills": 5430,
+      "resizes": 0,
+      "byCanvas": {
+        "canvas-research-chart": 5414,
+        "canvas-research-overlay": 16
+      },
+      "drawPasses": 16,
+      "drawCpuP95Ms": 4.7999999998137355
+    },
+    "interactionTwoFramesP50": 33.3000000002794,
+    "interactionTwoFramesP95": 35.90000000037253,
+    "checks": {
+      "hoverPreservesBasePixels": true
+    },
+    "cpuTaskMs": 982.8380000000001,
+    "heapBytes": 26035724
+  }
+]

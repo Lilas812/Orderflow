@@ -1,6 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Minus, MoveHorizontal, MoveVertical, Plus, RotateCcw, Scan } from 'lucide-react';
 import { useChartTouch } from '@/hooks/use-chart-touch';
+import { useFrameState } from '@/hooks/use-frame-state';
+import { useChartDpr } from '@/hooks/use-chart-dpr';
+import { prepareCanvas } from '@/lib/chart-canvas';
 import {
   type Candle,
   type Level,
@@ -89,9 +92,11 @@ function fitPrice(candles: Candle[], levels: Level[], profile: ProfileRow[], t0:
 export function ResearchChart({ data, profile, bucketTicks, levels, tz }: Props) {
   const wrapRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const overlayRef = useRef<HTMLCanvasElement>(null);
+  const dpr = useChartDpr();
   const [size, setSize] = useState({ w: 0, h: 0 });
-  const [view, setView] = useState<View | null>(null);
-  const [hover, setHover] = useState<{ x: number; y: number } | null>(null);
+  const [view, setView] = useFrameState<View | null>(null);
+  const [hover, setHover] = useFrameState<{ x: number; y: number } | null>(null);
   const viewRef = useRef(view);
   viewRef.current = view;
 
@@ -271,13 +276,17 @@ export function ResearchChart({ data, profile, bucketTicks, levels, tz }: Props)
   useEffect(() => {
     const cv = canvasRef.current;
     if (!cv || !view || size.w === 0) return;
-    const dpr = window.devicePixelRatio || 1;
-    cv.width = size.w * dpr;
-    cv.height = size.h * dpr;
-    const ctx = cv.getContext('2d')!;
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    draw(ctx, L, view, data, profile, bucketTicks, levels, levelSet, maxQty, tz, hover);
-  }, [view, size, L, data, profile, bucketTicks, levels, levelSet, maxQty, tz, hover]);
+    const ctx = prepareCanvas(cv, size.w, size.h, dpr);
+    draw(ctx, L, view, data, profile, bucketTicks, levels, levelSet, maxQty, tz);
+  }, [view, size, L, data, profile, bucketTicks, levels, levelSet, maxQty, tz, dpr]);
+
+  useEffect(() => {
+    const cv = overlayRef.current;
+    if (!cv || !view || size.w === 0) return;
+    const ctx = prepareCanvas(cv, size.w, size.h, dpr);
+    ctx.clearRect(0, 0, size.w, size.h);
+    drawCrosshair(ctx, L, view, tz, hover);
+  }, [view, size, L, tz, hover, dpr]);
 
   // Hover readout
   const readout = useMemo(() => {
@@ -369,6 +378,7 @@ export function ResearchChart({ data, profile, bucketTicks, levels, tz }: Props)
             }}
             onKeyDown={onKeyDown}
           />
+          <canvas ref={overlayRef} aria-hidden="true" data-testid="canvas-research-overlay" className="pointer-events-none absolute inset-0 h-full w-full" />
           {readout && hover && (
             <div
               className="pointer-events-none absolute z-10 rounded-sm border border-popover-border bg-popover/95 px-2 py-1.5 text-[11px] shadow-sm"
@@ -434,7 +444,6 @@ function draw(
   levelSet: Set<number>,
   maxQty: number,
   tz: Tz,
-  hover: { x: number; y: number } | null,
 ) {
   const { w, h, profileW, candleX0, candleX1, plotTop, plotBottom } = L;
   const plotH = plotBottom - plotTop;
@@ -589,6 +598,16 @@ function draw(
   ctx.fillText(`前N ${data.previousSession ?? '—'}${data.previousPartial ? ' (部分)' : ''}`, 6, plotTop + 10);
   ctx.fillText(`${data.session} 1分足${data.partial ? ' (部分)' : ''}`, candleX0 + 6, plotTop + 10);
 
+}
+
+function drawCrosshair(
+  ctx: CanvasRenderingContext2D, L: Layout, v: View, tz: Tz,
+  hover: { x: number; y: number } | null,
+) {
+  const { candleX0, candleX1, plotTop, plotBottom } = L;
+  const plotH = plotBottom - plotTop, pw = candleX1 - candleX0;
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'middle';
   // Crosshair
   if (hover && hover.y >= plotTop && hover.y <= plotBottom) {
     ctx.strokeStyle = C.cross;
