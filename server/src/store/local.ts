@@ -6,6 +6,7 @@ import { pipeline as streamPipeline } from "node:stream/promises";
 import path from "node:path";
 import type { MarketSymbol } from "../../../lib/market/instruments.ts";
 import { workCpu } from "../diagnostics/work-cpu.ts";
+import { namedWork } from "../diagnostics/main-thread.ts";
 import { promisify } from "node:util";
 import { gzip as gzipCallback, gunzip as gunzipCallback } from "node:zlib";
 import { encodeColumns, decodeColumns } from "./binary.ts";
@@ -96,10 +97,10 @@ export class LocalStore implements Store {
   }
 
   protected run(work: () => Promise<void>): Promise<void> {
-    const job = this.queue.then(async () => {
+    const job = namedWork("storage", () => this.queue.then(async () => {
       if (this.failure) throw this.failure;
       await workCpu.measure("storage", work);
-    });
+    }));
     this.queue = job.catch((e: unknown) => { this.failure = e instanceof Error ? e : Error("store_failed"); });
     return job;
   }

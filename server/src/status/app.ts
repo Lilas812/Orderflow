@@ -1,4 +1,5 @@
 import express from "express";
+import { namedWork } from "../diagnostics/main-thread.ts";
 import type { Receiver } from "../ingest/receiver.ts";
 import type { Upstream } from "../upstream/connection.ts";
 import { makeSanitizer } from "../logger.ts";
@@ -36,6 +37,7 @@ export function createStatusApp(upstream: Upstream, receiver: Receiver, apiKey: 
   longVp?: AppLongVp | null, longVpSettings?: LongVpSettings, settingsTrace?: SettingsTrace,
   markets?: (symbol: MarketSymbol) => MarketStatus | null) {
   const app = express();
+  app.use((_req, _res, next) => namedWork("http-request", next));
   app.disable("x-powered-by");
   // The public proxy already routes /api; /status remains the canonical handler.
   app.get(["/status", "/api/status"], (req, res) => {

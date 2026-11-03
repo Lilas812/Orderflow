@@ -35,6 +35,13 @@ export function tradingDate(date: string) {
 export function dayBounds(date: string) {
   return { startUs: atET(shiftDate(date, -1), 18), endUs: atET(date, 18) };
 }
+/** Maintenance has no expected prints. Still retain any actual maintenance prints
+ * in the ending session; only completeness/gaps excludes this hour. */
+export function tradingGaps(date: string, gaps: readonly [number, number][]): [number, number][] {
+  const b = dayBounds(date), start = b.startUs / 1e6, tradingEnd = atET(date, 17) / 1e6;
+  return gaps.map(([a, z]): [number, number] => [Math.max(start, a), Math.min(tradingEnd, z)])
+    .filter(([a, z]) => a < z);
+}
 export function dayAt(us: number): string | null {
   const p = parts(us), date = p.hour >= 18 ? shiftDate(p.date, 1) : p.date;
   return tradingDate(date) ? date : null;
@@ -90,6 +97,7 @@ export function serializeDay(date: string, aggregate: LongAggregate, timeline: R
   gaps: [number, number][], nowUs: number, provisional = false, recordContracts = false,
   verifiedContracts?: DayData["contracts"]): DayData {
   const { startUs, endUs } = dayBounds(date);
+  gaps = tradingGaps(date, gaps);
   const contracts: DayData["contracts"] = verifiedContracts?.map(c => ({ ...c })) ?? [];
   const sorted = timeline.slice().sort((a, b) => a.sinceUs - b.sinceUs);
   for (let i = 0; verifiedContracts === undefined && i < sorted.length; i++) {

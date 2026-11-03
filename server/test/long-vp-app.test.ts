@@ -174,7 +174,7 @@ test("ダミー：CT16:55の記録済み日次は進行中の履歴窓を待た�
   const { root, repo } = await fixture(t), store = new DummyStore(path.join(root, "raw"));
   await store.initialize();
   let now = atET("2026-10-28", 17, 54), seq = 10, calls = 0, release!: () => void, entered!: () => void;
-  const hole = atET("2026-10-28", 17, 30) / 1e6;
+  const hole = atET("2026-10-28", 16, 30) / 1e6; // real trading hour, not maintenance
   await store.addTrades([trade(atET("2026-10-28", 17, 15), 444, 3)]);
   store.markCovered("tick", now / 1e6 - 8 * 86400, hole);
   store.markCovered("tick", hole + 60, now / 1e6); await store.flush();
@@ -192,7 +192,7 @@ test("ダミー：CT16:55の記録済み日次は進行中の履歴窓を待た�
     assert.equal(partial.complete, false);
     assert.equal(calls, 1);
     assert.ok(partial.gaps.some(([a, b]) => a <= hole && b >= hole + 60));
-    assert.ok(partial.gaps.some(([a, b]) => a <= now / 1e6 && b === dayBounds("2026-10-28").endUs / 1e6));
+    assert.ok(partial.gaps.every(([, b]) => b <= atET("2026-10-28", 17) / 1e6));
     assert.equal(partial.vp30m.reduce((n, r) => n + r[2], 0), 3);
     now = atET("2026-10-28", 18, 5);
     await store.addTrades([trade(hole * 1e6, 445, 6)]);
@@ -274,7 +274,7 @@ test("ダミー：checkpointは最後のmetadata観測時刻より後の旧限�
   assert.equal(early.complete, false);
   assert.ok(early.contracts.every(c => c.toSec <= observedUntil / 1e6));
   assert.equal(early.vp30m.reduce((n, r) => n + r[2], 0), 3);
-  assert.ok(early.gaps.some(([a, b]) => a <= observedUntil / 1e6 && b > now / 1e6));
+  assert.ok(early.gaps.every(([, b]) => b <= atET("2026-10-28", 17) / 1e6));
   now = atET("2026-10-28", 18, 1);
   store.markCovered("tick", now / 1e6 - 8 * 86400, now / 1e6); await store.flush();
   await service.run(); // Fresh metadata now confirms the entire finished day.
@@ -399,7 +399,7 @@ test("ダミー：配列形式、日中ロール、OHLC・買売・空分、edge
   assert.equal(edge.diffTicks, 1); assert.equal(edge.detail.gapSeconds, 0.067193);
   assert.deepEqual(validateRolls([edge]), [edge]);
   assert.throws(() => edgeDifference("NQU6", "NQZ6", seam, null, trade(seam)), /unavailable/);
-  assert.throws(() => validateDay({ ...day, complete: false }), /invalid/);
+  assert.equal(validateDay({ ...day, complete: false }).complete, false); // immature, gap-free checkpoint
 });
 test("ダミー：再DL照合、再起動復元、破損拒否、LRU日数・バイト上限", async t => {
   const { root, objects, repo } = await fixture(t);

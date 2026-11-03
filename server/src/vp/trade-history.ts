@@ -9,10 +9,23 @@ import { decodedTrades, inputRows } from "../history/prepared.ts";
 
 export function coverageSegments(ranges: readonly [number, number][], start: number, end: number) {
   const result: { start: number; end: number; covered: boolean }[] = [];
-  for (let a = start; a < end;) {
-    const covered = ranges.some(([x, y]) => x <= a && a < y);
-    const b = Math.min(end, ...ranges.flat().filter(x => x > a && x < end));
-    result.push({ start: a, end: b, covered }); a = b;
+  if (!(start < end)) return result;
+  // Keep every original edge, including boundaries between overlapping covered
+  // intervals. Sweep once rather than allocating ranges.flat() for every edge.
+  const events = new Map<number, number>([[start, 0], [end, 0]]);
+  let active = 0;
+  for (const [x, y] of ranges) {
+    for (const edge of [x, y]) if (edge > start && edge < end && !events.has(edge)) events.set(edge, 0);
+    if (!(x < y)) continue;
+    if (x <= start && start < y) active++;
+    if (x > start && x < end) events.set(x, (events.get(x) ?? 0) + 1);
+    if (y > start && y < end) events.set(y, (events.get(y) ?? 0) - 1);
+  }
+  const edges = [...events.keys()].sort((a, b) => a - b);
+  for (let i = 0; i + 1 < edges.length; i++) {
+    const a = edges[i];
+    if (i) active += events.get(a)!;
+    result.push({ start: a, end: edges[i + 1], covered: active > 0 });
   }
   return result;
 }
@@ -42,6 +55,7 @@ export async function readTradeRange(options: {
   const reader = store.tradeReadSession(signal);
   const schedule = options.schedule ?? { now: Date.now,
     wait: async (ms: number, s: AbortSignal) => { await delay(ms, undefined, { signal: s }); } };
+  let acceptedRanges: [number, number][] = [];
   async function take(start: number, end: number, retry = 0): Promise<void> {
     signal.throwIfAborted();
     const wait = (end + 300) * 1000 - schedule.now();
@@ -85,9 +99,8 @@ export async function readTradeRange(options: {
     signal.throwIfAborted();
     // Live writes may have completed during the request. Split/recheck rather than overwrite.
     await store.insertUncoveredTradeRange(start, end, trades);
-    await reader.visit(start, end, visit);
+    acceptedRanges.push([start, end]);
     state.apiSeconds += end - start;
-    state.importedTrades += trades.length;
   }
   try {
     for (let a = options.start; a < options.end; a += 900) {
@@ -95,14 +108,29 @@ export async function readTradeRange(options: {
       const b = Math.min(a + 900, options.end);
       await locked(store, async () => {
         signal.throwIfAborted();
+        acceptedRanges = [];
         for (const segment of coverageSegments(await store.recordedTickCoverage(), a, b)) {
           if (segment.covered) {
-            const before = schedule.now();
-            await reader.visit(segment.start, segment.end, t => { visit(t); state.importedTrades++; });
-            state.fileReadMs += schedule.now() - before; state.fileWindows++;
+            acceptedRanges.push([segment.start, segment.end]);
             state.fileSeconds += segment.end - segment.start;
           } else await take(segment.start, segment.end);
         }
+        // Read once per physical window, not once per tiny coverage island.
+        const segments = coverageSegments(acceptedRanges, a, b), before = schedule.now();
+        if (acceptedRanges.length) {
+          await reader.visit(a, b, t => {
+            const sec = t.tsUs / 1e6;
+            let lo = 0, hi = segments.length;
+            while (lo < hi) {
+              const mid = (lo + hi) >>> 1;
+              if (segments[mid].start <= sec) lo = mid + 1; else hi = mid;
+            }
+            const segment = segments[lo - 1];
+            if (segment?.covered && sec < segment.end) { visit(t); state.importedTrades++; }
+          });
+          state.fileWindows++;
+        }
+        state.fileReadMs += schedule.now() - before;
       });
     }
     return state;
@@ -117,17 +145,18 @@ export async function readRecordedTradeRange(options: {
   try {
     const coverage = await options.store.recordedTickCoverage();
     for (let a = options.start; a < options.end; a += 900) {
-      for (const segment of coverageSegments(coverage, a, Math.min(a + 900, options.end))) {
+      const b = Math.min(a + 900, options.end);
+      for (const segment of coverageSegments(coverage, a, b)) {
         options.signal.throwIfAborted();
         if (!segment.covered) {
           state.gaps.push({ startSec: segment.start, endSec: segment.end, reason: "not_recorded" });
         }
         // Partially received rows are still useful; missing coverage must remain a gap.
-        const before = performance.now();
-        await reader.visit(segment.start, segment.end, t => { state.importedTrades++; options.visit(t); });
-        state.fileReadMs += performance.now() - before;
-        state.fileWindows++; if (segment.covered) state.fileSeconds += segment.end - segment.start;
+        if (segment.covered) state.fileSeconds += segment.end - segment.start;
       }
+      const before = performance.now();
+      await reader.visit(a, b, t => { state.importedTrades++; options.visit(t); });
+      state.fileReadMs += performance.now() - before; state.fileWindows++;
     }
     return state;
   } finally { await reader.close(); }

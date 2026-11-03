@@ -2,8 +2,9 @@ import { reconnectDelay } from "./backoff.ts";
 import type { Receiver } from "../ingest/receiver.ts";
 import type { Log } from "../logger.ts";
 import { workCpu } from "../diagnostics/work-cpu.ts";
+import { namedWork } from "../diagnostics/main-thread.ts";
 
-export type SocketEvent = Event & { data?: unknown; code?: number; wasClean?: boolean };
+export type SocketEvent = Event & { data?: unknown; code?: number; wasClean?: boolean; reason?: string };
 export interface Socket {
   readonly readyState: number;
   addEventListener(type: string, listener: (event: SocketEvent) => void): void;
@@ -12,6 +13,11 @@ export interface Socket {
 }
 
 export class Upstream {
+  private lastPingAt: number | null = null;
+  private lastPongAt: number | null = null;
+  private maxPingIntervalMs: number | null = null;
+  private retryEvidence: { disconnectedAtUs: number; scheduledMs: number; attemptAfterMs: number | null;
+    connectedAfterMs: number | null; timerOverdueMs: number | null } | null = null;
   private apiKey: string;
   private receiver: Pick<Receiver, "metrics" | "receive">;
   private symbols: string[];
@@ -88,7 +94,11 @@ export class Upstream {
       messageAgeMs: this.lastMessageAt === null ? null : Math.max(0, this.monotonicNow() - this.lastMessageAt),
       lastMessageGapMs: this.lastMessageGapMs, maxMessageGapMs: this.maxMessageGapMs,
       lastReceiveMs: this.lastReceiveMs, maxReceiveMs: this.maxReceiveMs,
-      watchdogDecisions: { ...this.watchdogDecisions }, pong: this.pongDiagnostics() };
+      watchdogDecisions: { ...this.watchdogDecisions }, pong: this.pongDiagnostics(),
+      ping: { maxHandlerIntervalMs: this.maxPingIntervalMs,
+        lastHandlerAgeMs: this.lastPingAt === null ? null : this.monotonicNow() - this.lastPingAt,
+        upstreamTimestampDifferenceMs: null, timestampStatus: "not_available_in_existing_ping_contract" },
+      reconnectTiming: this.retryEvidence };
   }
 
   private pongDiagnostics() {
@@ -105,6 +115,11 @@ export class Upstream {
 
   private connect(retry: boolean) {
     if (this.stopping || this.socket) return;
+    if (retry && this.retryEvidence) {
+      this.retryEvidence.attemptAfterMs = this.now() - this.retryEvidence.disconnectedAtUs / 1000;
+      this.retryEvidence.timerOverdueMs = Math.max(0, this.retryEvidence.attemptAfterMs - this.retryEvidence.scheduledMs);
+      this.log("upstream_reconnect_attempt", this.retryEvidence);
+    }
     this.connectionSerial++;
     this.connectionMessages = 0;
     this.lastMessageAt = null;
@@ -118,9 +133,9 @@ export class Upstream {
     this.log("upstream_connecting", { reconnectCount: this.status.reconnectCount });
     let socket: Socket;
     try {
-      socket = this.createSocket(
+      socket = namedWork("upstream", () => this.createSocket(
         `wss://stream.tick-stream.xyz/v1/stream?key=${encodeURIComponent(this.apiKey)}&symbols=${this.symbols.join(",")}`,
-      );
+      ));
     } catch (error) {
       this.log("upstream_constructor_error", { error });
       this.schedule(1006, "constructor_error", null);
@@ -133,6 +148,10 @@ export class Upstream {
       if (this.stopping || this.closeReason) { socket.close(1000); return; }
       this.status.state = "open";
       this.status.connectedAtUs = this.now() * 1000;
+      if (retry && this.retryEvidence) {
+        this.retryEvidence.connectedAfterMs = this.now() - this.retryEvidence.disconnectedAtUs / 1000;
+        this.log("upstream_reconnect_connected", this.retryEvidence);
+      }
       this.log("upstream_open");
       try {
         // Trades are subscribed by symbols=NQ on each new socket.
@@ -158,8 +177,12 @@ export class Upstream {
       this.armWatchdog();
       try {
         workCpu.measure("live", () => this.receiver.receive(event.data, recvUs, () => {
+          const pingAt = this.monotonicNow();
+          if (this.lastPingAt !== null) this.maxPingIntervalMs = Math.max(this.maxPingIntervalMs ?? 0, pingAt - this.lastPingAt);
+          this.lastPingAt = pingAt;
           try {
             socket.send('{"op":"pong"}');
+            this.lastPongAt = this.monotonicNow();
             this.pongCount++;
             this.pongLatencies.push({ at: this.monotonicNow(), ms: Math.max(0, this.monotonicNow() - receiveStarted) });
             // Real ping is 15s apart. Retain a hard cap even with a malformed ping flood.
@@ -191,7 +214,10 @@ export class Upstream {
       this.status.lastClose = { code, wasClean, reason, recvUs: this.now() * 1000 };
       this.receiver.metrics.count("disconnects");
       if (!wasClean || code === 1006) this.receiver.metrics.count("abnormalClose");
-      this.log("upstream_close", this.status.lastClose);
+      this.log("upstream_close", { ...this.status.lastClose, remoteReason: event.reason ?? "",
+        lastPingAgeMs: this.lastPingAt === null ? null : this.monotonicNow() - this.lastPingAt,
+        lastPongAgeMs: this.lastPongAt === null ? null : this.monotonicNow() - this.lastPongAt });
+      this.lastPingAt = null; this.lastPongAt = null;
       if (this.stopping) this.finishStop();
       else this.schedule(code, reason, connectedAtMs);
     });
@@ -254,6 +280,8 @@ export class Upstream {
     this.failures = nextFailures;
     this.status.state = "backoff";
     this.status.retryDelayMs = delayMs;
+    this.retryEvidence = { disconnectedAtUs: this.now() * 1000, scheduledMs: delayMs,
+      attemptAfterMs: null, connectedAfterMs: null, timerOverdueMs: null };
     this.log("upstream_reconnect_scheduled", { code, reason, delayMs });
     this.retryTimer = setTimeout(() => {
       this.retryTimer = null;

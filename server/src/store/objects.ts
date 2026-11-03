@@ -12,6 +12,7 @@ export class ObjectGenerationConflict extends Error {
 
 /** Only filenames cross this boundary for market data. No downloadAsBytes. */
 export interface Objects {
+  delete?(name: string): Promise<void>;
   readonly conditional?: ConditionalCloud;
   exists(name: string): Promise<boolean>;
   download(name: string, file: string): Promise<void>;
@@ -21,6 +22,13 @@ export interface Objects {
   uploadConditional?(name: string, file: string, generation: string): Promise<string>;
 }
 export class ReplitObjects implements Objects {
+  async delete(name: string) {
+    // Only diagnostics retention may call this method. Market data is never deleted here.
+    if (!/^(prod|dev)\/diagnostics\/cpuprofile\/\d+-\d+\.cpuprofile\.json\.gz$/.test(name))
+      throw Error("diagnostics_delete_outside_prefix");
+    const result = await this.client.delete(name);
+    if (!result.ok) throw Error("diagnostics_delete_failed");
+  }
   private client = new Client({ bucketId: process.env.DEFAULT_OBJECT_STORAGE_BUCKET_ID });
   // Same sidecar auth as the SDK; its public API does not expose generation preconditions.
   private versioned = new Storage({ projectId: "", credentials: {

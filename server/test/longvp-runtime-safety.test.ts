@@ -110,7 +110,7 @@ test("CT16:55 snapshots saved partial prints despite hung history; next seven-da
   const partial = await repo.day("2026-10-28");
   assert.equal(partial.complete, false); assert.equal(qty(partial), 7); assert.equal(calls, 1);
   assert.ok(partial.gaps.some(([a, b]) => a <= hole && b >= hole + 60));
-  assert.ok(partial.gaps.some(([a, b]) => a <= now / 1e6 && b === atET("2026-10-28", 18) / 1e6));
+  assert.ok(partial.gaps.every(([, b]) => b <= atET("2026-10-28", 17) / 1e6));
   await service.stop(); // The hung request and deadline timers must cancel.
   await store.addTrades([trade((hole + 1) * 1e6, 3, ++sequence)]);
   now = atET("2026-10-29", 18, 6);

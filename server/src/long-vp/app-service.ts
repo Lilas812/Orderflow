@@ -10,6 +10,7 @@ import { coverageSegments, historyProgress, readTradeRange, readRecordedTradeRan
 import type { LocalStore } from "../store/local.ts";
 import type { HistorySource } from "../history/client.ts";
 import { workCpu } from "../diagnostics/work-cpu.ts";
+import { namedWork } from "../diagnostics/main-thread.ts";
 import type { Metrics } from "../ingest/metrics.ts";
 import type { Trade } from "../types.ts";
 import type { Log } from "../logger.ts";
@@ -146,7 +147,7 @@ export class AppLongVp {
     await this.checkpointJob;
   }
   private launch() {
-    this.job = this.run().catch(error => {
+    this.job = namedWork("longvp", () => this.run()).catch(error => {
       if (!this.stopped) {
         this.state = "failed";
         this.error = error instanceof Error && /^[a-z0-9_]+$/.test(error.message)
@@ -172,7 +173,7 @@ export class AppLongVp {
     return `${date}:${now >= atET(date, 18, 5) ? "final" : now >= atET(date, 17, 55) ? "cutoff" : "startup"}:${verified}`;
   }
   private launchCheckpoint() {
-    this.checkpointJob = this.checkpoint().catch(error => {
+    this.checkpointJob = namedWork("longvp-checkpoint", () => this.checkpoint()).catch(error => {
       if (!this.stopped) this.deps.log("long_vp_failed", {
         reason: "daily_checkpoint_failed", symbol: this.repository.symbol,
         error: exceptionDetails(error), mode: "recorded_only" });
@@ -196,7 +197,7 @@ export class AppLongVp {
         if (end < bounds.endUs) gaps.push([end / 1e6, bounds.endUs / 1e6]);
         else if (this.now() < bounds.endUs + 300e6) gaps.push([bounds.endUs / 1e6 - 300, bounds.endUs / 1e6]);
         const data = serializeDay(date, built.aggregate, this.timeline, union(gaps), this.now(),
-          false, this.gc, built.contracts);
+          this.now() < bounds.endUs + 300e6, this.gc, built.contracts);
         const result = await diag.stage("save", { date, mode: "recorded_only", complete: data.complete },
           () => this.repository.save(data, this.abort.signal));
         diag.note({ date, mode: "recorded_only", decision: "latest_cloud_improves_day",

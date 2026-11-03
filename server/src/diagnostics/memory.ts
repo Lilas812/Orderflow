@@ -7,6 +7,9 @@ import { CpuMonitor } from "./cpu.ts";
 import { EventLoopMonitor } from "./event-loop.ts";
 import { CpuPressure } from "./cpu-pressure.ts";
 import { workCpu } from "./work-cpu.ts";
+import { MainThreadMonitor, namedWork } from "./main-thread.ts";
+import { AutoCpuProfile } from "./cpu-profile.ts";
+import type { Objects } from "../store/objects.ts";
 
 /** Numeric diagnostics only: allocation profiles contain stacks/sizes, not object
  * contents. Never write an unrestricted heap snapshot containing credentials.
@@ -23,10 +26,17 @@ export class MemoryMonitor {
   private cpu = new CpuMonitor();
   readonly eventLoop = new EventLoopMonitor();
   readonly pressure = new CpuPressure();
+  readonly mainThread: MainThreadMonitor;
+  readonly automaticProfile: AutoCpuProfile;
   private readonly directory = fileURLToPath(new URL("../../../data/perf-memory/profiles/", import.meta.url));
 
-  constructor(log: Log, state: () => unknown = () => ({})) {
+  constructor(log: Log, state: () => unknown = () => ({}),
+    profileOptions?: { objects?: Objects | null; prefix: string; secrets: readonly string[]; directory: string }) {
     this.log = log; this.state = state;
+    this.automaticProfile = new AutoCpuProfile({ log, ...profileOptions,
+      prefix: profileOptions?.prefix ?? "dev/", secrets: profileOptions?.secrets ?? [],
+      directory: profileOptions?.directory ?? fileURLToPath(new URL("../../../data/dev/diagnostics/cpuprofile/", import.meta.url)) });
+    this.mainThread = new MainThreadMonitor(log, ms => this.automaticProfile.observe(ms));
   }
 
   snapshot() {
@@ -34,18 +44,20 @@ export class MemoryMonitor {
       rssMaxBytes: process.resourceUsage().maxRSS * 1024, cpu: this.cpu.snapshot(),
       eventLoop: { ...this.eventLoop.snapshot(), last10s: this.eventLoop.window(10000),
         last30s: this.eventLoop.window(30000) }, cpuPressure: this.pressure.snapshot(),
-      cpuBreakdown: workCpu.snapshot() };
+      cpuBreakdown: workCpu.snapshot(), mainThread: this.mainThread.snapshot(),
+      automaticCpuProfile: this.automaticProfile.snapshot() };
   }
 
   start(): void {
     this.eventLoop.start();
+    this.mainThread.start();
     this.session.connect();
     this.session.post("HeapProfiler.startSampling", { samplingInterval: 524288 }, error => {
       if (error) this.log("memory_profile_error", { operation: "start_sampling" });
       else this.profiling = true;
     });
     this.sample();
-    this.timer = setInterval(() => this.sample(), 5000);
+    this.timer = namedWork("diagnostics", () => setInterval(() => this.sample(), 5000));
     this.timer.unref();
   }
 
@@ -55,6 +67,7 @@ export class MemoryMonitor {
     workCpu.sample();
     void this.pressure.sample();
     this.log("process_memory", { ...this.snapshot(), activity: this.state() });
+    this.mainThread.sample();
     this.eventLoop.reset();
     this.samples++;
     if (this.samples % 6 === 0) void this.saveProfile();
@@ -84,6 +97,8 @@ export class MemoryMonitor {
   async stop(): Promise<void> {
     if (this.timer) clearInterval(this.timer);
     this.timer = null;
+    this.mainThread.stop();
+    await this.automaticProfile.stop();
     this.sample(); this.stopped = true;
     await this.saveProfile();
     if (this.profiling) {

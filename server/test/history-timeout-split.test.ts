@@ -58,7 +58,7 @@ test("response bodyの通信失敗も分割、abortは分割・再試行せず�
 test("記録済み日次はcoverageのない区間の既存約定も数え、gapを消さず900秒以下で読む", async t => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "recorded-range-"));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
-  const store = new LocalStore(root), start = 1793100000;
+  const start = 1793100000, store = new LocalStore(root, () => (start + 1800) * 1000);
   await store.initialize();
   await store.addTrades([{ tsUs: (start + 30) * 1e6, recvUs: (start + 30) * 1e6,
     seq: 1, size: 3, side: "buy", price: 400 }]);

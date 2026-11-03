@@ -15,7 +15,7 @@ export function validateDay(value: unknown, symbol: MarketSymbol = "NQ"): DayDat
     || !Number.isInteger(d.endSec) || d.startSec >= d.endSec || !Number.isSafeInteger(d.builtAtUs)
     || !Array.isArray(d.contracts) || !Array.isArray(d.bars1m) || !Array.isArray(d.vp30m)
     || !Array.isArray(d.gaps) || typeof d.complete !== "boolean"
-    || d.complete !== (d.gaps.length === 0)) throw Error("invalid_longvp_day");
+    || (d.complete && d.gaps.length !== 0)) throw Error("invalid_longvp_day");
   for (const c of d.contracts) {
     if (!validContract(c.contract, symbol, true) || !Number.isFinite(c.fromSec) || !Number.isFinite(c.toSec)
       || c.fromSec < d.startSec || c.toSec > d.endSec || c.fromSec >= c.toSec) throw Error("invalid_longvp_contract");

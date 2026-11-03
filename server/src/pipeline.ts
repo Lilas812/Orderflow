@@ -14,6 +14,7 @@ import type { MarketSymbol } from "../../lib/market/instruments.ts";
 import type { FootprintHistory } from "./hub/hub.ts";
 import type { HistoryProcess } from "./history/process.ts";
 import { LiveGapRepair } from "./history/live-gap.ts";
+import { namedWork } from "./diagnostics/main-thread.ts";
 
 export class Pipeline {
   readonly store: LocalStore;
@@ -88,7 +89,7 @@ export class Pipeline {
   async initialize(signal?: AbortSignal) {
     await this.store.initialize(signal);
     signal?.throwIfAborted();
-    this.timer = setInterval(() => { void this.tick(); }, 1000);
+    this.timer = namedWork("pipeline", () => setInterval(() => { void this.tick(); }, 1000));
   }
   book(book: BookSnapshot) {
     if (this.stopped) return;

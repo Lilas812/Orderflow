@@ -12,6 +12,7 @@ export class WorkCpu {
   private childAt = this.baseAt;
   private totals: { at: number; cpu: number }[] = [{ at: this.baseAt, cpu: 0 }];
   measure<T>(category: Category, work: () => T): T {
+    if (typeof process.threadCpuUsage !== "function") return work();
     const before = process.threadCpuUsage(), frame = { nested: 0 };
     this.active.push(frame);
     try { return work(); }

@@ -9,6 +9,7 @@ import type { Column } from "../aggregate/columns.ts";
 import type { Trade, BookSnapshot } from "../types.ts";
 import type { Log } from "../logger.ts";
 import { workCpu } from "../diagnostics/work-cpu.ts";
+import { namedWork } from "../diagnostics/main-thread.ts";
 import { VolumeProfile } from "../vp/state.ts";
 import { INSTRUMENTS, marketSymbol, type MarketSymbol } from "../../../lib/market/instruments.ts";
 
@@ -106,14 +107,20 @@ export class Hub {
     if (!this.healthy(p)) return false;
     if (board && !p.range && p.socket.bufferedAmount > BOARD_LIMIT) { this.counts.droppedBoards++; return false; }
     const stage = this.stage(p);
+    const payload = { bytes: typeof data === "string" ? Buffer.byteLength(data) : data.length,
+      frame: board ? "current_book" : typeof data === "string" ? (() => {
+        // JSON is already serialized; never include payload contents in logs.
+        const match = /"type":"([^"]+)"/.exec(data.slice(0, 256));
+        return match?.[1] ?? "json";
+      })() : `binary_kind_${data[0] ?? "unknown"}` };
     try {
-      workCpu.measure("delivery", () => p.socket.send(data, error => {
-        if (error) { this.counts.sendErrors++; this.log("hub_send_error", { ...stage, reason: "send_failed",
+      namedWork("delivery", () => workCpu.measure("delivery", () => p.socket.send(data, error => {
+        if (error) { this.counts.sendErrors++; this.log("hub_send_error", { ...stage, ...payload, reason: "send_failed",
           closedBeforeCallback: p.closed, closeReason: p.closeReason ?? "remote", readyState: p.socket.readyState }); this.close(p, 1011, "send_failed"); }
-      }));
+      })));
       return true;
     } catch {
-      this.counts.sendErrors++; this.log("hub_send_error", { ...stage, reason: "send_failed" }); this.close(p, 1011, "send_failed");
+      this.counts.sendErrors++; this.log("hub_send_error", { ...stage, ...payload, reason: "send_failed" }); this.close(p, 1011, "send_failed");
       return false;
     }
   }

@@ -25,6 +25,7 @@ import { SettingsTrace } from "./settings/trace.ts";
 import { createGcRuntime } from "./gc-runtime.ts";
 import { MarketReceiver } from "./ingest/markets.ts";
 import { historyGate } from "./history/gate.ts";
+import { namedWork } from "./diagnostics/main-thread.ts";
 
 async function main() {
   const config = readConfig(process.env);
@@ -49,7 +50,10 @@ async function main() {
   const isolation = new MeasurementIsolation(isolationMarker, log);
   isolation.snapshot();
   let activity: () => unknown = () => ({ phase: "initializing" });
-  const memory = new MemoryMonitor(log, () => activity());
+  const memory = new MemoryMonitor(log, () => activity(), { objects, prefix: mode.prefix,
+    directory: path.resolve(root ?? "data/dev", "diagnostics/cpuprofile"),
+    secrets: Object.entries(process.env).filter(([key]) => /KEY|SECRET|TOKEN|PASSWORD|CREDENTIAL/i.test(key))
+      .flatMap(([, value]) => value ? [value] : []) });
   memory.start();
   const historyProcess = new HistoryProcess(config.apiKey, log, () => ({
     loopP99Ms: memory.eventLoop.window(10000).p99Ms,
@@ -71,7 +75,7 @@ async function main() {
         backfillState: pipeline.backfill.status.state, vpHistoryState: pipeline.vpHistory.state.state }),
     });
   } else log("long_vp_disabled", longStatus());
-  pipeline.onHistoryRepair = (start, end) => longVp?.historyRepaired(start, end);
+  pipeline.onHistoryRepair = (start, end) => namedWork("longvp-repair", () => longVp?.historyRepaired(start, end));
   gc.pipeline.onHistoryRepair = (start, end) => gc.longVp?.historyRepaired(start, end);
   const upstream = new Upstream({ apiKey: config.apiKey, receiver: new MarketReceiver(receiver, gc.receiver), log, symbols: ["NQ", "GC"],
     eventLoopSnapshot: () => memory.eventLoop.snapshot(),
