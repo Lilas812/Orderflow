@@ -17,9 +17,10 @@ export class ColumnAggregator {
 
   accept(book: BookSnapshot) {
     const second = Math.floor(book.tsUs / 1_000_000);
-    if (second <= this.finalized) return; // A timed-out column cannot be changed retroactively.
+    if (second <= this.finalized) return false; // A timed-out column cannot be changed retroactively.
     if (this.pending && second > Math.floor(this.pending.tsUs / 1_000_000)) this.finish();
     if (!this.pending || book.tsUs >= this.pending.tsUs) this.pending = book;
+    return true;
   }
 
   expire(nowUs: number) {

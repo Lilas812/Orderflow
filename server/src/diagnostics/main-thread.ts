@@ -58,10 +58,15 @@ export class MainThreadMonitor {
   private longMaxMs = 0;
   private log: Log;
   private onStall: (delayMs: number) => void;
-  constructor(log: Log, onStall: (delayMs: number) => void = () => {}) { this.log = log; this.onStall = onStall; }
+  private asyncHooksEnabled: boolean;
+  constructor(log: Log, onStall: (delayMs: number) => void = () => {},
+    asyncHooksEnabled = process.env.HEATMAP_ASYNC_HOOKS === "1") {
+    this.log = log; this.onStall = onStall; this.asyncHooksEnabled = asyncHooksEnabled;
+  }
   start() {
     if (this.timer) return;
-    this.hook.enable(); this.observer.observe({ entryTypes: ["gc"] });
+    if (this.asyncHooksEnabled) this.hook.enable();
+    this.observer.observe({ entryTypes: ["gc"] });
     this.previous = performance.now();
     this.timer = setInterval(() => {
       const now = performance.now(), delayMs = Math.max(0, now - this.previous - 100);
@@ -98,8 +103,10 @@ export class MainThreadMonitor {
       cpuWindow: "since_last_5s_sample", eventLoopUtilization: elu,
       gc: { windowMs: 60000, byKind: gc, dropped: this.gcDropped }, heap: getHeapStatistics(),
       longCallbacks: [...this.long], longCallbackCount: this.longCount, longCallbackMaxMs: this.longMaxMs,
-      stalls: [...this.stalls], attribution: "async_callback_inclusive; not_additive; unlabelled_is_unknown",
-      trackedResources: this.names.size, executionAsyncId: executionAsyncId() };
+      stalls: [...this.stalls], attribution: this.asyncHooksEnabled
+        ? "async_callback_inclusive; not_additive; unlabelled_is_unknown"
+        : "async_hooks_disabled; callback_duration_unavailable",
+      asyncHooksEnabled: this.asyncHooksEnabled, trackedResources: this.names.size, executionAsyncId: executionAsyncId() };
   }
   sample() {
     const result = this.snapshot();

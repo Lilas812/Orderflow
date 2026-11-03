@@ -14,12 +14,13 @@ import { scanColumnFile, tradeFileRows, tradeFileEntries, decodeColumnRange, mer
 import type { Column } from "../aggregate/columns.ts";
 import type { Trade } from "../types.ts";
 import type { TradeReadSession } from "./trade-read.ts";
+import { containsSecond, overlapsRange, clipRanges, sliceBudget } from "./coverage.ts";
 
 const gzip = promisify(gzipCallback);
 const gunzip = promisify(gunzipCallback);
 export type Kind = "book" | "tick";
 export type Range = [number, number];
-export type Coverage = Record<Kind, Range[]>;
+export type Coverage = Record<Kind, Range[]> & { tickGapCompactionVersion?: number };
 export interface Store {
   initialize(signal?: AbortSignal): Promise<void>;
   hold(start: number, end: number): void;
@@ -80,6 +81,10 @@ export class LocalStore implements Store {
   private replaceVpFile: typeof fs.rename;
   private coverageRevision = 1;
   private savedCoverageRevision = 0;
+  private fileRevision = 0;
+  private compactionVersion?: number;
+  private liveColumnSeconds = new Set<number>();
+  private liveBookWatermark = -Infinity;
   private fileSizes = new Map<string, number>();
   private changedFiles = new Set<string>();
   protected bounds: { fromSec: number; toSec: number } | null = null;
@@ -89,6 +94,11 @@ export class LocalStore implements Store {
   }
   get savedRange() {
     return this.bounds ? { ...this.bounds, fromSec: Math.max(this.bounds.fromSec, Math.floor(this.now() / 1000) - 7 * 86400) } : null;
+  }
+  protected get publicationRevision() { return `${this.coverageRevision}:${this.fileRevision}`; }
+  get coverageIntervals() {
+    return { symbol: this.symbol, local: { book: this.coverage.book.length, tick: this.recordedTicks.length },
+      recoveredTick: this.coverage.tick.length, tickGapCompactionVersion: this.compactionVersion ?? null };
   }
   constructor(root: string, now: () => number = Date.now,
     replaceVpFile: typeof fs.rename = fs.rename, symbol: MarketSymbol = "NQ") {
@@ -115,6 +125,7 @@ export class LocalStore implements Store {
   }
   /** Called only after a successful owned write, replacement, hydration or removal. */
   protected filesChanged(...files: string[]) {
+    if (files.length) this.fileRevision++;
     for (const file of files) this.changedFiles.add(file);
   }
   private async atomic(file: string, bytes: Buffer | string) {
@@ -143,7 +154,8 @@ export class LocalStore implements Store {
       if (!v || !Array.isArray(v.book) || !Array.isArray(v.tick)
         || [...v.book, ...v.tick].some(r => !Array.isArray(r) || r.length !== 2
           || !r.every(Number.isSafeInteger) || r[0] >= r[1])) throw Error("invalid_coverage_index");
-      this.coverage = v;
+      this.coverage = { ...v, book: ranges(v.book), tick: ranges(v.tick) };
+      this.compactionVersion = v.tickGapCompactionVersion;
       this.recordedTicks = ranges(v.tick.map(([a, b]) => [a, b]));
     }
     await this.retention();
@@ -187,7 +199,7 @@ export class LocalStore implements Store {
     }
   }
   covered(kind: Kind, second: number) {
-    return this.coverage[kind].some(([a, b]) => a <= second && second < b);
+    return containsSecond(this.coverage[kind], second);
   }
   markCovered(kind: Kind, start: number, end: number) {
     const changed = includeRange(this.coverage[kind], start, end);
@@ -204,8 +216,10 @@ export class LocalStore implements Store {
         // Existing seconds always win. L separates historical and live ownership.
         if (!pending.has(c.tsSec)) pending.set(c.tsSec, encodeColumns([c]));
         this.columns.set(hour, pending); hours.add(hour);
+        if (c.source === "live") this.liveColumnSeconds.add(c.tsSec);
       }
       for (const hour of hours) if (!this.held.has(hour)) await this.writeHour(hour);
+      await this.matureLiveSeconds();
       this.pendingStats();
     });
   }
@@ -298,11 +312,29 @@ export class LocalStore implements Store {
         this.markCovered("tick", sec, sec + 1);
       }
     }
+    await this.matureLiveSeconds();
+  }
+  /** Called after the existing trade batch has been persisted. DATA time only. */
+  confirmLiveTradeSeconds(acceptedBookTsUs: number) {
+    return this.run(async () => {
+      this.liveBookWatermark = Math.max(this.liveBookWatermark, Math.floor(acceptedBookTsUs / 1e6));
+      await this.matureLiveSeconds();
+    });
+  }
+  private async matureLiveSeconds() {
+    const checkpoint = sliceBudget();
+    for (const sec of this.liveColumnSeconds) {
+      if (sec + 3 <= this.liveBookWatermark && !this.held.has(hourOf(sec)) && this.covered("book", sec)) {
+        this.markCovered("tick", sec, sec + 1); this.liveColumnSeconds.delete(sec);
+      }
+      await checkpoint();
+    }
   }
   private async saveCoverage() {
     if (this.savedCoverageRevision === this.coverageRevision) return;
     const revision = this.coverageRevision;
-    const persisted: Coverage = { book: [], tick: [] };
+    const persisted: Coverage = { book: [], tick: [],
+      ...(this.compactionVersion === undefined ? {} : { tickGapCompactionVersion: this.compactionVersion }) };
     for (const kind of ["book", "tick"] as const) {
       for (const [start, end] of kind === "tick" ? this.recordedTicks : this.coverage[kind]) {
         for (let a = start; a < end;) {
@@ -421,9 +453,9 @@ export class LocalStore implements Store {
           else seams.push({ startSec: a, endSec: a + 1 });
           a++; continue;
         }
-        if (this.recordedTicks.some(([x, y]) => x <= a && a < y)) { a++; continue; }
+        if (containsSecond(this.recordedTicks, a)) { a++; continue; }
         let b = a + 1;
-        while (b < end && !present.has(b) && !this.recordedTicks.some(([x, y]) => x <= b && b < y)) b++;
+        while (b < end && !present.has(b) && !containsSecond(this.recordedTicks, b)) b++;
         const fresh = incoming.filter(t => t.tsUs >= a * 1e6 && t.tsUs < b * 1e6);
         await this.insertTradeRange(a, b, fresh);
         // Synchronous adoption immediately after the writer commits prevents a
@@ -438,7 +470,7 @@ export class LocalStore implements Store {
   insertUncoveredTradeRange(start: number, end: number, trades: Trade[]): Promise<void> {
     return this.run(async () => {
       let cursor = start;
-      for (const [a, b] of [...this.recordedTicks, [end, end] as Range]) {
+      for (const [a, b] of [...clipRanges(this.recordedTicks, start, end), [end, end] as Range]) {
         if (b <= cursor) continue;
         if (a > cursor) {
           const to = Math.min(a, end);
@@ -452,7 +484,10 @@ export class LocalStore implements Store {
   private async insertTradeRange(start: number, end: number, trades: Trade[]) {
       if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start >= end
         || trades.some(t => t.tsUs < start * 1e6 || t.tsUs >= end * 1e6)) throw Error("invalid_vp_insert_range");
-      if (this.recordedTicks.some(([a, b]) => a < end && start < b)) throw Error("vp_insert_overlaps_coverage");
+       if (overlapsRange(this.recordedTicks, start, end)) throw Error("vp_insert_overlaps_coverage");
+       if (!trades.length) {
+         this.markCovered("tick", start, end); await this.saveCoverage(); return;
+       }
       const staged: { file: string; temporary: string }[] = [];
       // Stage every affected hour before replacing any original. Never remove or
       // reorder old rows, including when exchange timestamps arrive backwards.
@@ -565,6 +600,7 @@ export class LocalStore implements Store {
       for (const hour of new Set([...this.columns.keys(), ...this.trades.keys()])) await this.writeHour(hour);
       if (this.held.size) this.coverageRevision++;
       this.held.clear();
+      await this.matureLiveSeconds();
       for (const file of await this.allFiles()) {
         if (!file.endsWith(".bin")) continue;
         const match = file.match(/(\d{4}-\d\d-\d\d)[/\\](\d\d)\./)!;

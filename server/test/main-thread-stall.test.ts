@@ -117,7 +117,7 @@ test("ダミー：threadCpuUsage取得不能はnull、長いcallbackとGC観測�
     assert.equal(unavailable.snapshot().threadCpuAvailable, false);
     assert.equal(unavailable.snapshot().mainCores, null);
   } finally { process.threadCpuUsage = original; }
-  const m = new MainThreadMonitor(() => {}); m.start(); t.after(() => m.stop());
+  const m = new MainThreadMonitor(() => {}, () => {}, true); m.start(); t.after(() => m.stop());
   await namedWork("dummy-heavy", () => new Promise<void>(resolve => setImmediate(() => {
     const start = performance.now(); while (performance.now() - start < 210) { /* explicit synthetic stall */ }
     resolve();

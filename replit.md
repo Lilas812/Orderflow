@@ -46,6 +46,8 @@ Agent が更新してよいのは、下の Current Status 節だけ。
 
 ## Current Status
 
+- 2026-11-04：coverage/publishのCPU対策を隔離実装。durable hour索引、条件付きpublish、静かなlive秒のdata-time確定、原本再DL照合付きの一度限りのcoverage圧縮、空補完の省略、async_hooks既定OFFを追加。全317試験・両型検査・フロント本番ビルド成功、退避・不変性を強化した関連11試験も成功。15分の偽上流で親CPU平均0.043 cores、loop最大約90ms、200ms以上callback0件、NQ/GC各32,370件61,503枚の保存一致。10/30再集計候補は既存より枚数が少なく非採用、元集計を保全。本番書込・再公開・既存受信再起動なし。詳細server/COVERAGE_PUBLISH_FIX_REPORT.md。
+
 - 2026-11-03：メインスレッド停止の隔離修正。実コピーのcoverage境界計算をNQ約17.8秒→2〜6ms、GC約12.1秒→2〜12msへ短縮し、細分化による約定再走査も物理窓1回へ変更。CPU・GC・callback・自動profile・再接続・send失敗の診断追加。11/02日次を隔離生成し独立数量照合一致（実欠けは残す）。305合格・DB1skip、両型検査・ビルド成功。60分測定はユーザー指定で省略。未公開・本番無書込、詳細server/MAIN_THREAD_STALL_REPORT.md。
 - 2026-11-03：ライブ受信停止対策を実装。履歴REST・正規化をNQ/GC共通の低優先度fork子へ分離し、CPU診断・受入制御・watchdog再確認と猶予・確定ライブ欠け補完を追加。サーバー297合格/1スキップ/0失敗、両型検査・ビルド成功。隔離10分×3回×前後で約定件数・枚数一致、親CPU中央値約79%減（親子合計約12%増）。公開・実上流の35秒停止/1006解消は未確認。既存受信を停止・再起動せず、未公開。詳細はserver/RECEIVE_STALL_FIX_REPORT.md。
 

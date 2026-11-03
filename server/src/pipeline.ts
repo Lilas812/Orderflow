@@ -38,6 +38,7 @@ export class Pipeline {
   private storageError: string | null = null;
   private ticking = false;
   private onColumn: (column: Column) => void;
+  private acceptedBookTsUs: number | null = null;
 
   constructor(apiKey: string, nextSeq: () => number, log: Log, onColumn: (column: Column) => void = () => {},
     store?: LocalStore, symbol: MarketSymbol = "NQ", request: typeof fetch = fetch, historyProcess?: HistoryProcess) {
@@ -93,7 +94,7 @@ export class Pipeline {
   }
   book(book: BookSnapshot) {
     if (this.stopped) return;
-    this.aggregate.accept(book);
+    if (this.aggregate.accept(book)) this.acceptedBookTsUs = Math.max(this.acceptedBookTsUs ?? 0, book.tsUs);
     if (this.expiry) clearTimeout(this.expiry);
     const second = this.aggregate.pendingSecond;
     if (second !== null) this.expiry = setTimeout(() => {
@@ -117,6 +118,7 @@ export class Pipeline {
         await this.store.addTrades(batch);
       }
       this.repair.tick(this.gaps);
+      if (this.acceptedBookTsUs !== null) await this.store.confirmLiveTradeSeconds(this.acceptedBookTsUs);
       await this.store.maintenance();
     } catch {
       this.storageError = "local_storage_failed";
@@ -136,7 +138,7 @@ export class Pipeline {
       vp: { ...this.vpHistory.snapshot(), profile: this.vp.summary() },
       backfill: this.backfill.snapshot(), historyNetwork: { ...this.client.stats },
       historyCounts: { ...this.historyMetrics.counts }, historyExamples: this.historyMetrics.examples,
-      storage: { ...this.store.stats,
+      storage: { ...this.store.stats, coverageIntervals: this.store.coverageIntervals,
         ...("cloudStatus" in this.store ? { appStorage: this.store.cloudStatus } : {}) }, storageError: this.storageError,
       liveGaps: gaps, liveGapRepair: { ...this.repair.status }, unconfirmedSecond: this.aggregate.pendingSecond,
     };
