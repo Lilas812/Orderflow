@@ -6,11 +6,12 @@ import { ACTIVE_SYMBOL, formatInstrumentPrice } from "../instrument.ts";
 import { viewSwitchHtml } from "../long-vp/nav.ts";
 import { loadView, saveView } from "../view-memory.ts";
 import { FootprintClient } from "./client.ts";
-import { FootprintStore, TIMEFRAMES, contractKey, MAX_TRADES, RETAIN_SEC, type FootprintBar, type SecondState, type Timeframe } from "./model.ts";
+import { FootprintStore, TIMEFRAMES, contractKey, MAX_TRADES, RETAIN_SEC, type FootprintBar, type SecondState, type Timeframe, type DisplayTimeframe } from "./model.ts";
+import { groupPriceRows, type GroupedRows } from "./rows.ts";
 import {
   AXIS_W, BAR_GAP, BAR_W_DEFAULT, OHLC_LANE, ROW_H_DEFAULT, STATS_H, STATUS_H, TIME_H,
-  barLeft, cellWidth, clampView, compactQty, detailMode, followEnd, parseTimeframe, priceToY, visibleSpan,
-  xToSec, yToPrice, zoomPriceAt, zoomTimeAt, type FpView,
+  barLeft, cellWidth, clampView, compactQty, followEnd, parseTimeframe, priceToY, visibleSpan,
+  xToSec, yToPrice, zoomPriceAt, zoomTimeAt, adaptTime, priceGroupTicks, type FpView,
 } from "./view.ts";
 
 const C = {
@@ -47,6 +48,7 @@ export function mountFootprint(root: HTMLElement): () => void {
             ${TIMEFRAMES.map(tf => `<button type="button" data-tf="${tf}" data-testid="button-timeframe-${tf}">${tf < 60 ? `${tf}s` : "1m"}</button>`).join("")}
           </div>
           <label class="fp-contract">限月 <select id="fp-contract" data-testid="select-contract"><option value="auto">最新</option></select></label>
+          <span id="fp-effective" class="fp-effective" data-testid="text-footprint-effective"></span>
         </div>
         ${viewSwitchHtml("footprint")}
         <div class="market-state" id="fp-state" data-state="connecting" data-testid="status-footprint"><i class="state-dot" aria-hidden="true"></i><span id="fp-state-label">CONNECTING</span></div>
@@ -76,8 +78,16 @@ export function mountFootprint(root: HTMLElement): () => void {
   const stateEl = $("#fp-state"), stateLabel = $("#fp-state-label"), contractSel = $<HTMLSelectElement>("#fp-contract");
   const followBtn = $<HTMLButtonElement>("#fp-follow");
 
-  let tf: Timeframe = 5;
-  try { tf = parseTimeframe(window.sessionStorage.getItem(TF_KEY) ?? 5); } catch { /* default 5 s */ }
+  let selectedTf: Timeframe = 5;
+  try { selectedTf = parseTimeframe(window.sessionStorage.getItem(TF_KEY) ?? 5); } catch { /* default 5 s */ }
+  let tf: DisplayTimeframe = selectedTf, rowTicks = 1;
+  const rowCache = new WeakMap<FootprintBar, { ticks: number; value: GroupedRows }>();
+  function rowsOf(b: FootprintBar): GroupedRows {
+    const old = rowCache.get(b);
+    if (old?.ticks === rowTicks) return old.value;
+    const value = groupPriceRows(b, rowTicks);
+    rowCache.set(b, { ticks: rowTicks, value }); return value;
+  }
   const store = new FootprintStore();
   store.setTimeframe(tf);
   let zone: DisplayZone = "jst", zoneWarning = "";
@@ -110,7 +120,9 @@ export function mountFootprint(root: HTMLElement): () => void {
     return l ? contractKey(l) : store.contracts()[0] ?? "UNKNOWN";
   };
   function setView(next: FpView, persist = true) {
-    view = clampView(next, tf, client.clockKnown ? client.nowSec() : null);
+    const adaptive = adaptTime(next, selectedTf);
+    tf = adaptive.displayTf!; store.setTimeframe(tf);
+    view = clampView(adaptive, tf, client.clockKnown ? client.nowSec() : null, layout().plotH);
     if (persist) saveView("footprint", ACTIVE_SYMBOL, view);
     followBtn.setAttribute("aria-pressed", String(view.follow));
     request();
@@ -132,7 +144,9 @@ export function mountFootprint(root: HTMLElement): () => void {
       if (c.height !== ph) c.height = ph;
     }
     const L = layout(), now = nowSec();
-    if (view.follow) view = clampView({ ...view, endSec: followEnd(now, tf) }, tf, client.clockKnown ? now : null);
+    view = clampView(view, tf, client.clockKnown ? now : null, L.plotH);
+    rowTicks = priceGroupTicks(view.rowH);
+    if (view.follow) view = clampView({ ...view, endSec: followEnd(now, tf) }, tf, client.clockKnown ? now : null, L.plotH);
     const [from, to] = visibleSpan(view, tf, L.plotW);
     client.setVisible(Math.max(0, Math.floor(from)), Math.ceil(to));
     const contract = activeContract();
@@ -150,8 +164,8 @@ export function mountFootprint(root: HTMLElement): () => void {
     }
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.fillStyle = C.bg; ctx.fillRect(0, 0, W, H);
-    const detail = detailMode(view); lastDetail = detail;
-    const fontPx = Math.max(9, Math.min(12, Math.floor(view.rowH * .72)));
+    lastDetail = true;
+    const fontPx = Math.max(9, Math.min(12, Math.floor(view.rowH * rowTicks * .72)));
     ctx.save(); ctx.beginPath(); ctx.rect(0, 0, L.plotW, L.plotH); ctx.clip();
     drawStateBands(L, groups.map(g => g.startSec), now);
     drawRowGrid(L);
@@ -162,7 +176,7 @@ export function mountFootprint(root: HTMLElement): () => void {
       if (!b) continue;
       const x0 = barLeft(startSec, view, tf, L.plotW);
       if (x0 + view.barW < 0 || x0 > L.plotW) continue;
-      if (detail) drawDetailBar(b, x0, L, fontPx); else drawSummaryBar(b, x0, L);
+      drawDetailBar(b, x0, L, fontPx);
     }
     ctx.restore();
     drawStatusStrip(L, groups.map(g => g.startSec), now);
@@ -192,24 +206,22 @@ export function mountFootprint(root: HTMLElement): () => void {
     }
   }
   function drawRowGrid(L: Layout) {
-    if (view.rowH < 6) return;
     ctx.fillStyle = C.grid;
     const top = yToPrice(0, view, L.plotH), bottom = yToPrice(L.plotH, view, L.plotH);
-    for (let p = bottom - 1; p <= top + 1; p++) {
-      const y = Math.round(priceToY(p, view, L.plotH) - view.rowH / 2);
+    for (let p = Math.floor(bottom / rowTicks) * rowTicks; p <= top + rowTicks; p += rowTicks) {
+      const y = Math.round(priceToY(p - .5, view, L.plotH));
       ctx.fillRect(0, y, L.plotW, 1);
     }
   }
   function ohlcColor(b: FootprintBar) { return b.close > b.open ? C.up : b.close < b.open ? C.down : C.flat; }
   function drawDetailBar(b: FootprintBar, x0: number, L: Layout, fontPx: number) {
-    const cw = cellWidth(view.barW), rh = view.rowH;
+    const cw = cellWidth(view.barW), rh = view.rowH * rowTicks, grouped = rowsOf(b);
     const sx = x0 + OHLC_LANE, bx = sx + cw;
     const pad = rh >= 14 ? 1 : 0;
     ctx.font = `${fontPx}px ui-monospace, SFMono-Regular, Menlo, monospace`;
     ctx.textBaseline = "middle";
-    for (let i = 0; i < b.prices.length; i++) {
-      const p = b.prices[i]!, sell = b.sell[i]!, buy = b.buy[i]!;
-      const yc = priceToY(p, view, L.plotH), y = yc - rh / 2;
+    for (const { price: p, sell, buy } of grouped.rows) {
+      const yc = priceToY(p + (rowTicks - 1) / 2, view, L.plotH), y = yc - rh / 2;
       if (y > L.plotH || y + rh < 0) continue;
       ctx.fillStyle = sell > buy ? C.sell : C.cell; ctx.fillRect(sx, y + pad, cw - 1, rh - pad * 2);
       ctx.fillStyle = buy > sell ? C.buy : C.cell; ctx.fillRect(bx, y + pad, cw - 1, rh - pad * 2);
@@ -219,13 +231,13 @@ export function mountFootprint(root: HTMLElement): () => void {
       ctx.fillText(fitQty(buy, cw - 6), bx + 3, yc + .5);
     }
     // POC outline around both cells of the row
-    const py = priceToY(b.poc, view, L.plotH) - rh / 2;
+    const py = priceToY(grouped.poc + (rowTicks - 1) / 2, view, L.plotH) - rh / 2;
     ctx.strokeStyle = C.poc; ctx.lineWidth = 1;
     ctx.strokeRect(Math.round(sx) + .5, Math.round(py) + .5, Math.round(cw * 2 - 2), Math.round(rh) - 1);
     // narrow OHLC in the left lane
     const cx = Math.round(x0 + 2) + .5, col = ohlcColor(b);
     ctx.strokeStyle = col; ctx.fillStyle = col;
-    ctx.beginPath(); ctx.moveTo(cx, priceToY(b.high, view, L.plotH) - rh / 2); ctx.lineTo(cx, priceToY(b.low, view, L.plotH) + rh / 2); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(cx, priceToY(b.high, view, L.plotH) - view.rowH / 2); ctx.lineTo(cx, priceToY(b.low, view, L.plotH) + view.rowH / 2); ctx.stroke();
     const yo = priceToY(b.open, view, L.plotH), yc = priceToY(b.close, view, L.plotH);
     ctx.fillRect(cx - 1.5, Math.min(yo, yc) - 1, 3, Math.max(2, Math.abs(yo - yc) + 2));
   }
@@ -234,18 +246,6 @@ export function mountFootprint(root: HTMLElement): () => void {
     if (s.length * 6.2 <= width) return s;
     const c = compactQty(n);
     return c.length * 6.2 <= width ? c : "+";
-  }
-  function drawSummaryBar(b: FootprintBar, x0: number, L: Layout) {
-    const w = Math.max(1, view.barW - BAR_GAP), cx = Math.round(x0 + w / 2) + .5, col = ohlcColor(b);
-    const yh = priceToY(b.high, view, L.plotH) - view.rowH / 2, yl = priceToY(b.low, view, L.plotH) + view.rowH / 2;
-    ctx.strokeStyle = col; ctx.lineWidth = 1;
-    ctx.beginPath(); ctx.moveTo(cx, yh); ctx.lineTo(cx, yl); ctx.stroke();
-    const yo = priceToY(b.open, view, L.plotH), yc = priceToY(b.close, view, L.plotH), bw = Math.max(1, Math.min(9, w * .55));
-    ctx.fillStyle = col; ctx.fillRect(cx - bw / 2, Math.min(yo, yc) - .5, bw, Math.max(1, Math.abs(yo - yc) + 1));
-    if (w >= 3) {
-      ctx.fillStyle = C.poc;
-      ctx.fillRect(Math.round(x0), Math.round(priceToY(b.poc, view, L.plotH)), Math.max(2, Math.round(w)), 1);
-    }
   }
   function drawStatusStrip(L: Layout, starts: number[], now: number) {
     for (const s of starts) {
@@ -294,7 +294,7 @@ export function mountFootprint(root: HTMLElement): () => void {
     ctx.restore();
   }
   function priceStep(rowH: number) {
-    const steps = [1, 2, 4, 5, 10, 20, 40, 50, 100, 200, 400, 1000];
+    const steps = [1, 2, 4, 5, 10, 20, 40, 50, 100, 200, 400, 1000, 2000, 4000, 8000, 16000, 32000, 64000, 128000, 256000];
     return steps.find(s => s * rowH >= 18) ?? 1000;
   }
   function drawPriceAxis(L: Layout, last: number | null) {
@@ -336,11 +336,11 @@ export function mountFootprint(root: HTMLElement): () => void {
     const L = layout();
     if (cursorPt.x < 0 || cursorPt.x >= L.plotW || cursorPt.y < 0 || cursorPt.y >= L.plotH) return null;
     const sec = xToSec(cursorPt.x, view, tf, L.plotW), startSec = Math.floor(sec / tf) * tf;
-    const price = yToPrice(cursorPt.y, view, L.plotH);
-    const bar = store.bars(startSec, startSec + tf)[0]?.group.get(activeContract()) ?? null;
-    const i = bar ? bar.prices.indexOf(price) : -1;
-    return { x: cursorPt.x, y: cursorPt.y, price, startSec, timeUs: Math.floor(sec * 1e6), bar,
-      sell: i >= 0 ? bar!.sell[i]! : 0, buy: i >= 0 ? bar!.buy[i]! : 0, state: store.stateOf(startSec, startSec + tf, nowSec()) };
+    const price = Math.floor(yToPrice(cursorPt.y, view, L.plotH) / rowTicks) * rowTicks;
+    const bar = paintedGroups.find(g => g.startSec === startSec)?.group.get(activeContract()) ?? null;
+    const row = bar ? rowsOf(bar).rows.find(r => r.price === price) : null;
+    return { x: cursorPt.x, y: cursorPt.y, price, priceEnd: price + rowTicks - 1, startSec, timeUs: Math.floor(sec * 1e6), bar,
+      sell: row?.sell ?? 0, buy: row?.buy ?? 0, undirected: row?.undirected ?? 0, state: store.stateOf(startSec, startSec + tf, nowSec()) };
   }
   function drawCursor() {
     cursorFrame = 0;
@@ -349,22 +349,23 @@ export function mountFootprint(root: HTMLElement): () => void {
     const info = cursorInfo();
     if (!info) { infoEl.hidden = true; return; }
     const L = layout();
-    const y = Math.round(priceToY(info.price, view, L.plotH)) + .5, x = Math.round(info.x) + .5;
+    const y = Math.round(priceToY(info.price + (rowTicks - 1) / 2, view, L.plotH)) + .5, x = Math.round(info.x) + .5;
     cctx.strokeStyle = C.cursor; cctx.lineWidth = 1; cctx.setLineDash([3, 3]);
     cctx.beginPath(); cctx.moveTo(0, y); cctx.lineTo(L.plotW, y); cctx.moveTo(x, 0); cctx.lineTo(x, L.timeTop); cctx.stroke();
     cctx.setLineDash([]);
     cctx.font = "10px ui-monospace, SFMono-Regular, Menlo, monospace"; cctx.textBaseline = "middle";
-    cctx.fillStyle = C.label; cctx.fillRect(L.plotW + 1, y - 8, AXIS_W - 2, 16);
-    cctx.fillStyle = C.textHi; cctx.textAlign = "left"; cctx.fillText(formatInstrumentPrice(info.price), L.plotW + 6, y);
+    cctx.fillStyle = C.label; cctx.fillRect(L.plotW + 1, y - (rowTicks > 1 ? 12 : 8), AXIS_W - 2, rowTicks > 1 ? 24 : 16);
+    cctx.fillStyle = C.textHi; cctx.textAlign = "left"; cctx.fillText(formatInstrumentPrice(info.price), L.plotW + 6, y - (rowTicks > 1 ? 5 : 0));
+    if (rowTicks > 1) cctx.fillText(formatInstrumentPrice(info.priceEnd), L.plotW + 6, y + 6);
     const tl = formatCrosshairTimeUs(info.timeUs, zone), tw = cctx.measureText(tl).width + 12;
     const tx = Math.min(L.plotW - tw / 2, Math.max(tw / 2, x));
     cctx.fillStyle = C.label; cctx.fillRect(tx - tw / 2, L.timeTop + 2, tw, TIME_H - 4);
     cctx.fillStyle = C.textHi; cctx.textAlign = "center"; cctx.fillText(tl, tx, L.timeTop + TIME_H / 2 + 1);
     const b = info.bar;
     infoEl.hidden = false;
-    infoEl.textContent = `${formatCrosshairTimeUs(info.startSec * 1e6, zone)} ${tf < 60 ? tf + "s" : "1m"} ${activeContract()}  `
-      + `${formatInstrumentPrice(info.price)}  S ${info.sell} | B ${info.buy}`
-      + (b ? `   O ${formatInstrumentPrice(b.open)} H ${formatInstrumentPrice(b.high)} L ${formatInstrumentPrice(b.low)} C ${formatInstrumentPrice(b.close)}  VOL ${b.volume}  Δ ${b.delta > 0 ? "+" : ""}${b.delta}  POC ${formatInstrumentPrice(b.poc)}` : "   約定なし")
+    infoEl.textContent = `${formatCrosshairTimeUs(info.startSec * 1e6, zone)} ${tf < 60 ? tf + "s" : tf / 60 + "m"} ${activeContract()}  `
+      + `${formatInstrumentPrice(info.price)}${rowTicks > 1 ? "–" + formatInstrumentPrice(info.priceEnd) : ""}  S ${info.sell} | B ${info.buy}${info.undirected ? " N " + info.undirected : ""}`
+      + (b ? `   O ${formatInstrumentPrice(b.open)} H ${formatInstrumentPrice(b.high)} L ${formatInstrumentPrice(b.low)} C ${formatInstrumentPrice(b.close)}  VOL ${b.volume}  Δ ${b.delta > 0 ? "+" : ""}${b.delta}  POC ${formatInstrumentPrice(rowsOf(b).poc)}${rowTicks > 1 ? "–" + formatInstrumentPrice(rowsOf(b).poc + rowTicks - 1) : ""}` : "   約定なし")
       + `  [${STATE_TEXT[info.state]}${info.startSec + tf > nowSec() ? "・形成中" : "・時間終了"}]`;
   }
   function hideCursor() { cursorPt = null; requestCursor(); }
@@ -374,8 +375,10 @@ export function mountFootprint(root: HTMLElement): () => void {
   function updateChrome() {
     const st = client.state;
     stateEl.dataset.state = st === "connected" ? "connected" : st === "error" ? "error" : "connecting";
-    stateLabel.textContent = st === "connected" ? `LIVE · ${tf < 60 ? tf + "s" : "1m"}` : st === "error" ? "ERROR" : st === "reconnecting" ? `RECONNECTING ${client.stateMessage}` : "CONNECTING";
-    for (const b of root.querySelectorAll<HTMLButtonElement>(".fp-tf button")) b.setAttribute("aria-pressed", String(Number(b.dataset.tf) === tf));
+    const tfText = (t: number) => t < 60 ? `${t}秒` : `${t / 60}分`;
+    stateLabel.textContent = st === "connected" ? `LIVE · ${tfText(tf)}` : st === "error" ? "ERROR" : st === "reconnecting" ? `RECONNECTING ${client.stateMessage}` : "CONNECTING";
+    $("#fp-effective").textContent = `${tfText(selectedTf)}${tf !== selectedTf ? `（表示 ${tfText(tf)}）` : ""} · 1行 ${rowTicks}ティック（${formatInstrumentPrice(rowTicks)}）`;
+    for (const b of root.querySelectorAll<HTMLButtonElement>(".fp-tf button")) b.setAttribute("aria-pressed", String(Number(b.dataset.tf) === selectedTf));
     const contracts = store.contracts(), key = contracts.join(",");
     if (key !== contractsKey) {
       contractsKey = key;
@@ -414,10 +417,11 @@ export function mountFootprint(root: HTMLElement): () => void {
   const pointers = new Map<number, { x: number; y: number }>();
   let drag: { kind: "pan" | "axis"; x: number; y: number; view: FpView; moved: boolean } | null = null;
   let pinch: { dist: number; mid: number; view: FpView } | null = null;
+  let multiTouch = false;
   const local = (e: PointerEvent | WheelEvent | MouseEvent) => { const r = canvas.getBoundingClientRect(); return { x: e.clientX - r.left, y: e.clientY - r.top }; };
   const onDown = (e: PointerEvent) => {
     const p = local(e); pointers.set(e.pointerId, p); canvas.setPointerCapture(e.pointerId);
-    if (pointers.size === 2) { const [a, b] = [...pointers.values()]; pinch = { dist: Math.max(10, Math.abs(a!.x - b!.x)), mid: (a!.x + b!.x) / 2, view }; drag = null; return; }
+    if (pointers.size === 2) { const [a, b] = [...pointers.values()]; pinch = { dist: Math.max(10, Math.abs(a!.x - b!.x)), mid: (a!.x + b!.x) / 2, view }; drag = null; multiTouch = true; lastTap = 0; return; }
     const L = layout();
     drag = { kind: p.x > L.plotW && p.y < L.plotH ? "axis" : "pan", x: p.x, y: p.y, view, moved: false };
   };
@@ -430,21 +434,23 @@ export function mountFootprint(root: HTMLElement): () => void {
     if (pinch && pointers.size >= 2) {
       const [a, b] = [...pointers.values()];
       const factor = Math.max(10, Math.abs(a!.x - b!.x)) / pinch.dist;
-      setView({ ...zoomTimeAt(pinch.view, factor, pinch.mid, tf, L.plotW), follow: false }); return;
+      const next = zoomTimeAt(pinch.view, factor, pinch.mid, selectedTf, L.plotW);
+      next.endSec += (pinch.mid - (a!.x + b!.x) / 2) * next.displayTf! / next.barW;
+      setView(next); return;
     }
     if (!drag) return;
     const dx = p.x - drag.x, dy = p.y - drag.y;
     if (Math.abs(dx) + Math.abs(dy) > 3) drag.moved = true;
     if (!drag.moved) return;
     if (drag.kind === "axis") { setView(zoomPriceAt(drag.view, Math.exp(-dy / 150), L.plotH / 2, L.plotH)); return; }
-    setView({ ...drag.view, endSec: drag.view.endSec - (dx / drag.view.barW) * tf,
+    setView({ ...drag.view, endSec: drag.view.endSec - (dx / drag.view.barW) * (drag.view.displayTf ?? tf),
       centerPrice: drag.view.centerPrice + dy / drag.view.rowH, follow: Math.abs(dx) < 4 && drag.view.follow });
   };
   const onUp = (e: PointerEvent) => {
     pointers.delete(e.pointerId);
     if (canvas.hasPointerCapture(e.pointerId)) canvas.releasePointerCapture(e.pointerId);
     if (pointers.size < 2) pinch = null;
-    if (pointers.size === 0) drag = null;
+    if (pointers.size === 0) { drag = null; multiTouch = false; }
   };
   const onWheel = (e: WheelEvent) => {
     e.preventDefault();
@@ -453,18 +459,17 @@ export function mountFootprint(root: HTMLElement): () => void {
     const factor = Math.exp(-delta / 500);
     if ((p.x > L.plotW && p.y < L.plotH) || e.shiftKey) setView(zoomPriceAt(view, factor, Math.min(p.y, L.plotH), L.plotH));
     else {
-      const next = zoomTimeAt(view, factor, Math.min(p.x, L.plotW), tf, L.plotW);
-      setView(view.follow ? { ...next, follow: true } : next);
+      setView(zoomTimeAt(view, factor, Math.min(p.x, L.plotW), selectedTf, L.plotW));
     }
   };
   let lastTap = 0;
   const onTap = (e: PointerEvent) => {
-    if (e.pointerType !== "touch" || drag?.moved) return;
+    if (e.pointerType !== "touch" || drag?.moved || multiTouch) return;
     const t = performance.now(); if (t - lastTap < 320) resetView(); lastTap = t;
   };
   function resetView() {
     centered = false;
-    setView({ endSec: followEnd(nowSec(), tf), barW: BAR_W_DEFAULT, rowH: ROW_H_DEFAULT, centerPrice: view.centerPrice, follow: true });
+    setView({ endSec: followEnd(nowSec(), selectedTf), displayTf: selectedTf, barW: BAR_W_DEFAULT, rowH: ROW_H_DEFAULT, centerPrice: view.centerPrice, follow: true });
   }
   canvas.addEventListener("pointerdown", onDown);
   canvas.addEventListener("pointermove", onMove);
@@ -479,11 +484,11 @@ export function mountFootprint(root: HTMLElement): () => void {
   contractSel.addEventListener("change", () => { contractChoice = contractSel.value; centered = false; request(); });
   for (const b of root.querySelectorAll<HTMLButtonElement>(".fp-tf button")) b.addEventListener("click", () => {
     const next = parseTimeframe(b.dataset.tf);
-    if (next === tf) return;
+    if (next === selectedTf) return;
     // Keep the time under the right edge; bar width stays, so the visible duration scales with the bar length.
-    tf = next; store.setTimeframe(tf);
-    try { window.sessionStorage.setItem(TF_KEY, String(tf)); } catch { /* not kept */ }
-    setView({ ...view, endSec: view.follow ? followEnd(nowSec(), tf) : view.endSec });
+    selectedTf = next;
+    try { window.sessionStorage.setItem(TF_KEY, String(selectedTf)); } catch { /* not kept */ }
+    setView({ ...view, displayTf: selectedTf, endSec: view.follow ? followEnd(nowSec(), selectedTf) : view.endSec });
   });
   const resize = new ResizeObserver(() => request()); resize.observe(canvas);
   const onVisibility = () => { if (!document.hidden) request(); else hideCursor(); };
@@ -504,15 +509,15 @@ export function mountFootprint(root: HTMLElement): () => void {
     configurable: true, get: () => {
       const L = layout();
       return {
-        view: { ...view }, timeframe: tf, detail: lastDetail, contract: activeContract(), layout: L,
+        view: { ...view }, timeframe: tf, selectedTimeframe: selectedTf, rowTicks, detail: lastDetail, contract: activeContract(), layout: L,
         state: { connection: client.state, generation: store.generation, nowSec: nowSec(), liveOpenSec: store.liveOpenSec,
           coverage: store.coverage, gaps: store.gaps, noData: store.noData, evicted: store.evicted, quality: client.quality, lastError: client.lastError },
         requests: client.requests.map(r => ({ ...r })), queued: client.queued.map(r => [...r]),
         bars: paintedGroups.map(({ startSec, group }) => {
           const b = group.get(activeContract());
-          return { startSec, state: store.stateOf(startSec, startSec + tf, nowSec()), bar: b ? { ...b, prices: [...b.prices], buy: [...b.buy], sell: [...b.sell] } : null };
+          return { startSec, state: store.stateOf(startSec, startSec + tf, nowSec()), rows: b ? rowsOf(b) : null, bar: b ? { ...b, prices: [...b.prices], buy: [...b.buy], sell: [...b.sell] } : null };
         }),
-        draw: { count: drawCount, lastMs: timings.at(-1) ?? 0, meanMs: timings.reduce((a, b) => a + b, 0) / Math.max(1, timings.length), maxMs: Math.max(0, ...timings) },
+        draw: { count: drawCount, lastMs: timings.at(-1) ?? 0, samplesMs: [...timings], meanMs: timings.reduce((a, b) => a + b, 0) / Math.max(1, timings.length), maxMs: Math.max(0, ...timings) },
         cache: { trades: store.tradeCount, maxTrades: MAX_TRADES, seconds: store.secondCount, bars: store.cachedBars, barBuilds: store.barBuilds, evictions: store.evictions },
         cursor: cursorInfo(),
       };

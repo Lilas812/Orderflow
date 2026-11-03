@@ -74,7 +74,7 @@ test("Phase14: incremental glow — appending a column recomputes only its neigh
 });
 
 test("Phase14: numeric book grouping, colours, band end", () => {
-  assert.equal(bookGroupTicks(12), 1); assert.equal(bookGroupTicks(6), 2); assert.equal(bookGroupTicks(.01), 200);
+  assert.equal(bookGroupTicks(12), 1); assert.equal(bookGroupTicks(6), 2); assert.equal(bookGroupTicks(.01), 1600);
   assert.deepEqual(bookNumberStyle(.95), { color: "#ff8a6a", bold: true });
   assert.deepEqual(bookNumberStyle(.8), { color: "#ffffff", bold: true });
   assert.deepEqual(bookNumberStyle(.1), { color: "#9c97b5", bold: false });

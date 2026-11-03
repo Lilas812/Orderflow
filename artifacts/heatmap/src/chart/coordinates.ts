@@ -40,7 +40,7 @@ export function zoomTimeAt(viewport: Viewport, anchorUs: number, factor: number)
 }
 
 export function zoomPriceAt(viewport: Viewport, anchorTicks: number, factor: number): Viewport {
-  const priceSpanTicks = Math.max(8, Math.min(1_600, viewport.priceSpanTicks * factor));
+  const priceSpanTicks = Math.max(8, Math.min(8_000, viewport.priceSpanTicks * factor));
   const oldOffset = anchorTicks - viewport.centerPriceTicks;
   const ratio = oldOffset / viewport.priceSpanTicks;
   return clampViewport({

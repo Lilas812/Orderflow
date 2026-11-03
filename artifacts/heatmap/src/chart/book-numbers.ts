@@ -3,7 +3,7 @@ import { priceTicksToY } from "./coordinates.ts";
 import { colorPosition } from "./palette.ts";
 
 /** SPEC 7.2 (Phase 14): numeric current book. All lengths are CSS px. */
-export const BOOK_GROUP_WIDTHS = [1, 2, 4, 8, 20, 40, 100, 200] as const;
+export const BOOK_GROUP_WIDTHS = [1, 2, 4, 8, 20, 40, 100, 200, 400, 800, 1600, 3200, 6400, 12800, 25600, 51200, 102400] as const;
 export const BOOK_ROW_MIN_CSS = 11;
 export const BOOK_NUMBER_RIGHT_INSET = 4;
 export const BOOK_NUMBER_EDGE_MARGIN = 6;
@@ -11,9 +11,9 @@ export const BOOK_BAND_GAP = 5;
 export const BOOK_NUMBER_FONT_PX = 10;
 export const BOOK_NUMBER_COLORS = { hot: "#ff8a6a", bright: "#ffffff", normal: "#9c97b5" } as const;
 
-/** Smallest grouping width whose grouped row is at least 11 CSS px tall (200 when none is). */
+/** Smallest width with non-overlapping numbers, including very short 8000-tick plots. */
 export function bookGroupTicks(cssPerTick: number): number {
-  return BOOK_GROUP_WIDTHS.find(g => g * cssPerTick >= BOOK_ROW_MIN_CSS) ?? 200;
+  return BOOK_GROUP_WIDTHS.find(g => g * cssPerTick >= BOOK_ROW_MIN_CSS) ?? 102400;
 }
 
 export function bookNumberStyle(position: number): { color: string; bold: boolean } {

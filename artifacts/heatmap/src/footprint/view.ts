@@ -1,12 +1,29 @@
-import { TIMEFRAMES, type Timeframe } from "./model.ts";
+import { DISPLAY_TIMEFRAMES, TIMEFRAMES, type Timeframe, type DisplayTimeframe } from "./model.ts";
 
-export interface FpView { endSec: number; barW: number; rowH: number; centerPrice: number; follow: boolean; }
+export interface FpView { endSec: number; barW: number; rowH: number; centerPrice: number; follow: boolean; displayTf?: DisplayTimeframe; }
 export const BAR_W_MIN = 5, BAR_W_MAX = 240, BAR_W_DEFAULT = 92;
 export const ROW_H_MIN = 2, ROW_H_MAX = 30, ROW_H_DEFAULT = 16;
 /** Left OHLC lane inside a bar and the gap between bars, px. */
 export const OHLC_LANE = 6, BAR_GAP = 3;
 /** Numbers are only drawn when each half-cell is at least this wide/tall; never overlapped. */
 export const MIN_CELL_W = 28, MIN_ROW_H = 12;
+export const DETAIL_BAR_W = OHLC_LANE + BAR_GAP + 2 * MIN_CELL_W;
+export const MAX_PRICE_TICKS = 8_000;
+export const PRICE_GROUPS = [1, 2, 4, 5, 10, 20, 40, 50, 100, 200] as const;
+/** Approved extension for short screens: keep the original steps, then double from 200. */
+export function priceGroupTicks(rowH: number): number {
+  const fixed = PRICE_GROUPS.find(g => g * rowH >= MIN_ROW_H - 1e-9);
+  if (fixed) return fixed;
+  let g = 400;
+  while (g * rowH < MIN_ROW_H - 1e-9) g *= 2;
+  return g;
+}
+export function adaptTime(v: FpView, selected: Timeframe): FpView {
+  const prior = v.displayTf ?? selected;
+  const density = Math.max(DETAIL_BAR_W / 900, Math.min(BAR_W_MAX / selected, v.barW / prior));
+  const displayTf = DISPLAY_TIMEFRAMES.find(t => t >= selected && density * t >= DETAIL_BAR_W - 1e-9) ?? 900;
+  return { ...v, displayTf, barW: density * displayTf };
+}
 export const AXIS_W = 66, TIME_H = 22, STATS_H = 34, STATUS_H = 5;
 
 export const cellWidth = (barW: number) => (barW - OHLC_LANE - BAR_GAP) / 2;
@@ -29,9 +46,9 @@ export function visibleSpan(v: FpView, tf: number, plotW: number): [number, numb
   const n = Math.ceil(plotW / v.barW) + 1;
   return [Math.floor(v.endSec / tf) * tf - n * tf, v.endSec];
 }
-export function clampView(v: FpView, tf: number, nowSec: number | null): FpView {
-  const barW = Math.min(BAR_W_MAX, Math.max(BAR_W_MIN, v.barW));
-  const rowH = Math.min(ROW_H_MAX, Math.max(ROW_H_MIN, v.rowH));
+export function clampView(v: FpView, tf: number, nowSec: number | null, plotH = 480): FpView {
+  const barW = Math.min(BAR_W_MAX, Math.max(DETAIL_BAR_W, v.barW));
+  const rowH = Math.min(ROW_H_MAX, Math.max(plotH / MAX_PRICE_TICKS, v.rowH));
   let endSec = v.endSec;
   if (nowSec !== null) {
     const max = followEnd(nowSec, tf) + tf * 20, min = nowSec - 7_200 + tf * 4;
@@ -39,14 +56,14 @@ export function clampView(v: FpView, tf: number, nowSec: number | null): FpView 
   }
   return { ...v, barW, rowH, endSec: Math.round(endSec * 1000) / 1000, centerPrice: Number.isFinite(v.centerPrice) ? v.centerPrice : 0 };
 }
-export function zoomTimeAt(v: FpView, factor: number, x: number, tf: number, plotW: number): FpView {
-  const anchor = xToSec(x, v, tf, plotW);
-  const barW = Math.min(BAR_W_MAX, Math.max(BAR_W_MIN, v.barW * factor));
-  return { ...v, barW, endSec: anchor + ((plotW - x) / barW) * tf };
+export function zoomTimeAt(v: FpView, factor: number, x: number, selected: Timeframe, plotW: number): FpView {
+  const anchor = xToSec(x, v, v.displayTf ?? selected, plotW);
+  const next = adaptTime({ ...v, barW: v.barW * factor }, selected);
+  return { ...next, follow: false, endSec: anchor + ((plotW - x) / next.barW) * next.displayTf! };
 }
 export function zoomPriceAt(v: FpView, factor: number, y: number, plotH: number): FpView {
   const anchor = v.centerPrice + (plotH / 2 - y) / v.rowH;
-  const rowH = Math.min(ROW_H_MAX, Math.max(ROW_H_MIN, v.rowH * factor));
+  const rowH = Math.min(ROW_H_MAX, Math.max(plotH / MAX_PRICE_TICKS, v.rowH * factor));
   return { ...v, rowH, centerPrice: anchor - (plotH / 2 - y) / rowH };
 }
 export function parseTimeframe(v: unknown): Timeframe {

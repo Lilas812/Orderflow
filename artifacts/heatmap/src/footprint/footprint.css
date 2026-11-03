@@ -3,6 +3,8 @@
 .fp-canvas { touch-action: none; cursor: crosshair; }
 .fp-cursor { pointer-events: none; z-index: 2; }
 .fp-controls { display: flex; align-items: center; gap: 12px; margin-left: auto; margin-right: 10px; }
+.fp-controls { flex-wrap: wrap; }
+.fp-effective { color: var(--muted); font: 10px var(--font-mono); white-space: nowrap; }
 .fp-tf { display: flex; border: 1px solid var(--line); }
 .fp-tf button { background: #000; color: var(--muted); border: 0; border-right: 1px solid var(--line); padding: 4px 9px; font: 11px var(--font-mono); cursor: pointer; }
 .fp-tf button:last-child { border-right: 0; }

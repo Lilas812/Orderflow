@@ -37,7 +37,7 @@ export const MAX_CACHE_SECONDS = 7_200;
 export const MIN_TIME_SPAN_SEC = 10;
 export const MAX_TIME_SPAN_SEC = 7_200;
 export const MIN_PRICE_SPAN_TICKS = 8;
-export const MAX_PRICE_SPAN_TICKS = 1_600;
+export const MAX_PRICE_SPAN_TICKS = 8_000;
 
 export function bestMidpoint(column: HeatColumn | undefined): number | null {
   if (!column || column.bids.prices.length === 0 || column.asks.prices.length === 0) return null;

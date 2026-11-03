@@ -145,7 +145,7 @@ test("view：数字表示の閾値、価格⇔y、ズーム固定点", () => {
   assert.equal(yToPrice(priceToY(503, v, 400), v, 400), 503);
   const z = zoomTimeAt(v, 2, 300, 5, 600);
   assert.ok(Math.abs((z.endSec - ((600 - 300) / z.barW) * 5) - (v.endSec - (300 / 50) * 5)) < 1e-9);
-  assert.equal(clampView({ ...v, barW: 1 }, 5, null).barW, 5);
+  assert.equal(clampView({ ...v, barW: 1 }, 5, null).barW, 65);
 });
 
 class FakeSocket {

@@ -8,7 +8,7 @@ export async function waitFor(test, timeout = 15000) {
   const end = Date.now() + timeout;
   for (;;) { const v = await test(); if (v) return v; if (Date.now() > end) throw Error("verification_timeout"); await delay(80); }
 }
-export async function browser({ headed = false } = {}) {
+export async function browser({ headed = false, extraArgs = [] } = {}) {
   const profile = await fs.mkdtemp("/tmp/footprint-cdp-");
   const executable = "/nix/store/71577rskzyhch3axhdqx7faygc2xyn4v-playwright-browsers-1.55.0-with-cjk/chromium-1187/chrome-linux/chrome";
   const out = await fs.open(`${profile}/chrome.log`, "w");
@@ -16,7 +16,7 @@ export async function browser({ headed = false } = {}) {
     headed ? "--ozone-platform=headless" : "--headless=new",
     "--no-sandbox", "--disable-dev-shm-usage", "--no-first-run", "--no-default-browser-check",
     "--disable-background-networking", "--disable-component-update", "--disable-sync",
-    "--remote-debugging-port=0", `--user-data-dir=${profile}`, "about:blank",
+    "--remote-debugging-port=0", `--user-data-dir=${profile}`, ...extraArgs, "about:blank",
   ], { stdio: ["ignore", out.fd, out.fd] });
   const port = await waitFor(async () => {
     try { return Number((await fs.readFile(`${profile}/DevToolsActivePort`, "utf8")).split("\n")[0]); } catch { if (proc.exitCode !== null) throw Error(await fs.readFile(`${profile}/chrome.log`, "utf8")); return false; }

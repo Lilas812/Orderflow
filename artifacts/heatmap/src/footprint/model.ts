@@ -9,6 +9,8 @@ export type SecondState = "recorded" | "empty" | "live" | "loading" | "gap" | "o
 
 export const TIMEFRAMES = [5, 15, 30, 60] as const;
 export type Timeframe = typeof TIMEFRAMES[number];
+export const DISPLAY_TIMEFRAMES = [5, 15, 30, 60, 120, 300, 900] as const;
+export type DisplayTimeframe = typeof DISPLAY_TIMEFRAMES[number];
 export const UNKNOWN_CONTRACT_KEY = "UNKNOWN";
 /** Browse window: the last two hours only. */
 export const RETAIN_SEC = 7_200;
@@ -116,7 +118,7 @@ export class FootprintStore {
   private secs = new Map<number, Sec>();
   private pending = new Map<number, PendingRange>();
   private barCache = new Map<number, BarGroup>();
-  private tfValue: Timeframe = 5;
+  private tfValue: DisplayTimeframe = 5;
   coverage: Range[] = [];
   noData: Range[] = [];
   gaps: Gap[] = [];
@@ -131,12 +133,12 @@ export class FootprintStore {
   barBuilds = 0;
   private lastTrade: FpTrade | null = null;
 
-  get timeframe(): Timeframe { return this.tfValue; }
+  get timeframe(): DisplayTimeframe { return this.tfValue; }
   get secondCount(): number { return this.secs.size; }
   get cachedBars(): number { return this.barCache.size; }
   get latest(): FpTrade | null { return this.lastTrade; }
 
-  setTimeframe(tf: Timeframe): void {
+  setTimeframe(tf: DisplayTimeframe): void {
     if (tf === this.tfValue) return;
     this.tfValue = tf; this.barCache.clear(); this.revision++;
   }
