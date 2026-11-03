@@ -13,6 +13,7 @@ import type { Column } from "../src/aggregate/columns.ts";
 import type { MarketSymbol } from "../../lib/market/instruments.ts";
 
 const port = Number(process.argv.find(a => a.startsWith("--port="))?.slice(7) ?? 18885);
+const frontRoot = path.resolve(process.argv.find(a => a.startsWith("--front-root="))?.slice(13) ?? "artifacts/heatmap/dist/public");
 const manifestFile = "data/gpu-heatmap/production-input/manifest.json";
 const manifest = JSON.parse(await fs.readFile(manifestFile, "utf8"));
 const from = manifest.chosen.start, end = from + 3600;
@@ -67,8 +68,8 @@ const app = createServer(async (req, res) => {
   if (u.pathname === "/__replay") { res.setHeader("Content-Type", "application/json"); res.end(JSON.stringify({ from, end, inputs, peers: [...hubs].map(([s, h]) => [s, h.snapshot().connected]), pid: process.pid, symbols: [...sources].map(([s, d]) => ({ symbol: s, trades: d.trades.length, quantity: d.trades.reduce((n, t) => n + t.size, 0), columns: d.columns.length })) })); return; }
   if (u.pathname === "/api/settings") { res.setHeader("Content-Type", "application/json"); res.end(JSON.stringify({ version: 4, updatedAt: null, values: defaults })); return; }
   if (req.method !== "GET") { res.writeHead(405); res.end(); return; }
-  const file = path.resolve("artifacts/heatmap/dist/public", u.pathname === "/" ? "index.html" : u.pathname.slice(1));
-  if (!file.startsWith(path.resolve("artifacts/heatmap/dist/public") + "/")) { res.writeHead(403); res.end(); return; }
+  const file = path.resolve(frontRoot, u.pathname === "/" ? "index.html" : u.pathname.slice(1));
+  if (!file.startsWith(frontRoot + "/")) { res.writeHead(403); res.end(); return; }
   try {
     let body = await fs.readFile(file);
     res.setHeader("Cache-Control", "no-store");
