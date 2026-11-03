@@ -156,11 +156,12 @@ class FakeSocket {
 }
 function harness(now = 10_000_000) {
   const sockets: FakeSocket[] = [];
-  const env: FpEnv = { createSocket: () => { const s = new FakeSocket(); sockets.push(s); return s as never; },
+  const urls: string[] = [];
+  const env: FpEnv = { createSocket: url => { urls.push(url); const s = new FakeSocket(); sockets.push(s); return s as never; },
     setTimeout: () => 0, clearTimeout: () => {}, now: () => now };
   const store = new FootprintStore();
   const client = new FootprintClient("NQ", store, { onData() {}, onState() {} }, { protocol: "http:", host: "h" }, env);
-  return { client, store, sockets };
+  return { client, store, sockets, urls };
 }
 const hello = (gen: string, sec: number) => JSON.stringify({ type: "hello", symbol: "NQ", tickSize: 0.25, serverTimeUs: sec * U, mode: "live", savedRange: null, generation: gen });
 
@@ -182,6 +183,39 @@ test("ダミー client：URL、op:range は3600秒以下に分割、旧reqIdの�
   // generation change drops data and pending
   client.handle(hello("g2", 10_001));
   assert.equal(store.tradeCount, 0); assert.equal(store.generation, "g2");
+});
+
+test("リプレイ client：再接続URLに位置を渡し、カーソルより先の約定を採らず、live復帰で共有状態を切る", () => {
+  const { client, store, sockets, urls } = harness();
+  client.startReplay(100, 5, true, 100_500_000);
+  const replayUrl = new URL(urls[0]!);
+  assert.equal(replayUrl.searchParams.get("view"), "footprint");
+  assert.equal(replayUrl.searchParams.get("mode"), "replay");
+  assert.equal(replayUrl.searchParams.get("from"), "100");
+  assert.equal(replayUrl.searchParams.get("headUs"), "100500000");
+  assert.equal(replayUrl.searchParams.get("speed"), "5");
+  assert.equal(replayUrl.searchParams.get("paused"), "1");
+  client.handle(JSON.stringify({ type: "hello", symbol: "NQ", tickSize: .25, columnSeconds: 1,
+    serverTimeUs: 999_000_000, mode: "replay", savedRange: { fromSec: 100, toSec: 200 },
+    generation: "server-generation", replayControlled: true, replayFromSec: 100,
+    replayGeneration: 1, replayHeadUs: 100_500_000 }));
+  assert.equal(client.nowSec(), 100);
+  assert.equal(store.liveOpenSec, null);
+  client.handle(JSON.stringify({ type: "trades", replayGeneration: 1, replayHeadUs: 100_750_000,
+    trades: [tr(100.6, 50, 2, "buy"), tr(100.8, 51, 3, "sell")] }));
+  assert.equal(store.tradeCount, 1);
+  assert.equal(store.latest?.price, 50);
+  const state = JSON.stringify({ type: "replayState", replayGeneration: 1, replayHeadUs: 100_750_000,
+    state: "paused", positionUs: 100_750_000, speed: 5, fromSec: 100, toSec: 200 });
+  client.handle(state);
+  assert.equal(client.replayPositionUs, 100_750_000);
+  assert.equal(client.replayControl("step", 1), true);
+  assert.equal(JSON.parse(sockets[0]!.sent.at(-1)!).action, "step");
+  client.returnLive();
+  assert.equal(client.isReplay, false);
+  assert.equal(store.tradeCount, 0);
+  assert.equal(new URL(urls[1]!).searchParams.has("mode"), false);
+  client.stop();
 });
 
 test("ダミー client：不正なhello（generation無し・別銘柄）は受け付けない", () => {

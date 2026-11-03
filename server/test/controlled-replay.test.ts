@@ -76,6 +76,50 @@ test("seek generations discard pending old ranges, in both directions", async ()
   await assert.rejects(session.control({op:"replay",action:"seek",fromSec:702}),/outside_saved/);
   session.stop();
 });
+
+test("FOOTPRINT replay uses the saved-trade reader only, clips at the fractional cursor, and sends no books or VP", async () => {
+  const clock = new Clock(), events: (string | Buffer)[] = [];
+  const trades = [t(1, 100_100_000), t(2, 100_900_000), t(3, 101_150_000), t(4, 102_000_000)];
+  let tradeReads = 0, fullReads = 0;
+  const source: Source = {
+    savedRange: () => ({ fromSec: 100, toSec: 702 }), status: () => ({}),
+    read: async () => { fullReads++; throw Error("footprint replay must use readTrades"); },
+    readTrades: async (a, b, visit, signal) => {
+      tradeReads++;
+      for (const trade of trades) {
+        signal.throwIfAborted();
+        if (trade.tsUs >= a * 1e6 && trade.tsUs < b * 1e6) visit(trade);
+      }
+      return { coverage: [[a, b]], gaps: [], noData: [], quality: "recorded_not_guaranteed" };
+    },
+  };
+  const session = new ControlledReplay(source, "NQ", clock, v => { events.push(v); return true; }, () => true,
+    { fromSec: 100, toSec: 702 }, true, () => 0, "footprint", "fixture-generation");
+  await session.initializeAt(100, 1, true, 100_125_000);
+  const hello = json(events).find(v => v.type === "hello");
+  assert.equal(hello.mode, "replay"); assert.equal(hello.generation, "fixture-generation");
+  assert.equal(hello.replayHeadUs, 100_125_000);
+  assert.equal(tradeReads, 2); assert.equal(fullReads, 0); // current and one bounded read-ahead window
+  assert.equal(events.some(v => Buffer.isBuffer(v)), false);
+  assert.equal(json(events).some(v => v.type === "vp" || v.type === "sessionIndicators"), false);
+
+  await session.control({ op: "replay", action: "step", seconds: 1 });
+  const playback = json(events).filter(v => v.type === "trades").flatMap(v => v.trades) as Trade[];
+  assert.deepEqual(playback.map(v => v.seq), [2]);
+  assert(playback.every(v => v.tsUs < 101_125_000));
+
+  await session.range({ reqId: 8, fromSec: 100, toSec: 101 });
+  const rangeRows = json(events).filter(v => v.type === "rangeTrades").flatMap(v => v.trades) as Trade[];
+  assert.deepEqual(rangeRows.map(v => v.seq), [1, 2]);
+  const done = json(events).findLast(v => v.type === "rangeDone");
+  assert.equal(done.trades, 2);
+  assert.deepEqual(done.footprint, {
+    coverage: [[100, 101]], gaps: [], noData: [], quality: "recorded_not_guaranteed",
+  });
+  assert.equal(events.some(v => Buffer.isBuffer(v)), false);
+  assert.equal(json(events).some(v => v.type === "vp" || v.type === "sessionIndicators"), false);
+  session.stop();
+});
 test("global two replay slots and URL speeds 30/60; releases permit replacement", () => {
   const a={},b={},c={};
   try { assert(reserveReplay(a));assert(reserveReplay(b));assert(!reserveReplay(c));releaseReplay(a);assert(reserveReplay(c)); }

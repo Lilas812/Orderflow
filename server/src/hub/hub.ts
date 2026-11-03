@@ -207,14 +207,6 @@ export class Hub {
     const initial = (async () => {
       try {
         const saved = this.source.savedRange();
-        if (p.footprint) {
-          this.json(p, { type: "hello", symbol: this.symbol, tickSize: INSTRUMENTS[this.symbol].tickSize,
-            columnSeconds: 1, serverTimeUs: this.clock.now() * 1000, mode: "live", savedRange: saved,
-            generation: this.generation });
-          p.initializing = false;
-          this.status(p, true);
-          return;
-        }
         let params;
         try { params = replayParams(url, saved); }
         catch {
@@ -222,6 +214,10 @@ export class Hub {
           this.close(p, 1008, "invalid_replay_parameters"); return;
         }
         p.mode = params ? "replay" : "live";
+        if (p.footprint && params && url.searchParams.get("controls") !== "1") {
+          this.json(p, { type: "error", reqId: null, code: "footprint_replay_requires_controls" });
+          this.close(p, 1008, "footprint_replay_requires_controls"); return;
+        }
         if (params && !reserveReplay(p)) {
           this.json(p, { type: "error", code: "replay_limit", message: "同時リプレイはサーバー全体で2つまでです" });
           this.close(p, 1013, "replay_limit"); return;
@@ -229,8 +225,17 @@ export class Hub {
         if (params && url.searchParams.get("controls") === "1") {
           p.initializing = false; p.columns = []; p.trades = [];
           p.controlledReplay = new ControlledReplay(this.source, this.symbol, this.clock,
-            data => this.send(p, data), () => !p.closed && !this.stopped, saved!, !!p.daily, () => p.socket.bufferedAmount);
-          await p.controlledReplay.initialize(params.fromSec, params.speed, url.searchParams.get("paused") === "1");
+            data => this.send(p, data), () => !p.closed && !this.stopped, saved!, !!p.daily,
+            () => p.socket.bufferedAmount, p.footprint ? "footprint" : "heatmap", this.generation);
+          await p.controlledReplay.initializeAt(params.fromSec, params.speed, url.searchParams.get("paused") === "1", params.headUs);
+          return;
+        }
+        if (p.footprint) {
+          this.json(p, { type: "hello", symbol: this.symbol, tickSize: INSTRUMENTS[this.symbol].tickSize,
+            columnSeconds: 1, serverTimeUs: this.clock.now() * 1000, mode: "live", savedRange: saved,
+            generation: this.generation });
+          p.initializing = false;
+          this.status(p, true);
           return;
         }
         this.json(p, { type: "hello", symbol: this.symbol, tickSize: INSTRUMENTS[this.symbol].tickSize, columnSeconds: 1,

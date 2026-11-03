@@ -86,7 +86,7 @@ export function buildSocketUrl(locationLike: Pick<Location, "protocol" | "host" 
   if (daily && params.get("daily") !== "0") url.searchParams.set("daily", "1");
   if (params.get("mode") === "replay") {
     url.searchParams.set("mode", "replay");
-    for (const key of ["from", "speed", "controls", "paused"]) {
+    for (const key of ["from", "speed", "controls", "paused", "headUs"]) {
       const value = params.get(key);
       if (value !== null) url.searchParams.set(key, value);
     }
@@ -163,15 +163,15 @@ export class RealtimeClient {
     if (socket && socket.readyState < 2) socket.close(1000, "client stopped");
     this.clearPendingRanges();
   }
-  startReplay(fromSec: number, speed: number): void {
+  startReplay(fromSec: number, speed: number, paused = true, headUs = fromSec * US_PER_SECOND): void {
     const params = new URLSearchParams(this.locationLike.search);
     params.set("mode", "replay"); params.set("from", String(fromSec)); params.set("speed", String(speed));
-    params.set("controls", "1"); params.set("paused", "1");
+    params.set("controls", "1"); params.set("paused", paused ? "1" : "0"); params.set("headUs", String(headUs));
     this.switchSearch(params.toString());
   }
   returnLive(): void {
     const params = new URLSearchParams(this.locationLike.search);
-    for (const k of ["mode", "from", "speed", "controls", "paused"]) params.delete(k);
+    for (const k of ["mode", "from", "speed", "controls", "paused", "headUs"]) params.delete(k);
     this.switchSearch(params.toString());
   }
   private switchSearch(search: string) {

@@ -144,10 +144,10 @@ export class FootprintStore {
   }
 
   /** New generation discards everything; same generation (reconnect) keeps committed data. */
-  hello(generation: string, serverSec: number): void {
+  hello(generation: string, serverSec: number, live = true): void {
     if (generation !== this.generation) this.reset(generation);
     this.pending.clear();
-    this.liveOpenSec = serverSec + 1; // the hello second is partial: history must fill it
+    this.liveOpenSec = live ? serverSec + 1 : null; // replay data is cursor-bounded and range-read from storage
     this.revision++;
   }
   disconnect(atSec: number): void {

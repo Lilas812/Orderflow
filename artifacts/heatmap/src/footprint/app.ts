@@ -6,6 +6,8 @@ import { ACTIVE_SYMBOL, formatInstrumentPrice } from "../instrument.ts";
 import { viewSwitchHtml } from "../long-vp/nav.ts";
 import { loadView, saveView } from "../view-memory.ts";
 import { FootprintClient } from "./client.ts";
+import { mountReplayControls } from "../replay/controls.ts";
+import { loadSharedReplay, replayStart } from "../replay/shared.ts";
 import { FootprintStore, TIMEFRAMES, contractKey, MAX_TRADES, RETAIN_SEC, type FootprintBar, type SecondState, type Timeframe, type DisplayTimeframe } from "./model.ts";
 import { groupPriceRows, type GroupedRows } from "./rows.ts";
 import {
@@ -104,16 +106,29 @@ export function mountFootprint(root: HTMLElement): () => void {
   let drawCount = 0, lastDetail = true;
   let cursorPt: { x: number; y: number } | null = null;
 
+  let replayUi: ReturnType<typeof mountReplayControls> | undefined;
+  const initialReplay = loadSharedReplay(ACTIVE_SYMBOL);
   const client = new FootprintClient(ACTIVE_SYMBOL, store, {
     onData: () => { dataDirty = true; },
     onState: () => { updateChrome(); },
-  });
+    onReplayHello: hello => {
+      replayUi?.hello(hello);
+      if (hello.mode === "replay" && view.follow) setView({ ...view, endSec: followEnd(client.nowSec(), selectedTf) });
+    },
+    onReplayState: state => { replayUi?.state(state); updateChrome(); request(); },
+    onReplayError: code => replayUi?.error(code),
+  }, window.location, undefined, initialReplay);
+  if (initialReplay) {
+    view = { ...view, follow: true, endSec: followEnd(client.nowSec(), selectedTf) };
+    centered = false;
+  }
 
   const layout = (): Layout => {
     const plotW = Math.max(1, W - AXIS_W), plotH = Math.max(1, H - TIME_H - STATS_H - STATUS_H);
     return { W, H, plotW, plotH, statusTop: plotH, statsTop: plotH + STATUS_H, timeTop: plotH + STATUS_H + STATS_H };
   };
-  const nowSec = () => client.clockKnown ? client.nowSec() : Math.floor(Date.now() / 1000);
+  const hasDataClock = () => client.clockKnown || client.isReplay;
+  const nowSec = () => hasDataClock() ? client.nowSec() : Math.floor(Date.now() / 1000);
   const activeContract = () => {
     if (contractChoice !== "auto") return contractChoice;
     const l = store.latest;
@@ -122,7 +137,7 @@ export function mountFootprint(root: HTMLElement): () => void {
   function setView(next: FpView, persist = true) {
     const adaptive = adaptTime(next, selectedTf);
     tf = adaptive.displayTf!; store.setTimeframe(tf);
-    view = clampView(adaptive, tf, client.clockKnown ? client.nowSec() : null, layout().plotH);
+    view = clampView(adaptive, tf, hasDataClock() ? client.nowSec() : null, layout().plotH);
     if (persist) saveView("footprint", ACTIVE_SYMBOL, view);
     followBtn.setAttribute("aria-pressed", String(view.follow));
     request();
@@ -144,9 +159,9 @@ export function mountFootprint(root: HTMLElement): () => void {
       if (c.height !== ph) c.height = ph;
     }
     const L = layout(), now = nowSec();
-    view = clampView(view, tf, client.clockKnown ? now : null, L.plotH);
+    view = clampView(view, tf, hasDataClock() ? now : null, L.plotH);
     rowTicks = priceGroupTicks(view.rowH);
-    if (view.follow) view = clampView({ ...view, endSec: followEnd(now, tf) }, tf, client.clockKnown ? now : null, L.plotH);
+    if (view.follow) view = clampView({ ...view, endSec: followEnd(now, tf) }, tf, hasDataClock() ? now : null, L.plotH);
     const [from, to] = visibleSpan(view, tf, L.plotW);
     client.setVisible(Math.max(0, Math.floor(from)), Math.ceil(to));
     const contract = activeContract();
@@ -376,7 +391,8 @@ export function mountFootprint(root: HTMLElement): () => void {
     const st = client.state;
     stateEl.dataset.state = st === "connected" ? "connected" : st === "error" ? "error" : "connecting";
     const tfText = (t: number) => t < 60 ? `${t}秒` : `${t / 60}分`;
-    stateLabel.textContent = st === "connected" ? `LIVE · ${tfText(tf)}` : st === "error" ? "ERROR" : st === "reconnecting" ? `RECONNECTING ${client.stateMessage}` : "CONNECTING";
+    stateLabel.textContent = st === "connected" ? `${client.isReplay ? "REPLAY" : "LIVE"} · ${tfText(tf)}`
+      : st === "error" ? "ERROR" : st === "reconnecting" ? `RECONNECTING ${client.stateMessage}` : "CONNECTING";
     $("#fp-effective").textContent = `${tfText(selectedTf)}${tf !== selectedTf ? `（表示 ${tfText(tf)}）` : ""} · 1行 ${rowTicks}ティック（${formatInstrumentPrice(rowTicks)}）`;
     for (const b of root.querySelectorAll<HTMLButtonElement>(".fp-tf button")) b.setAttribute("aria-pressed", String(Number(b.dataset.tf) === selectedTf));
     const contracts = store.contracts(), key = contracts.join(",");
@@ -531,7 +547,13 @@ export function mountFootprint(root: HTMLElement): () => void {
     }),
   });
 
-  client.start();
+  replayUi = mountReplayControls(root.querySelector<HTMLElement>(".workspace")!,
+    root.querySelector<HTMLElement>(".fp-rail")!, canvas, client, () => zone,
+    x => Math.floor(xToSec(x, view, tf, layout().plotW)), resetView, ACTIVE_SYMBOL);
+  if (initialReplay && new URLSearchParams(location.search).get("mode") !== "replay") {
+    const start = replayStart(initialReplay);
+    client.startReplay(start.fromSec, start.speed, start.paused, start.headUs);
+  } else client.start();
   setView(view, false);
 
   const destroy = () => {
@@ -540,6 +562,7 @@ export function mountFootprint(root: HTMLElement): () => void {
     saveView("footprint", ACTIVE_SYMBOL, view);
     if (frame) cancelAnimationFrame(frame);
     if (cursorFrame) cancelAnimationFrame(cursorFrame);
+    replayUi?.persistForNavigation(client.replayPositionUs);
     window.clearInterval(ticker); resize.disconnect(); client.stop();
     document.removeEventListener("visibilitychange", onVisibility);
     delete dbg.__footprintDebug;

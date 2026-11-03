@@ -33,6 +33,7 @@ import { ACTIVE_SYMBOL, initializeInstrumentUi } from "./instrument.ts";
 import { DailyState } from "./data/daily.ts";
 import { DailyIndicatorRenderer } from "./chart/daily-renderer.ts";
 import { mountReplayControls } from "./replay/controls.ts";
+import { loadSharedReplay, replayStart } from "./replay/shared.ts";
 
 declare global {
   interface Window {
@@ -1022,7 +1023,11 @@ void settingsUi;
 replayUi = mountReplayControls(required("root").querySelector<HTMLElement>(".workspace")!,
   document.querySelector<HTMLElement>(".tool-rail")!, canvas, client, () => displayZone,
   x => Math.floor(xToTimeUs(x, viewport, canvas.clientWidth) / US_PER_SECOND),
-  () => { crosshair.hide(); follow = true; centeredOnData = false; hasHello = false; });
+  () => { crosshair.hide(); follow = true; centeredOnData = false; hasHello = false; }, ACTIVE_SYMBOL);
+window.addEventListener("pagehide", () => {
+  replayUi?.persistForNavigation(client.replayHeadUs);
+  client.stop();
+}, { once: true });
 const tabFields = document.querySelector<HTMLElement>(".su-fields")!;
 const tabTitle = document.createElement("h3");
 tabTitle.className = "su-group"; tabTitle.textContent = "表示（このタブ）"; tabFields.append(tabTitle);
@@ -1089,7 +1094,12 @@ const settingsRecovery = new SettingsRecovery(async () => {
 async function startWithSettings() {
   await settingsRecovery.read();
   settingsLoaded = true;
-  renderTimeAxis(); updateStatus(); scheduleDraw(); client.start();
+  renderTimeAxis(); updateStatus(); scheduleDraw();
+  const replay = loadSharedReplay(ACTIVE_SYMBOL);
+  if (replay && new URLSearchParams(window.location.search).get("mode") !== "replay") {
+    const start = replayStart(replay);
+    client.startReplay(start.fromSec, start.speed, start.paused, start.headUs);
+  } else client.start();
   window.addEventListener("market-switch", () => { crosshair.hide(); client.stop(); }, { once: true });
 }
 void startWithSettings();

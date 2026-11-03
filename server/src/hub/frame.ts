@@ -41,5 +41,10 @@ export function replayParams(url: URL, saved: { fromSec: number; toSec: number }
     || !saved || !Number.isSafeInteger(Number(from)) || Number(from) < saved.fromSec || Number(from) >= saved.toSec) {
     throw Error("invalid_replay_parameters");
   }
-  return { fromSec: Number(from), toSec: saved.toSec, speed: Number(speed) };
+  const fromSec = Number(from), headValue = url.searchParams.get("headUs");
+  const headUs = headValue === null ? fromSec * 1_000_000 : Number(headValue);
+  if (!Number.isSafeInteger(headUs) || headUs < fromSec * 1_000_000 || headUs > saved.toSec * 1_000_000) {
+    throw Error("invalid_replay_parameters");
+  }
+  return { fromSec, toSec: saved.toSec, speed: Number(speed), headUs };
 }

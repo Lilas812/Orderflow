@@ -1,0 +1,123 @@
+{
+  "fixture": {
+    "from": 1793295720,
+    "end": 1793299320,
+    "inputs": [
+      {
+        "file": "data/gpu-heatmap/production-input/prod/coverage.json",
+        "sha256": "ed8f6c9de3a6d8e500233bdac8253e303f3a299165488dcfad6c1d2e948ddb26"
+      },
+      {
+        "file": "data/gpu-heatmap/production-input/prod/columns/NQ/1s/2026-10-29/17.bin.gz",
+        "sha256": "16f74a91443a50b5bb39a183e33b289fb182f23413c5b1e188a2c538aac44429"
+      },
+      {
+        "file": "data/gpu-heatmap/production-input/prod/trades/NQ/2026-10-29/17.jsonl.gz",
+        "sha256": "41024f26c1f3a521b053a2d816ddb5f3a569c08b81f147afe73a758bc287e3e9"
+      },
+      {
+        "file": "data/gpu-heatmap/production-input/prod/columns/NQ/1s/2026-10-29/18.bin.gz",
+        "sha256": "5b40ada21c6954f0bd559f9807f0d97fc4c77b4c0acf16034bab161d43155e57"
+      },
+      {
+        "file": "data/gpu-heatmap/production-input/prod/trades/NQ/2026-10-29/18.jsonl.gz",
+        "sha256": "7eb72f1d90636f6e1e9b66da398fac10229a6465e433ccdc3ef67b1e653ed7ea"
+      },
+      {
+        "file": "data/gpu-heatmap/production-input/prod/instruments/GC/coverage.json",
+        "sha256": "097176419a14854f33dc92641433a4def58ec7cd079f858e067d003df1cc422b"
+      },
+      {
+        "file": "data/gpu-heatmap/production-input/prod/instruments/GC/columns/GC/1s/2026-10-29/17.bin.gz",
+        "sha256": "be8ccc518ed956f44dc9d3e79cf1325a4f736de4ad96b07c204948d6bf40e871"
+      },
+      {
+        "file": "data/gpu-heatmap/production-input/prod/instruments/GC/trades/GC/2026-10-29/17.jsonl.gz",
+        "sha256": "25a400db4860467ccae44323a95087533ca941972b8cf0914173cbde3edc23be"
+      },
+      {
+        "file": "data/gpu-heatmap/production-input/prod/instruments/GC/columns/GC/1s/2026-10-29/18.bin.gz",
+        "sha256": "f5c53c6e1625c4b90dd54b553af4364785b730b97e64e38c2cc8aa0f2973255a"
+      },
+      {
+        "file": "data/gpu-heatmap/production-input/prod/instruments/GC/trades/GC/2026-10-29/18.jsonl.gz",
+        "sha256": "91683a0288176782bd4938b7d6fe519c8c6ffe5e06687069d47d298ae13c32ba"
+      }
+    ],
+    "metrics": {
+      "elapsedMs": 202245.593932,
+      "cpu": {
+        "user": 2710903,
+        "system": 584961
+      },
+      "eventLoopMaxMs": 46.268415,
+      "txWireBytes": 0,
+      "rss": 450342912,
+      "replayWorkMax": {
+        "window": 1.4144880000094417
+      }
+    },
+    "peers": [
+      [
+        "NQ",
+        0
+      ],
+      [
+        "GC",
+        0
+      ]
+    ],
+    "maxReplayPeers": 0,
+    "pid": 34631,
+    "symbols": [
+      {
+        "symbol": "NQ",
+        "trades": 44975,
+        "quantity": 48995,
+        "columns": 3387,
+        "last600": {
+          "count": 7646,
+          "quantity": 8162,
+          "startHasData": true,
+          "hash": "3ae27d34a01060a03607e2428b63403ebfa16e58fb0117ab08afc33d6d1867da"
+        }
+      },
+      {
+        "symbol": "GC",
+        "trades": 4650,
+        "quantity": 5019,
+        "columns": 3212,
+        "last600": {
+          "count": 534,
+          "quantity": 551,
+          "startHasData": true,
+          "hash": "236211bb1934716afe6d5a9d0df4aec91df9a2c9c57247309224a217ec45b669"
+        }
+      }
+    ]
+  },
+  "symbols": [],
+  "cleanup": {
+    "browser": {
+      "pid": 35055,
+      "exited": true,
+      "exitCode": 0,
+      "signal": null,
+      "port": 33995,
+      "profile": "/tmp/footprint-cdp-nI4Xos"
+    },
+    "browserPidAbsent": true,
+    "peers": [
+      [
+        "NQ",
+        0
+      ],
+      [
+        "GC",
+        0
+      ]
+    ],
+    "zeroPeers": true,
+    "fixture": 34631
+  }
+}

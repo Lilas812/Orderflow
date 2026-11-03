@@ -2,8 +2,13 @@ import "./replay.css";
 import { localCandidates, localDateTime, replayPreferences } from "./time.ts";
 import type { HelloMessage, RealtimeClient } from "../data/socket.ts";
 import type { DisplayZone } from "../chart/timezone.ts";
+import { clearSharedReplay, saveSharedReplay } from "./shared.ts";
+import type { MarketSymbol } from "../../../../lib/market/instruments.ts";
+
+type ReplayTransport = Pick<RealtimeClient, "startReplay" | "returnLive" | "replayControl">;
 export function mountReplayControls(host: HTMLElement, rail: HTMLElement, canvas: HTMLCanvasElement,
-  client: RealtimeClient, zone: () => DisplayZone, pickTime: (x: number) => number, reset: () => void) {
+  client: ReplayTransport, zone: () => DisplayZone, pickTime: (x: number) => number, reset: () => void,
+  symbol: MarketSymbol) {
   const prefs = replayPreferences();
   let hello: HelloMessage | null = null, active = false, selecting = false, state = "paused", position = 0, controlled = false;
   const button = document.createElement("button");
@@ -46,7 +51,7 @@ export function mountReplayControls(host: HTMLElement, rail: HTMLElement, canvas
     if (!saved || !Number.isSafeInteger(sec) || sec < saved.fromSec || sec >= saved.toSec) return showError("保存範囲外です。保存済みの日時を選んでください。");
     error.textContent = ""; selecting = false;
     if (active && controlled) client.replayControl("seek", sec);
-    else { active = true; state = "loading"; position = sec * 1e6; client.startReplay(sec, Number(speed.value)); }
+    else { active = true; state = "loading"; position = sec * 1e6; client.startReplay(sec, Number(speed.value), true, position); }
     reset(); render();
   };
   button.onclick = () => {
@@ -63,8 +68,11 @@ export function mountReplayControls(host: HTMLElement, rail: HTMLElement, canvas
     if (key === "speed" && active) client.replayControl("speed", Number(select.value));
   };
   find('[data-action="live"]').onclick = () => {
-    active = selecting = controlled = false; error.textContent = ""; client.returnLive(); reset(); render();
-    const u = new URL(location.href); for (const k of ["mode","from","speed","controls","paused"]) u.searchParams.delete(k); history.replaceState(null, "", u);
+    active = selecting = controlled = false; error.textContent = "";
+    const cleared = clearSharedReplay(symbol);
+    client.returnLive(); reset(); render();
+    if (!cleared) showError("タブ内のリプレイ状態を消去できませんでした。画面切替後に再開する可能性があります。");
+    const u = new URL(location.href); for (const k of ["mode","from","speed","controls","paused","headUs"]) u.searchParams.delete(k); history.replaceState(null, "", u);
   };
   date.oninput = () => { offset.hidden = true; offset.innerHTML = ""; };
   find<HTMLFormElement>("form").onsubmit = e => {
@@ -94,7 +102,30 @@ export function mountReplayControls(host: HTMLElement, rail: HTMLElement, canvas
       if (active && !controlled) showError("旧サーバー：操作付きリプレイ非対応。サーバーも更新してください。");
       render();
     },
-    state(s: Record<string, unknown>) { active = true; state = String(s.state); position = Number(s.positionUs); speed.value = String(s.speed); render(); },
+    state(s: Record<string, unknown>) {
+      active = true; state = String(s.state); position = Number(s.positionUs); speed.value = String(s.speed);
+      if (["playing", "paused", "ended"].includes(state) && Number.isSafeInteger(position)) {
+        const fromSec = Number(s.fromSec ?? Math.floor(position / 1e6));
+        const toSec = Number(s.toSec ?? hello?.savedRange?.toSec);
+        if (Number.isSafeInteger(fromSec) && Number.isSafeInteger(toSec) && fromSec < toSec
+          && position >= fromSec * 1e6 && position <= toSec * 1e6
+          && !saveSharedReplay({ symbol, positionUs: position, fromSec, toSec, state: state as "playing" | "paused" | "ended", speed: Number(speed.value) })) {
+          showError("タブ内に再生位置を保存できませんでした。画面を切り替えると位置を引き継げない可能性があります。");
+        }
+      }
+      render();
+    },
+    persistForNavigation(headUs?: number | null) {
+      if (!active || !hello?.savedRange || !["playing", "paused", "ended"].includes(state)) return;
+      const positionUs = Number.isSafeInteger(headUs) ? headUs! : position;
+      const fromSec = Math.min(hello.savedRange.toSec - 1, Math.floor(positionUs / 1e6));
+      if (!Number.isSafeInteger(positionUs) || positionUs < fromSec * 1e6
+        || positionUs > hello.savedRange.toSec * 1e6) return;
+      if (!saveSharedReplay({ symbol, positionUs, fromSec, toSec: hello.savedRange.toSec,
+        state: state as "playing" | "paused" | "ended", speed: Number(speed.value) })) {
+        showError("タブ内に再生位置を保存できませんでした。画面を切り替えると位置を引き継げない可能性があります。");
+      }
+    },
     error(code: string) {
       const messages: Record<string,string> = { replay_no_saved_data: "指定秒に保存データがありません。別の位置を選んでください。", replay_limit: "同時リプレイはサーバー全体で2つまでです。", replay_loading: "リプレイ読込中です。" };
       if (code.startsWith("replay_")) showError(messages[code] ?? code);

@@ -35,12 +35,17 @@ export class WindowedReplay {
     cursor?(upToUs: number): void; vpTrades?(trades: Trade[]): void };
 
   constructor(first: ReplayView, from: number, to: number, speed: number,
-    read: WindowedReplay["read"], emit: WindowedReplay["emit"], clock: ReplayClock = realClock, precise = false) {
+    read: WindowedReplay["read"], emit: WindowedReplay["emit"], clock: ReplayClock = realClock, precise = false,
+    initialHeadUs = from * 1_000_000) {
     this.from = from; this.to = to; this.speed = speed; this.read = read; this.emit = emit; this.clock = clock;
-    this.anchorUs = this.headUs = from * 1e6;
+    if (!Number.isSafeInteger(initialHeadUs) || initialHeadUs < from * 1e6 || initialHeadUs > to * 1e6) throw Error("invalid_replay_head");
+    this.anchorUs = this.headUs = initialHeadUs;
     this.precise = precise;
-    this.bucketUs = from * 1e6 + 250000;
+    this.bucketUs = (Math.floor(initialHeadUs / 250000) + 1) * 250000;
     this.current = this.window(first, Math.min(from + 300, to));
+    while (this.current.tradeIndex < this.current.trades.length && this.current.trades[this.current.tradeIndex]!.tsUs < initialHeadUs) {
+      this.current.tradeIndex++;
+    }
   }
 
   private window(view: ReplayView, end: number): Window {

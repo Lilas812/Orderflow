@@ -60,8 +60,15 @@ for (const symbol of ["NQ", "GC"] as const) {
   }
   sources.set(symbol, data);
 }
-const log = (event: string, detail?: unknown) => console.info(JSON.stringify({ isolatedReplay: true, noUpstream: true, event, detail }));
+const log = (event: string, detail?: unknown) => {
+  console.info(JSON.stringify({ isolatedReplay: true, noUpstream: true, event, detail }));
+  if (event === "hub_connected" || event === "hub_closed") sampleReplayPeers();
+};
 const hubs = new Map<MarketSymbol, Hub>();
+let maxReplayPeers = 0;
+const sampleReplayPeers = () => {
+  maxReplayPeers = Math.max(maxReplayPeers, [...hubs.values()].reduce((n, h) => n + h.snapshot().connected, 0));
+};
 for (const [symbol, data] of sources) {
   // Received-only partial profile, not a fabricated complete session.
   const vp = new VolumeProfile(end);
@@ -94,11 +101,11 @@ const app = createServer(async (req, res) => {
       for (const peer of ws.clients) metricsSockets.add(peer as unknown as { _socket?: { bytesWritten: number } });
       return [...metricsSockets].reduce((n,s) => n + (s._socket?.bytesWritten ?? 0), 0);
     };
-    if (u.searchParams.has("reset")) { metricsCpu = process.cpuUsage(); metricsAt = performance.now(); eventLoop.reset(); metricsBytes = totalBytes(); for (const k of Object.keys(replayWorkMax)) replayWorkMax[k]=0; }
+    if (u.searchParams.has("reset")) { metricsCpu = process.cpuUsage(); metricsAt = performance.now(); eventLoop.reset(); metricsBytes = totalBytes(); maxReplayPeers = [...hubs.values()].reduce((n, h) => n + h.snapshot().connected, 0); for (const k of Object.keys(replayWorkMax)) replayWorkMax[k]=0; }
     res.setHeader("Content-Type", "application/json"); res.end(JSON.stringify({ from, end, inputs,
       metrics: { elapsedMs: performance.now() - metricsAt, cpu: process.cpuUsage(metricsCpu), eventLoopMaxMs: eventLoop.max / 1e6,
         txWireBytes: totalBytes() - metricsBytes, rss: process.memoryUsage().rss, replayWorkMax },
-      peers: [...hubs].map(([s, h]) => [s, h.snapshot().connected]), pid: process.pid,
+      peers: [...hubs].map(([s, h]) => [s, h.snapshot().connected]), maxReplayPeers, pid: process.pid,
       symbols: [...sources].map(([s, d]) => {
         const last = d.trades.filter(t => t.tsUs >= (end-600)*1e6);
         return { symbol:s, trades:d.trades.length, quantity:d.trades.reduce((n,t)=>n+t.size,0), columns:d.columns.length,
@@ -120,6 +127,7 @@ const app = createServer(async (req, res) => {
 });
 const ws = attachHub(app, hubs);
 ws.on("connection", peer => metricsSockets.add(peer as unknown as { _socket?: { bytesWritten: number } }));
+ws.on("connection", peer => { sampleReplayPeers(); peer.once("close", sampleReplayPeers); });
 // Frozen representative saved book; original second/levels retained, no fabricated trade.
 const seedBooks = () => { for (const [symbol, h] of hubs) {
   const c = sources.get(symbol)!.columns.at(-1);
