@@ -30,3 +30,4 @@
 - [GC目視研究の分離](gc-research-isolation.md) — 製品・原本から分離。由来セッション形成後だけ描画し、月間の記述集計を売買優位性と扱わない。
 - [受信停止対策の承認](receive-stall-exceptions.md) — 履歴fork分離とwatchdog再確認・猶予は正本に優先する限定承認。本番反映の承認ではない。
 - [静かな秒の取得済み解釈](coverage-semantics.md) — 実ライブ板＋先行する板データ時刻によるtick coverage承認。正本未反映の限定例外。
+- [転換点マークの承認](turning-point-labels-decisions.md) — ツールバーの旧制約よりマーク追加指示を優先。仕様書本文は変更しない。
