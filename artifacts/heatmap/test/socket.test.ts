@@ -161,12 +161,36 @@ test("socket URL forwards only replay transport parameters", () => {
     protocol: "https:",
     host: "heatmap.test",
     search: "?mode=replay&from=1793000000&speed=10&tz=ct&debug=1",
-  }), "wss://heatmap.test/api/ws?mode=replay&from=1793000000&speed=10");
+  }), "wss://heatmap.test/api/ws?mode=replay&from=1793000000&speed=10&controls=1");
   assert.equal(buildSocketUrl({
     protocol: "http:",
     host: "heatmap.test",
     search: "?tz=ct&debug=1&from=1",
   }), "ws://heatmap.test/api/ws");
+});
+
+test("controlled replay generations reject stale JSON and binary after seek; return live opens one fresh socket", () => {
+  const cache = new ColumnCache(), fixture = fixtureEnvironment(), heads: number[] = [];
+  const client = new RealtimeClient(cache, {
+    onConnection() {}, onHello() {}, onStatus() {}, onColumns() {}, onLatestBook() {}, onTrades() {},
+    onError(message) { throw Error(message); }, onReplayEnded() {}, onBytesPerMinute() {}, onRangeRequest() {},
+    onReplayHead: h => heads.push(h),
+  }, { protocol:"http:",host:"test",search:"" }, fixture.env);
+  client.start(); client.startReplay(4500,60);
+  const socket = fixture.sockets.at(-1)!; socket.open();
+  const hello = (g:number, from:number) => socket.message(JSON.stringify({type:"hello",symbol:"NQ",tickSize:.25,columnSeconds:1,
+    serverTimeUs:9000e6,mode:"replay",savedRange:{fromSec:100,toSec:9000},replayControlled:true,
+    replayGeneration:g,replayFromSec:from,replayHeadUs:from*1e6}));
+  hello(1,4500); hello(2,4600);
+  socket.message(JSON.stringify({ type:"trades",trades:[trade],replayGeneration:1,replayHeadUs:8000e6 }));
+  const raw = new Uint8Array(makeFrame(1,0,[{tsSec:4500,bids:[[40000,10]],asks:[]}]));
+  const wrapped = new Uint8Array(13+raw.length), v=new DataView(wrapped.buffer);
+  v.setUint8(0,4);v.setUint32(1,1,true);v.setFloat64(5,8000e6,true);wrapped.set(raw,13);
+  socket.message(wrapped); assert.equal(cache.columns.length,0);assert.equal(client.replayHeadUs,4600e6);
+  assert.equal(heads.at(-1),4600e6);
+  client.requestVisible(4500,8000); assert.equal(socket.sent.length,0); // initial range still pending
+  client.returnLive(); assert.equal(fixture.sockets.length,3);assert.equal(client.replayGeneration,null);
+  client.stop();
 });
 
 test("ダミー：複数chunkのrangeDoneを検査し、初回・範囲を定常受信量へ混ぜない", () => {

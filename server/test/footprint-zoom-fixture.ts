@@ -1,9 +1,11 @@
 /** Read-only replay of an existing production copy. NO upstream/cloud/settings writes. */
 import { createServer } from "node:http";
+import { monitorEventLoopDelay } from "node:perf_hooks";
 import * as fs from "node:fs/promises";
 import path from "node:path";
 import { createHash } from "node:crypto";
 import { Hub, attachHub, type Source } from "../src/hub/hub.ts";
+import { WindowedReplay } from "../src/hub/windowed-replay.ts";
 import { columnFileRange, tradeFileRows } from "../src/store/records.ts";
 import { defaults } from "../src/settings/schema.ts";
 import { VolumeProfile } from "../src/vp/state.ts";
@@ -18,6 +20,20 @@ const manifestFile = "data/gpu-heatmap/production-input/manifest.json";
 const manifest = JSON.parse(await fs.readFile(manifestFile, "utf8"));
 const from = manifest.chosen.start, end = from + 3600;
 const sources = new Map<MarketSymbol, { trades: Trade[]; columns: Column[]; coverage: [number, number][] }>();
+const replayClockStart = Date.now();
+const eventLoop = monitorEventLoopDelay({ resolution: 10 }); eventLoop.enable();
+const replayWorkMax: Record<string, number> = {};
+for (const name of ["advance", "window"]) {
+  const proto = WindowedReplay.prototype as unknown as Record<string, (...args: unknown[]) => unknown>, original = proto[name]!;
+  proto[name] = function (...args: unknown[]) {
+    const at = performance.now();
+    try { return original.apply(this,args); }
+    finally { replayWorkMax[name] = Math.max(replayWorkMax[name] ?? 0, performance.now()-at); }
+  };
+}
+let metricsCpu = process.cpuUsage(), metricsAt = performance.now();
+const metricsSockets = new Set<{ _socket?: { bytesWritten: number } }>();
+let metricsBytes = 0;
 const inputs: { file: string; sha256: string }[] = [];
 for (const symbol of ["NQ", "GC"] as const) {
   const prefix = symbol === "NQ" ? "prod/" : "prod/instruments/GC/";
@@ -60,12 +76,36 @@ for (const [symbol, data] of sources) {
       return { coverage: clipRanges(data.coverage, a, b), gaps: subtractRanges([[a, b]], data.coverage).map(([startSec, endSec]) => ({ startSec, endSec, reason: "recorded_coverage_gap" })), noData: [], quality: "recorded_not_guaranteed" };
     },
     status: () => ({ isolatedReplay: true, partialCopy: true, profileInput: { from, end } }),
+    replayVp: async (cursor, alive) => {
+      const profile = new VolumeProfile(cursor);
+      for (const t of data.trades) if (alive() && t.tsUs >= profile.start * 1e6 && t.tsUs < cursor * 1e6) profile.add(t);
+      profile.complete(profile.start);
+      return profile;
+    },
   };
-  hubs.set(symbol, new Hub(source, log, { now: () => end * 1000, later: (f, ms) => setTimeout(f, ms), cancel: id => clearTimeout(id as NodeJS.Timeout) }, symbol));
+  hubs.set(symbol, new Hub(source, log, { now: () => end * 1000 + (process.argv.includes("--moving-clock") ? Date.now() - replayClockStart : 0),
+    later: (f, ms) => setTimeout(f, ms), cancel: id => clearTimeout(id as NodeJS.Timeout) }, symbol));
 }
 const app = createServer(async (req, res) => {
   const u = new URL(req.url!, "http://127.0.0.1");
-  if (u.pathname === "/__replay") { res.setHeader("Content-Type", "application/json"); res.end(JSON.stringify({ from, end, inputs, peers: [...hubs].map(([s, h]) => [s, h.snapshot().connected]), pid: process.pid, symbols: [...sources].map(([s, d]) => ({ symbol: s, trades: d.trades.length, quantity: d.trades.reduce((n, t) => n + t.size, 0), columns: d.columns.length })) })); return; }
+  if (u.pathname === "/__replay") {
+    const totalBytes = () => {
+      // attachHub uses handleUpgrade directly, without emitting wss "connection".
+      for (const peer of ws.clients) metricsSockets.add(peer as unknown as { _socket?: { bytesWritten: number } });
+      return [...metricsSockets].reduce((n,s) => n + (s._socket?.bytesWritten ?? 0), 0);
+    };
+    if (u.searchParams.has("reset")) { metricsCpu = process.cpuUsage(); metricsAt = performance.now(); eventLoop.reset(); metricsBytes = totalBytes(); for (const k of Object.keys(replayWorkMax)) replayWorkMax[k]=0; }
+    res.setHeader("Content-Type", "application/json"); res.end(JSON.stringify({ from, end, inputs,
+      metrics: { elapsedMs: performance.now() - metricsAt, cpu: process.cpuUsage(metricsCpu), eventLoopMaxMs: eventLoop.max / 1e6,
+        txWireBytes: totalBytes() - metricsBytes, rss: process.memoryUsage().rss, replayWorkMax },
+      peers: [...hubs].map(([s, h]) => [s, h.snapshot().connected]), pid: process.pid,
+      symbols: [...sources].map(([s, d]) => {
+        const last = d.trades.filter(t => t.tsUs >= (end-600)*1e6);
+        return { symbol:s, trades:d.trades.length, quantity:d.trades.reduce((n,t)=>n+t.size,0), columns:d.columns.length,
+          last600: { count:last.length, quantity:last.reduce((n,t)=>n+t.size,0), startHasData:d.columns.some(c=>c.tsSec===end-600)||last.some(t=>Math.floor(t.tsUs/1e6)===end-600),
+            hash:createHash("sha256").update(last.map(t=>JSON.stringify(t)).sort().join("\n")).digest("hex") } };
+      }) })); return;
+  }
   if (u.pathname === "/api/settings") { res.setHeader("Content-Type", "application/json"); res.end(JSON.stringify({ version: 4, updatedAt: null, values: defaults })); return; }
   if (req.method !== "GET") { res.writeHead(405); res.end(); return; }
   const file = path.resolve(frontRoot, u.pathname === "/" ? "index.html" : u.pathname.slice(1));
@@ -79,6 +119,7 @@ const app = createServer(async (req, res) => {
   } catch { res.writeHead(404); res.end(); }
 });
 const ws = attachHub(app, hubs);
+ws.on("connection", peer => metricsSockets.add(peer as unknown as { _socket?: { bytesWritten: number } }));
 // Frozen representative saved book; original second/levels retained, no fabricated trade.
 const seedBooks = () => { for (const [symbol, h] of hubs) {
   const c = sources.get(symbol)!.columns.at(-1);
@@ -88,6 +129,7 @@ seedBooks();
 const bookTimer = setInterval(seedBooks, 1000);
 app.listen(port, "127.0.0.1", () => log("replay_ready", { port, pid: process.pid, from, end }));
 process.on("SIGTERM", () => {
+  eventLoop.disable();
   clearInterval(bookTimer);
   for (const h of hubs.values()) h.stop();
   for (const peer of ws.clients) peer.terminate();

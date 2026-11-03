@@ -46,6 +46,8 @@ Agent が更新してよいのは、下の Current Status 節だけ。
 
 ## Current Status
 
+- 2026-11-04：HEATMAPのNQ/GCリプレイ操作UI・制御WSを実装。フロント195件、サーバー全体320件と追加CT境界を含む関連8件、両型検査・本番ビルド合格。保存コピーの60倍600秒で数量・全レコード一致、Canvas背景更新p95はNQ22.1ms/GC15.4ms（DPR1）。所有ブラウザ・WS・fixtureの残存0確認。未公開・既存受信未再起動。詳細docs/REPLAY_UI_REPORT.md。
+
 - 2026-11-04：FOOTPRINTの自動時間足・価格行合算を実装し、縮小時も数字セルを維持。HEATMAP縦上限8,000ティックへ拡張。フロント191・サーバー317試験、両型検査・本番ビルド成功。保存コピーの隔離実画面でNQ/GC、4/20ティック行、400ティック行の低画面、ピンチ・再読込・非表示停止を確認。GPUは検証環境でWebGL2不可のため未確認。Canvas fallbackの絶対負荷は残る。所有ブラウザ・WS・fixture終了確認、未公開・本番無書込。詳細docs/FOOTPRINT_ZOOM_REPORT.md。
 
 - 2026-11-04：coverage/publishのCPU対策を隔離実装。durable hour索引、条件付きpublish、静かなlive秒のdata-time確定、原本再DL照合付きの一度限りのcoverage圧縮、空補完の省略、async_hooks既定OFFを追加。全317試験・両型検査・フロント本番ビルド成功、退避・不変性を強化した関連11試験も成功。15分の偽上流で親CPU平均0.043 cores、loop最大約90ms、200ms以上callback0件、NQ/GC各32,370件61,503枚の保存一致。10/30再集計候補は既存より枚数が少なく非採用、元集計を保全。本番書込・再公開・既存受信再起動なし。詳細server/COVERAGE_PUBLISH_FIX_REPORT.md。

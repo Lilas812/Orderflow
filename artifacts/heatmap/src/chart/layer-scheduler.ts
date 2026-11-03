@@ -25,6 +25,7 @@ export class LayerScheduler {
   constructor(enqueue: (draw: () => void) => void, callbacks: LayerScheduler["callbacks"], latestFirst = false) {
     this.enqueue = enqueue; this.callbacks = callbacks; this.latestFirst = latestFirst;
   }
+  setLatestFirst(value: boolean): void { this.latestFirst = value; }
 
   request(layer: DrawLayer): void {
     this.depth ||= layer === "all" || layer === "heat";

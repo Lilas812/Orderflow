@@ -32,6 +32,7 @@ import { CrosshairOverlay } from "./chart/crosshair.ts";
 import { ACTIVE_SYMBOL, initializeInstrumentUi } from "./instrument.ts";
 import { DailyState } from "./data/daily.ts";
 import { DailyIndicatorRenderer } from "./chart/daily-renderer.ts";
+import { mountReplayControls } from "./replay/controls.ts";
 
 declare global {
   interface Window {
@@ -278,6 +279,7 @@ const currentTrade = new CurrentTradeState();
 const initialQuote = new CurrentTradeState();
 let initialCutoffUs = 0;
 let replayHeadUs: number | null = null;
+let replayUi: ReturnType<typeof mountReplayControls> | undefined;
 let depthDrawCount = 0;
 let overlayDrawCount = 0;
 let displayZone: DisplayZone = "jst";
@@ -336,6 +338,13 @@ let lastTap: { at: number; x: number; y: number } | null = null;
 const tapStarts = new Map<number, { x: number; y: number; at: number }>();
 
 const client = new RealtimeClient(cache, {
+  onReplayHead: head => { replayHeadUs = head; },
+  onReplayState: state => {
+    replayUi?.state(state);
+    connection = state.state === "ended" ? "replay-ended" : state.state === "error" ? "error" : "connected";
+    if (follow) alignFollowToPhysicalPixel();
+    updateStatus(); renderTimeAxis(); scheduleDraw();
+  },
   shareColumn: c => bigFeed.shareColumn(c),
   onConnection: (state, message) => {
     connection = state;
@@ -346,19 +355,24 @@ const client = new RealtimeClient(cache, {
   onHello: (message) => {
     void settingsRecovery.connected();
     hello = message;
+    // At 30/60x, trade batches can occupy every RAF. Do not starve replay depth.
+    // Live retains the existing latest-quote-first policy.
+    drawScheduler.setLatestFirst(message.mode !== "replay");
+    replayUi?.hello(message);
     vpState.reset(); vpLoading.hidden = false;
     currentTrade.reset(); initialQuote.reset();
     latestTradeHeadUs = null; pendingTradeTiming = null;
     dailyState.reset();
-    initialCutoffUs = (message.mode === "replay" ? replayFromSec()! * US_PER_SECOND
+    initialCutoffUs = (message.mode === "replay" ? (message.replayFromSec ?? replayFromSec()!) * US_PER_SECOND
       : Math.floor(message.serverTimeUs / US_PER_SECOND) * US_PER_SECOND) - 1;
     bigFeed.beginInitial(initialCutoffUs);
     replayHeadUs = message.mode === "replay" ? initialCutoffUs + 1 : null;
     lastDataError = "";
+    if (message.replayControlled) { hasHello = false; follow = true; centeredOnData = false; }
     if (!hasHello && message.mode === "replay") viewport = { ...viewport, durationSec: REPLAY_RESET_SEC };
     if (!hasHello && !follow) hasHello = true;
     else if (!hasHello || follow) {
-      const replayFrom = replayFromSec();
+      const replayFrom = message.replayFromSec ?? replayFromSec();
       const endUs = message.mode === "replay" && replayFrom !== null
         ? replayFrom * US_PER_SECOND
         : message.serverTimeUs;
@@ -378,7 +392,7 @@ const client = new RealtimeClient(cache, {
   onColumns: (_columns, _kind, reqId) => {
     bigFeed.accept(_columns, _kind, reqId);
     if (_kind === 1 && !client.initialLoading) drawScheduler.request("big");
-    if (_kind === 1 && replayHeadUs !== null) {
+    if (_kind === 1 && replayHeadUs !== null && !hello?.replayControlled) {
       for (const c of _columns) replayHeadUs = Math.max(replayHeadUs, c.timeUs + US_PER_SECOND);
     }
     receivedColumnRevision += 1;
@@ -424,7 +438,7 @@ const client = new RealtimeClient(cache, {
     if (reqId === 0) initialQuote.accept(trades, initialCutoffUs);
     else if (reqId === null) {
       currentTrade.accept(trades);
-      if (replayHeadUs !== null) for (const t of trades) replayHeadUs = Math.max(replayHeadUs, t.tsUs);
+      if (replayHeadUs !== null && !hello?.replayControlled) for (const t of trades) replayHeadUs = Math.max(replayHeadUs, t.tsUs);
       for (const t of trades) latestTradeHeadUs = Math.max(latestTradeHeadUs ?? 0, t.tsUs);
       if (timing && trades.length) {
         const last = trades.at(-1)!;
@@ -452,6 +466,7 @@ const client = new RealtimeClient(cache, {
     }
   },
   onError: (message) => {
+    replayUi?.error(message);
     lastDataError = message;
     updateStatus();
   },
@@ -502,7 +517,7 @@ function syncRetentionAndRequests(): void {
 }
 
 function alignFollowToPhysicalPixel(): void {
-  const head = Math.max(cache.latestTimeUs ?? 0, latestTradeHeadUs ?? 0);
+  const head = replayHeadUs ?? Math.max(cache.latestTimeUs ?? 0, latestTradeHeadUs ?? 0);
   if (!head) return;
   const width = Math.max(1, Math.round(canvas.clientWidth * backgroundDpr(window.devicePixelRatio)));
   viewport.startUs = followStartUs(head, viewport.durationSec, width);
@@ -1004,6 +1019,10 @@ const settingsUi = mountSettingsUi(document.querySelector<HTMLElement>(".tool-ra
 });
 // The native modal makes the workspace inert; rendering/feed processing continue.
 void settingsUi;
+replayUi = mountReplayControls(required("root").querySelector<HTMLElement>(".workspace")!,
+  document.querySelector<HTMLElement>(".tool-rail")!, canvas, client, () => displayZone,
+  x => Math.floor(xToTimeUs(x, viewport, canvas.clientWidth) / US_PER_SECOND),
+  () => { crosshair.hide(); follow = true; centeredOnData = false; hasHello = false; });
 const tabFields = document.querySelector<HTMLElement>(".su-fields")!;
 const tabTitle = document.createElement("h3");
 tabTitle.className = "su-group"; tabTitle.textContent = "表示（このタブ）"; tabFields.append(tabTitle);
@@ -1038,6 +1057,7 @@ function applySettings(doc: SettingsDocument): void {
   bigOptions = { top: { value: next.values.bigTopPct, invalid: next.invalid.includes("bigTop 無効") },
     minSec: { value: next.values.bigMinSec, invalid: next.invalid.includes("bigMinSec 無効") } };
   displayZone = next.values.timeZone === "America/Chicago" ? "ct" : "jst";
+  replayUi?.refresh();
   settingsWarning = "";
   if (change.heat) { renderer.setScaleOptions(next.values); if (settingsLoaded) drawScheduler.request("heat"); }
   if (change.bubbles && settingsLoaded) drawScheduler.request("trades");

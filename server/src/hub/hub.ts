@@ -4,6 +4,7 @@ import { WebSocketServer } from "ws";
 import { boardColumn, encodeFrame, parseRange, replayParams } from "./frame.ts";
 import { realClock } from "./replay.ts";
 import { WindowedReplay } from "./windowed-replay.ts";
+import { ControlledReplay, reserveReplay, releaseReplay } from "./controlled-replay.ts";
 import type { ReplayClock } from "./replay.ts";
 import type { Column } from "../aggregate/columns.ts";
 import type { Trade, BookSnapshot } from "../types.ts";
@@ -40,6 +41,7 @@ export interface FootprintHistory {
   quality: "recorded_not_guaranteed";
 }
 interface Peer {
+  controlledReplay?: ControlledReplay;
   daily?: boolean; dailyRevision?: number; dailyGeneration?: number;
   footprint: boolean; abort: AbortController;
   connectedAtUs: number; origin: ConnectionOrigin;
@@ -87,6 +89,7 @@ export class Hub {
   private close(p: Peer, code: number, reason: string) {
     if (p.closed) return;
     p.closeReason = reason;
+    p.controlledReplay?.stop(); releaseReplay(p);
     p.closed = true; p.abort.abort(); p.replay?.stop(); p.columns = []; p.trades = []; p.queuedBytes = 0;
     p.socket.close(code, reason);
     // Do not keep a dead/slow peer alive indefinitely waiting for its close handshake.
@@ -168,9 +171,21 @@ export class Hub {
       this.log("hub_closed", { ...this.stage(p), connectedAtUs: p.connectedAtUs,
         closedAtUs: this.clock.now() * 1000, ...p.origin, code: code ?? null, reason: p.closeReason ?? "remote" });
       p.closed = true; p.abort.abort(); p.replay?.stop(); this.peers.delete(p);
+      p.controlledReplay?.stop(); releaseReplay(p);
     });
     socket.on("error", () => { this.log("hub_socket_error", { ...this.stage(p), reason: "socket_error" }); this.close(p, 1011, "socket_error"); });
     socket.on("message", (bytes: Buffer, binary: boolean) => {
+      if (p.controlledReplay) {
+        try {
+          if (binary) throw Error("invalid_replay_control");
+          const value = JSON.parse(bytes.toString());
+          const session = p.controlledReplay;
+          const generation = session.generation;
+          const work = value.op === "range" ? session.range(parseRange(value)) : session.control(value);
+          void work.catch(e => this.json(p, { type: "error", replayGeneration: generation, code: e instanceof Error ? e.message : "replay_control_failed" }));
+        } catch { this.json(p, { type: "error", replayGeneration: p.controlledReplay.generation, code: "invalid_replay_control" }); }
+        return;
+      }
       p.jobs = p.jobs.then(async () => {
         if (p.closed) return;
         let reqId: number | null = null;
@@ -207,6 +222,17 @@ export class Hub {
           this.close(p, 1008, "invalid_replay_parameters"); return;
         }
         p.mode = params ? "replay" : "live";
+        if (params && !reserveReplay(p)) {
+          this.json(p, { type: "error", code: "replay_limit", message: "同時リプレイはサーバー全体で2つまでです" });
+          this.close(p, 1013, "replay_limit"); return;
+        }
+        if (params && url.searchParams.get("controls") === "1") {
+          p.initializing = false; p.columns = []; p.trades = [];
+          p.controlledReplay = new ControlledReplay(this.source, this.symbol, this.clock,
+            data => this.send(p, data), () => !p.closed && !this.stopped, saved!, !!p.daily, () => p.socket.bufferedAmount);
+          await p.controlledReplay.initialize(params.fromSec, params.speed, url.searchParams.get("paused") === "1");
+          return;
+        }
         this.json(p, { type: "hello", symbol: this.symbol, tickSize: INSTRUMENTS[this.symbol].tickSize, columnSeconds: 1,
           serverTimeUs: this.clock.now() * 1000, mode: p.mode, savedRange: saved });
         const to = params?.fromSec ?? Math.floor(this.clock.now() / 1000);
@@ -351,6 +377,7 @@ export class Hub {
   flush() {
     for (const p of this.peers) {
       if (!this.healthy(p)) continue;
+      if (p.controlledReplay) continue;
       // Live trades must not wait for the initial disk/cloud history snapshot.
       // The client's range transaction merges concurrent delivery identities.
       if (p.mode === "live" && p.trades.length) {

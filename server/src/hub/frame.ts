@@ -37,7 +37,7 @@ export function replayParams(url: URL, saved: { fromSec: number; toSec: number }
     return null;
   }
   const from = url.searchParams.get("from"), speed = url.searchParams.get("speed");
-  if (mode !== "replay" || !from || !/^\d+$/.test(from) || !["1", "2", "5", "10"].includes(speed ?? "")
+  if (mode !== "replay" || !from || !/^\d+$/.test(from) || !["1", "2", "5", "10", "30", "60"].includes(speed ?? "")
     || !saved || !Number.isSafeInteger(Number(from)) || Number(from) < saved.fromSec || Number(from) >= saved.toSec) {
     throw Error("invalid_replay_parameters");
   }

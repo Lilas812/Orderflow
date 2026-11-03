@@ -1,0 +1,15 @@
+.replay-tool{width:44px;height:44px;border:0;background:#000;color:#d9d9d9;cursor:pointer;display:grid;place-items:center}
+.replay-tool:hover{color:#fff;background:#211530}
+.replay-bar[hidden]{display:none}
+.replay-bar{background:#201520;color:#ffd0a4;border-top:1px solid #804a52;padding:8px 12px;display:flex;flex-wrap:wrap;align-items:center;gap:8px;font:12px ui-monospace,monospace;z-index:20;flex:none;max-height:34vh;overflow:auto}
+.replay-bar strong{font-size:16px;color:#ffbe81;flex:1 1 280px}
+.replay-bar button,.replay-bar input,.replay-bar select{font:inherit;background:#151019;color:#eee;border:1px solid #6a4867;border-radius:3px;min-height:36px;padding:4px 8px;color-scheme:dark}
+.replay-bar button{cursor:pointer}.replay-bar button:disabled{opacity:.4;cursor:default}
+.replay-bar form,.replay-bar label{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.replay-bar [role=alert]{color:#ff8c9e;flex-basis:100%}
+.replay-pick-line{position:absolute;top:0;bottom:0;width:1px;background:#ffbf80;z-index:12;pointer-events:none}
+.replay-pick-line[hidden]{display:none}
+.replay-pick-line span{position:absolute;top:28px;left:4px;background:#35202a;color:#fff;font:12px monospace;white-space:nowrap;padding:5px}
+.replay-selecting{cursor:crosshair}
+.workspace.replay-open .board{min-height:180px}
+@media(max-width:850px){.replay-bar button,.replay-bar select,.replay-bar input{min-height:44px}.replay-bar{padding:6px}.replay-bar strong{font-size:14px}}

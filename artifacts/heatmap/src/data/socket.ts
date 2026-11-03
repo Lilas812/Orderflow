@@ -9,6 +9,7 @@ import { INSTRUMENTS, type MarketSymbol } from "../../../../lib/market/instrumen
 export type ConnectionState = "connecting" | "connected" | "reconnecting" | "error" | "replay-ended";
 
 export interface HelloMessage {
+  replayControlled?: boolean; replayGeneration?: number; replayFromSec?: number; replayHeadUs?: number;
   type: "hello";
   symbol: string;
   tickSize: number;
@@ -51,6 +52,8 @@ export interface SocketEnvironment {
 }
 
 export interface SocketListeners {
+  onReplayState?(state: Record<string, unknown>): void;
+  onReplayHead?(headUs: number): void;
   shareColumn?(column: HeatColumn): HeatColumn;
   onConnection(state: ConnectionState, message?: string): void;
   onHello(hello: HelloMessage): void;
@@ -83,10 +86,11 @@ export function buildSocketUrl(locationLike: Pick<Location, "protocol" | "host" 
   if (daily && params.get("daily") !== "0") url.searchParams.set("daily", "1");
   if (params.get("mode") === "replay") {
     url.searchParams.set("mode", "replay");
-    for (const key of ["from", "speed"]) {
+    for (const key of ["from", "speed", "controls", "paused"]) {
       const value = params.get(key);
       if (value !== null) url.searchParams.set(key, value);
     }
+    url.searchParams.set("controls", params.get("controls") ?? "1");
   }
   return url.toString();
 }
@@ -96,7 +100,9 @@ export class RealtimeClient {
   private verifiedHello = false;
   private readonly cache: ColumnCache;
   private readonly listeners: SocketListeners;
-  private readonly locationLike: Pick<Location, "protocol" | "host" | "search">;
+  private locationLike: Pick<Location, "protocol" | "host" | "search">;
+  replayGeneration: number | null = null;
+  replayHeadUs: number | null = null;
   private readonly env: SocketEnvironment;
   private socket: SocketLike | null = null;
   private reconnectTimer: number | null = null;
@@ -157,8 +163,35 @@ export class RealtimeClient {
     if (socket && socket.readyState < 2) socket.close(1000, "client stopped");
     this.clearPendingRanges();
   }
+  startReplay(fromSec: number, speed: number): void {
+    const params = new URLSearchParams(this.locationLike.search);
+    params.set("mode", "replay"); params.set("from", String(fromSec)); params.set("speed", String(speed));
+    params.set("controls", "1"); params.set("paused", "1");
+    this.switchSearch(params.toString());
+  }
+  returnLive(): void {
+    const params = new URLSearchParams(this.locationLike.search);
+    for (const k of ["mode", "from", "speed", "controls", "paused"]) params.delete(k);
+    this.switchSearch(params.toString());
+  }
+  private switchSearch(search: string) {
+    this.stop(); this.ended = false; this.replayGeneration = null; this.replayHeadUs = null; this.retryVisible = null;
+    this.cache.reset(); this.locationLike = { protocol: this.locationLike.protocol, host: this.locationLike.host, search: "?" + search };
+    this.start();
+  }
+  replayControl(action: string, value?: number) {
+    if (this.socket?.readyState !== 1 || this.replayGeneration === null) return false;
+    this.socket.send(JSON.stringify({ op: "replay", action,
+      ...(action === "speed" ? { speed: value } : action === "step" ? { seconds: value } : action === "seek" ? { fromSec: value } : {}) }));
+    return true;
+  }
+  private replayHead(head: unknown) {
+    if (!Number.isSafeInteger(head)) return;
+    this.replayHeadUs = head as number; this.listeners.onReplayHead?.(head as number);
+  }
 
   requestVisible(fromSec: number, toSec: number): void {
+    if (this.replayGeneration !== null && this.replayHeadUs !== null) toSec = Math.min(toSec, Math.floor(this.replayHeadUs / US_PER_SECOND));
     if (fromSec >= toSec) return;
     this.retryVisible = { fromSec, toSec };
     for (const queued of this.queue) this.cache.removeCoverage(queued.fromSec, queued.toSec);
@@ -243,6 +276,12 @@ export class RealtimeClient {
       else if (data instanceof Blob) bytes = new Uint8Array(await data.arrayBuffer());
       else throw new Error("unsupported_websocket_payload");
       if (this.stopped || this.socket !== socket || !this.verifiedHello) return;
+      if (bytes[0] === 4) {
+        if (bytes.byteLength < 22) throw Error("invalid_replay_frame");
+        const v = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+        if (v.getUint32(1, true) !== this.replayGeneration) return;
+        this.replayHead(v.getFloat64(5, true)); bytes = bytes.subarray(13);
+      } else if (this.replayGeneration !== null) return;
       const frame = decodeFrame(bytes);
       this.recordBytes(bytes.byteLength, this.initialLoading ? "initial" : frame.kind === 2 ? "range" : "steady");
       if (frame.kind === 1) {
@@ -265,8 +304,15 @@ export class RealtimeClient {
   }
 
   private handleJson(message: Record<string, unknown>): void {
+    if (message.type === "hello") {
+      const g = message.replayGeneration;
+      if (typeof g === "number" && this.replayGeneration !== null && g < this.replayGeneration) return;
+    } else if (this.replayGeneration !== null && message.replayGeneration !== this.replayGeneration) return;
+    if (message.type === "hello") this.replayGeneration = typeof message.replayGeneration === "number" ? message.replayGeneration : null;
+    if (this.replayGeneration !== null && message.replayGeneration === this.replayGeneration) this.replayHead(message.replayHeadUs);
+    if (message.type === "replayState") { this.listeners.onReplayState?.(message); return; }
     if (message.type === "sessionIndicators") { this.listeners.onDaily?.(message); return; }
-    if (message.type !== "hello" && !this.verifiedHello) return;
+    if (message.type !== "hello" && message.type !== "error" && !this.verifiedHello) return;
     if (message.type === "vp" || message.type === "vpUpdate") {
       this.listeners.onVp?.(message); return;
     }
@@ -279,9 +325,10 @@ export class RealtimeClient {
         return;
       }
       this.verifiedHello = true;
-      const replayFrom = this.replayFromSec();
+      const replayFrom = hello.replayFromSec ?? this.replayFromSec();
       const endSec = hello.mode === "replay" && replayFrom !== null ? replayFrom : Math.floor(hello.serverTimeUs / US_PER_SECOND);
       this.clearPendingRanges();
+      if (this.replayGeneration !== null) this.retryVisible = null;
       this.cache.reset();
       this.historyFreshness.reset();
       this.mode = hello.mode;
@@ -349,6 +396,7 @@ export class RealtimeClient {
     }
     if (message.type === "error") {
       const code = typeof message.code === "string" ? message.code : "server_error";
+      if (code === "replay_limit") this.ended = true;
       this.listeners.onError(code);
       if (typeof message.reqId === "number" && this.pending?.reqId === message.reqId) {
         this.cache.removeCoverage(this.pending.fromSec, this.pending.toSec);
