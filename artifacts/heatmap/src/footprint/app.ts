@@ -7,6 +7,7 @@ import { viewSwitchHtml } from "../long-vp/nav.ts";
 import { loadView, saveView } from "../view-memory.ts";
 import { FootprintClient } from "./client.ts";
 import { mountReplayControls } from "../replay/controls.ts";
+import { mountLabelsUi } from "../labels/ui.ts";
 import { loadSharedReplay, replayStart } from "../replay/shared.ts";
 import { FootprintStore, TIMEFRAMES, contractKey, MAX_TRADES, RETAIN_SEC, type FootprintBar, type SecondState, type Timeframe, type DisplayTimeframe } from "./model.ts";
 import { groupPriceRows, type GroupedRows } from "./rows.ts";
@@ -107,6 +108,7 @@ export function mountFootprint(root: HTMLElement): () => void {
   let cursorPt: { x: number; y: number } | null = null;
 
   let replayUi: ReturnType<typeof mountReplayControls> | undefined;
+  let labelsUi: ReturnType<typeof mountLabelsUi> | undefined;
   const initialReplay = loadSharedReplay(ACTIVE_SYMBOL);
   const client = new FootprintClient(ACTIVE_SYMBOL, store, {
     onData: () => { dataDirty = true; },
@@ -202,6 +204,7 @@ export function mountFootprint(root: HTMLElement): () => void {
     timings.push(lastDraw - t0); if (timings.length > 120) timings.shift();
     updateChrome();
     requestCursor();
+    labelsUi?.render();
   }
 
   function drawStateBands(L: Layout, starts: number[], now: number) {
@@ -550,6 +553,25 @@ export function mountFootprint(root: HTMLElement): () => void {
   replayUi = mountReplayControls(root.querySelector<HTMLElement>(".workspace")!,
     root.querySelector<HTMLElement>(".fp-rail")!, canvas, client, () => zone,
     x => Math.floor(xToSec(x, view, tf, layout().plotW)), resetView, ACTIVE_SYMBOL);
+  labelsUi = mountLabelsUi({
+    symbol: ACTIVE_SYMBOL, screen: "footprint", rail: root.querySelector<HTMLElement>(".fp-rail")!,
+    workspace: root.querySelector<HTMLElement>(".workspace")!, canvas,
+    point: (x, y) => {
+      const L = layout(), reference = client.replayPositionUs ?? store.latest?.tsUs ?? 0;
+      const tsSec = Math.floor(xToSec(x, view, tf, L.plotW));
+      if (x < 0 || y < 0 || x >= L.plotW || y >= L.plotH || !reference || tsSec * 1e6 > reference) return null;
+      return { tsSec, priceTicks: Math.round(yToPrice(y, view, L.plotH)) };
+    },
+    project: label => {
+      const L = layout(), reference = client.replayPositionUs ?? store.latest?.tsUs ?? 0;
+      if (label.tsSec * 1e6 > reference) return null;
+      const x = barLeft(label.tsSec, view, tf, L.plotW), y = priceToY(label.priceTicks, view, L.plotH);
+      return x >= 0 && x < L.plotW && y >= 0 && y < L.plotH ? { x, y } : null;
+    },
+    context: () => ({ referenceUs: client.replayPositionUs ?? store.latest?.tsUs ?? 0,
+      replay: client.isReplay, follow: view.follow }),
+    approach: second => store.approachBefore(second * 1e6, activeContract()),
+  });
   if (initialReplay && new URLSearchParams(location.search).get("mode") !== "replay") {
     const start = replayStart(initialReplay);
     client.startReplay(start.fromSec, start.speed, start.paused, start.headUs);
@@ -562,6 +584,7 @@ export function mountFootprint(root: HTMLElement): () => void {
     saveView("footprint", ACTIVE_SYMBOL, view);
     if (frame) cancelAnimationFrame(frame);
     if (cursorFrame) cancelAnimationFrame(cursorFrame);
+    labelsUi?.destroy();
     replayUi?.persistForNavigation(client.replayPositionUs);
     window.clearInterval(ticker); resize.disconnect(); client.stop();
     document.removeEventListener("visibilitychange", onVisibility);

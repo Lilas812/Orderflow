@@ -1,0 +1,215 @@
+{
+  "isolated": true,
+  "capturedAt": "2026-11-03T21:26:12.272Z",
+  "fixturePid": 2381,
+  "inputFrom": 1793295720,
+  "inputEnd": 1793299320,
+  "exportFrom": 1793232000,
+  "exportTo": 1793318400,
+  "cancellation": {
+    "cancelled": true,
+    "ownTempRemaining": []
+  },
+  "results": [
+    {
+      "symbol": "NQ",
+      "elapsedMs": 3130.218144,
+      "zipBytes": 35353,
+      "zipSha256": "ea88b1bfa1937a0412ee62d9f705d0a6354a78210adf7007a93c2b7155f50908",
+      "cpuUs": {
+        "user": 341901,
+        "system": 97515
+      },
+      "eventLoopMaxMs": 11.919359,
+      "rssBefore": 518668288,
+      "rssAfter": 520429568,
+      "parentCore": 0.14037871476857686,
+      "childFinalRss": 205406208,
+      "workerPid": 5493,
+      "priority": 19,
+      "wsMessages": 0,
+      "wsBytes": 0,
+      "peers": [
+        [
+          "NQ",
+          1
+        ],
+        [
+          "GC",
+          0
+        ]
+      ],
+      "counts": {
+        "mark": 5,
+        "random": 0,
+        "nearmiss": 0
+      },
+      "missingControls": {
+        "184e5116-a87e-49c8-a7fa-f5cef277fc25": {
+          "random": 0,
+          "nearmiss": 0,
+          "randomReason": "insufficient_other_sessions_same_bin_quintile",
+          "nearmissReason": "insufficient_complete_nonoverlapping_candidates",
+          "rv": null,
+          "threshold": null,
+          "bin": 26,
+          "day": 1793224800,
+          "contract": "UNKNOWN"
+        },
+        "c72af075-c0fb-4f91-9a7c-b3cfeb846079": {
+          "random": 0,
+          "nearmiss": 0,
+          "randomReason": "insufficient_other_sessions_same_bin_quintile",
+          "nearmissReason": "insufficient_complete_nonoverlapping_candidates",
+          "rv": null,
+          "threshold": null,
+          "bin": 26,
+          "day": 1793224800,
+          "contract": "UNKNOWN"
+        },
+        "95d741bb-3eda-4390-8c8b-a873fd8b9df1": {
+          "random": 0,
+          "nearmiss": 0,
+          "randomReason": "insufficient_other_sessions_same_bin_quintile",
+          "nearmissReason": "insufficient_complete_nonoverlapping_candidates",
+          "rv": null,
+          "threshold": null,
+          "bin": 26,
+          "day": 1793224800,
+          "contract": "UNKNOWN"
+        },
+        "6b8aa339-1419-4869-88a7-f67b5a2eb910": {
+          "random": 0,
+          "nearmiss": 0,
+          "randomReason": "insufficient_other_sessions_same_bin_quintile",
+          "nearmissReason": "insufficient_complete_nonoverlapping_candidates",
+          "rv": null,
+          "threshold": null,
+          "bin": 26,
+          "day": 1793224800,
+          "contract": "UNKNOWN"
+        },
+        "92a66de7-419c-409e-84b2-f1552e7f1d85": {
+          "random": 0,
+          "nearmiss": 0,
+          "randomReason": "insufficient_other_sessions_same_bin_quintile",
+          "nearmissReason": "insufficient_complete_nonoverlapping_candidates",
+          "rv": null,
+          "threshold": null,
+          "bin": 26,
+          "day": 1793224800,
+          "contract": "UNKNOWN"
+        }
+      },
+      "zipChecked": "Archive:  docs/evidence/turning-point-labels/NQ.zip\n    testing: events.csv               OK\n    testing: columns.md               OK\n    testing: summary.json             OK\nNo errors detected in compressed data of docs/evidence/turning-point-labels/NQ.zip."
+    },
+    {
+      "symbol": "GC",
+      "elapsedMs": 1190.9328179999993,
+      "zipBytes": 32005,
+      "zipSha256": "5f86aa3f3b04f2b9f9b29ba2c0d414f47ff484ae03d3c43f765bb755aa3192d6",
+      "cpuUs": {
+        "user": 122077,
+        "system": 80491
+      },
+      "eventLoopMaxMs": 11.149311,
+      "rssBefore": 521216000,
+      "rssAfter": 520286208,
+      "parentCore": 0.17009187834808673,
+      "childFinalRss": 279011328,
+      "workerPid": 5493,
+      "priority": 19,
+      "wsMessages": 0,
+      "wsBytes": 0,
+      "peers": [
+        [
+          "NQ",
+          1
+        ],
+        [
+          "GC",
+          0
+        ]
+      ],
+      "counts": {
+        "mark": 5,
+        "random": 0,
+        "nearmiss": 0
+      },
+      "missingControls": {
+        "666d0a86-3ec7-469b-bb78-5714813b4637": {
+          "random": 0,
+          "nearmiss": 0,
+          "randomReason": "insufficient_other_sessions_same_bin_quintile",
+          "nearmissReason": "insufficient_complete_nonoverlapping_candidates",
+          "rv": null,
+          "threshold": null,
+          "bin": 26,
+          "day": 1793224800,
+          "contract": "GCZ6"
+        },
+        "d148542e-7060-4716-8496-e46329fef713": {
+          "random": 0,
+          "nearmiss": 0,
+          "randomReason": "insufficient_other_sessions_same_bin_quintile",
+          "nearmissReason": "insufficient_complete_nonoverlapping_candidates",
+          "rv": null,
+          "threshold": null,
+          "bin": 26,
+          "day": 1793224800,
+          "contract": "GCZ6"
+        },
+        "e35ca235-a20e-418b-8aac-c7ebe3ebc139": {
+          "random": 0,
+          "nearmiss": 0,
+          "randomReason": "insufficient_other_sessions_same_bin_quintile",
+          "nearmissReason": "insufficient_complete_nonoverlapping_candidates",
+          "rv": null,
+          "threshold": null,
+          "bin": 26,
+          "day": 1793224800,
+          "contract": "GCZ6"
+        },
+        "b004b9bc-8cc1-4a04-8471-d3873740e8d6": {
+          "random": 0,
+          "nearmiss": 0,
+          "randomReason": "insufficient_other_sessions_same_bin_quintile",
+          "nearmissReason": "insufficient_complete_nonoverlapping_candidates",
+          "rv": null,
+          "threshold": null,
+          "bin": 26,
+          "day": 1793224800,
+          "contract": "GCZ6"
+        },
+        "6f3a938e-bf4a-4da8-b2d8-cd164020b6cf": {
+          "random": 0,
+          "nearmiss": 0,
+          "randomReason": "insufficient_other_sessions_same_bin_quintile",
+          "nearmissReason": "insufficient_complete_nonoverlapping_candidates",
+          "rv": null,
+          "threshold": null,
+          "bin": 26,
+          "day": 1793224800,
+          "contract": "GCZ6"
+        }
+      },
+      "zipChecked": "Archive:  docs/evidence/turning-point-labels/GC.zip\n    testing: events.csv               OK\n    testing: columns.md               OK\n    testing: summary.json             OK\nNo errors detected in compressed data of docs/evidence/turning-point-labels/GC.zip."
+    }
+  ],
+  "cleanup": {
+    "wsCloseCode": 1000,
+    "peers": [
+      [
+        "NQ",
+        0
+      ],
+      [
+        "GC",
+        0
+      ]
+    ]
+  },
+  "noRealCloud": true,
+  "noUpstream": true,
+  "originalFilesChecked": 36
+}

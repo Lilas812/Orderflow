@@ -1,0 +1,59 @@
+{
+  "fixture": {
+    "url": "http://127.0.0.1:18886/",
+    "pid": 2381,
+    "isolated": true,
+    "noRealCloud": true,
+    "noUpstream": true,
+    "replayRange": {
+      "from": 1793295720,
+      "end": 1793299320,
+      "utc": "2026-10-29T17:42:00Z through 2026-10-29T18:42:00Z"
+    }
+  },
+  "labels": {
+    "NQ": {
+      "finalCount": 5,
+      "generation": "8",
+      "kinds": {"top": 2, "bottom": 2, "failed": 1},
+      "screens": {"heatmap": 3, "footprint": 2},
+      "editedNote": "NQ heatmap edit: failed bottom intent",
+      "temporaryMark": {"note": "TEMP delete verification", "createdViaUI": true, "deletedViaUI": true, "confirmationAccepted": true, "absentAtFinalRead": true}
+    },
+    "GC": {
+      "finalCount": 5,
+      "generation": "7",
+      "kinds": {"top": 2, "bottom": 2, "failed": 1},
+      "screens": {"heatmap": 0, "footprint": 5},
+      "editedNote": "GC user edit: preserve across CAS conflict"
+    }
+  },
+  "checks": {
+    "uiMarking": "Five stored marks per symbol created from chart clicks; all marks within the fixture's actual replay window.",
+    "sharedRead": "NQ marks remained visible/readable on HEATMAP after cross-screen navigation and reload; GC edit dialog reopened and reloaded saved data.",
+    "casConflict": {"externalFixturePut": 200, "generationBefore": "5", "generationAfterExternalPut": "6", "uiConflictAlert": true, "typedUserTextPreserved": true, "explicitRetry": true, "finalGeneration": "7", "finalCount": 5},
+    "readFailure": {"injectionPost": 200, "failRead": true, "getFailures": 503, "uiAlert": "読込に失敗しました。", "saveDeleteMarkDisabled": true, "existingMarksRetained": true, "restorePost": 200, "failReadRestored": false, "successfulReloadStatus": "再読込しました：このマークは保存済みです。"},
+    "futureReplaySuppression": {"visibleTargetsAt0325": 5, "visibleTargetsAt0320": 1, "laterLabelsSuppressed": true, "loadingRangeCaveat": true},
+    "export": {"uiStatus": "書き出しました。", "symbol": "NQ", "fromUtc": "2026-10-29", "toUtcInclusive": "2026-10-29", "download": "labels-NQ-2026-10-29_2026-10-29.zip", "downloadFailure": null, "savedAt": "/tmp/turning-point-labels-NQ-2026-10-29.zip", "contentsInspected": false},
+    "gcHeatmapLimitation": "The GC HEATMAP route showed Loading 1 range(s)/取り込み中 with no usable depth trace in the copied range; no GC HEATMAP label was fabricated. All five GC labels were made on the populated GC FOOTPRINT screen, which displayed recorded_coverage_gap / recorded_not_guaranteed."
+  },
+  "consoleAndHarness": {
+    "expectedReadFailure503ResourceErrors": 2,
+    "otherAppConsoleErrorsObserved": 0,
+    "notes": ["A duplicate Japanese-label locator was corrected to the unique instrument-select test id.", "An initial evidence-browser replay jump lacked a selected start and timed out; that helper browser closed in finally. Final PNGs were captured successfully."]
+  },
+  "screenshots": [
+    "nq-heatmap-five-labels.png",
+    "gc-footprint-five-labels.png"
+  ],
+  "cleanup": {
+    "playwrightBrowserPid": 3351,
+    "contextClosed": true,
+    "browserDisconnected": true,
+    "termAfterBrowserCloseRequired": true,
+    "pidExited": true,
+    "helperBrowserPidsExited": [6466, 6624],
+    "fixturePeersAfterCleanup": [["NQ", 0], ["GC", 0]],
+    "fixtureWorkflowRestarted": false
+  }
+}

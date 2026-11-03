@@ -1,0 +1,719 @@
+{
+  "version": 1,
+  "symbol": "GC",
+  "period": {
+    "fromSec": 1793232000,
+    "toSec": 1793318400,
+    "halfOpen": true
+  },
+  "counts": {
+    "mark": 5,
+    "random": 0,
+    "nearmiss": 0
+  },
+  "byKind": {
+    "bottom": 2,
+    "top": 2,
+    "failed": 1
+  },
+  "byViewMode": {
+    "hindsight": 5
+  },
+  "bySymbol": {
+    "GC": 5
+  },
+  "missing": {
+    "rv_5m": 5,
+    "rv_30m": 5,
+    "range_30m": 5,
+    "direction_30m": 5,
+    "distance_session_high": 5,
+    "distance_session_low": 5,
+    "distance_previous_high": 5,
+    "distance_previous_low": 5,
+    "distance_poc": 5,
+    "distance_vah": 5,
+    "distance_val": 5,
+    "buy_30s": 5,
+    "sell_30s": 5,
+    "delta_30s": 5,
+    "buy_60s": 5,
+    "sell_60s": 5,
+    "delta_60s": 5,
+    "buy_5m": 5,
+    "sell_5m": 5,
+    "delta_5m": 5,
+    "cvd_slope_10m": 5,
+    "cvd_divergence": 5,
+    "count_z_60s": 5,
+    "max_size_5m": 5,
+    "sweep_seconds_5m": 5,
+    "absorption_60s": 5,
+    "estimated_pull_60s": 5,
+    "move_1m": 5,
+    "move_5m": 5,
+    "move_15m": 5,
+    "favorable_15m": 5,
+    "adverse_15m": 5,
+    "crossed_15m": 5,
+    "bid10_change_60s": 2,
+    "ask10_change_60s": 2,
+    "near_change_60s": 2,
+    "imbalance_1": 1,
+    "imbalance_5": 1,
+    "imbalance_10": 1,
+    "near_size": 1
+  },
+  "candidateCount": 3770,
+  "controls": {
+    "666d0a86-3ec7-469b-bb78-5714813b4637": {
+      "random": 0,
+      "nearmiss": 0,
+      "randomReason": "insufficient_other_sessions_same_bin_quintile",
+      "nearmissReason": "insufficient_complete_nonoverlapping_candidates",
+      "rv": null,
+      "threshold": null,
+      "bin": 26,
+      "day": 1793224800,
+      "contract": "GCZ6"
+    },
+    "d148542e-7060-4716-8496-e46329fef713": {
+      "random": 0,
+      "nearmiss": 0,
+      "randomReason": "insufficient_other_sessions_same_bin_quintile",
+      "nearmissReason": "insufficient_complete_nonoverlapping_candidates",
+      "rv": null,
+      "threshold": null,
+      "bin": 26,
+      "day": 1793224800,
+      "contract": "GCZ6"
+    },
+    "e35ca235-a20e-418b-8aac-c7ebe3ebc139": {
+      "random": 0,
+      "nearmiss": 0,
+      "randomReason": "insufficient_other_sessions_same_bin_quintile",
+      "nearmissReason": "insufficient_complete_nonoverlapping_candidates",
+      "rv": null,
+      "threshold": null,
+      "bin": 26,
+      "day": 1793224800,
+      "contract": "GCZ6"
+    },
+    "b004b9bc-8cc1-4a04-8471-d3873740e8d6": {
+      "random": 0,
+      "nearmiss": 0,
+      "randomReason": "insufficient_other_sessions_same_bin_quintile",
+      "nearmissReason": "insufficient_complete_nonoverlapping_candidates",
+      "rv": null,
+      "threshold": null,
+      "bin": 26,
+      "day": 1793224800,
+      "contract": "GCZ6"
+    },
+    "6f3a938e-bf4a-4da8-b2d8-cd164020b6cf": {
+      "random": 0,
+      "nearmiss": 0,
+      "randomReason": "insufficient_other_sessions_same_bin_quintile",
+      "nearmissReason": "insufficient_complete_nonoverlapping_candidates",
+      "rv": null,
+      "threshold": null,
+      "bin": 26,
+      "day": 1793224800,
+      "contract": "GCZ6"
+    }
+  },
+  "volatilityQuintileCuts": [
+    [
+      null,
+      null,
+      null,
+      null
+    ],
+    [
+      null,
+      null,
+      null,
+      null
+    ],
+    [
+      null,
+      null,
+      null,
+      null
+    ],
+    [
+      null,
+      null,
+      null,
+      null
+    ],
+    [
+      null,
+      null,
+      null,
+      null
+    ],
+    [
+      null,
+      null,
+      null,
+      null
+    ],
+    [
+      null,
+      null,
+      null,
+      null
+    ],
+    [
+      null,
+      null,
+      null,
+      null
+    ],
+    [
+      null,
+      null,
+      null,
+      null
+    ],
+    [
+      null,
+      null,
+      null,
+      null
+    ],
+    [
+      null,
+      null,
+      null,
+      null
+    ],
+    [
+      null,
+      null,
+      null,
+      null
+    ],
+    [
+      null,
+      null,
+      null,
+      null
+    ],
+    [
+      null,
+      null,
+      null,
+      null
+    ],
+    [
+      null,
+      null,
+      null,
+      null
+    ],
+    [
+      null,
+      null,
+      null,
+      null
+    ],
+    [
+      null,
+      null,
+      null,
+      null
+    ],
+    [
+      null,
+      null,
+      null,
+      null
+    ],
+    [
+      null,
+      null,
+      null,
+      null
+    ],
+    [
+      null,
+      null,
+      null,
+      null
+    ],
+    [
+      null,
+      null,
+      null,
+      null
+    ],
+    [
+      81.81075723888638,
+      82.14012417813842,
+      83.07827634225448,
+      83.7973746605465
+    ],
+    [
+      76.5702292016943,
+      78.06407624509497,
+      78.66384175718855,
+      79.78721702127478
+    ],
+    [
+      60.597029630172464,
+      63.48228099241551,
+      72.2357252334328,
+      76.79192665899195
+    ],
+    [
+      59.388551085204966,
+      62.88083968904996,
+      64.22616289332565,
+      65.40642170307133
+    ],
+    [
+      65.29931086925804,
+      65.81033353509159,
+      66.71581521648372,
+      67.27555276621665
+    ],
+    [
+      null,
+      null,
+      null,
+      null
+    ],
+    [
+      null,
+      null,
+      null,
+      null
+    ],
+    [
+      null,
+      null,
+      null,
+      null
+    ],
+    [
+      null,
+      null,
+      null,
+      null
+    ],
+    [
+      null,
+      null,
+      null,
+      null
+    ],
+    [
+      null,
+      null,
+      null,
+      null
+    ],
+    [
+      null,
+      null,
+      null,
+      null
+    ],
+    [
+      null,
+      null,
+      null,
+      null
+    ],
+    [
+      null,
+      null,
+      null,
+      null
+    ],
+    [
+      null,
+      null,
+      null,
+      null
+    ],
+    [
+      null,
+      null,
+      null,
+      null
+    ],
+    [
+      null,
+      null,
+      null,
+      null
+    ],
+    [
+      null,
+      null,
+      null,
+      null
+    ],
+    [
+      null,
+      null,
+      null,
+      null
+    ],
+    [
+      null,
+      null,
+      null,
+      null
+    ],
+    [
+      null,
+      null,
+      null,
+      null
+    ],
+    [
+      null,
+      null,
+      null,
+      null
+    ],
+    [
+      null,
+      null,
+      null,
+      null
+    ],
+    [
+      null,
+      null,
+      null,
+      null
+    ],
+    [
+      null,
+      null,
+      null,
+      null
+    ],
+    [
+      null,
+      null,
+      null,
+      null
+    ],
+    [
+      null,
+      null,
+      null,
+      null
+    ]
+  ],
+  "selection": "FNV1a-derived deterministic score from mark ID and candidate second; within requested UTC range; distinct sessions for random; nonoverlapping 15m near-misses",
+  "inputs": [
+    {
+      "hour": 1793221200,
+      "book": null,
+      "tick": null,
+      "coverage": "643d5437104296e21d906ecb15b2c96ad278f20cfc4af53b12bb6069bd853726"
+    },
+    {
+      "hour": 1793224800,
+      "book": null,
+      "tick": null,
+      "coverage": "643d5437104296e21d906ecb15b2c96ad278f20cfc4af53b12bb6069bd853726"
+    },
+    {
+      "hour": 1793228400,
+      "book": null,
+      "tick": null,
+      "coverage": "643d5437104296e21d906ecb15b2c96ad278f20cfc4af53b12bb6069bd853726"
+    },
+    {
+      "hour": 1793232000,
+      "book": null,
+      "tick": null,
+      "coverage": "643d5437104296e21d906ecb15b2c96ad278f20cfc4af53b12bb6069bd853726"
+    },
+    {
+      "hour": 1793235600,
+      "book": null,
+      "tick": null,
+      "coverage": "643d5437104296e21d906ecb15b2c96ad278f20cfc4af53b12bb6069bd853726"
+    },
+    {
+      "hour": 1793239200,
+      "book": null,
+      "tick": null,
+      "coverage": "643d5437104296e21d906ecb15b2c96ad278f20cfc4af53b12bb6069bd853726"
+    },
+    {
+      "hour": 1793242800,
+      "book": null,
+      "tick": null,
+      "coverage": "643d5437104296e21d906ecb15b2c96ad278f20cfc4af53b12bb6069bd853726"
+    },
+    {
+      "hour": 1793246400,
+      "book": null,
+      "tick": null,
+      "coverage": "643d5437104296e21d906ecb15b2c96ad278f20cfc4af53b12bb6069bd853726"
+    },
+    {
+      "hour": 1793250000,
+      "book": null,
+      "tick": null,
+      "coverage": "643d5437104296e21d906ecb15b2c96ad278f20cfc4af53b12bb6069bd853726"
+    },
+    {
+      "hour": 1793253600,
+      "book": null,
+      "tick": null,
+      "coverage": "643d5437104296e21d906ecb15b2c96ad278f20cfc4af53b12bb6069bd853726"
+    },
+    {
+      "hour": 1793257200,
+      "book": null,
+      "tick": null,
+      "coverage": "643d5437104296e21d906ecb15b2c96ad278f20cfc4af53b12bb6069bd853726"
+    },
+    {
+      "hour": 1793260800,
+      "book": null,
+      "tick": null,
+      "coverage": "643d5437104296e21d906ecb15b2c96ad278f20cfc4af53b12bb6069bd853726"
+    },
+    {
+      "hour": 1793264400,
+      "book": null,
+      "tick": null,
+      "coverage": "643d5437104296e21d906ecb15b2c96ad278f20cfc4af53b12bb6069bd853726"
+    },
+    {
+      "hour": 1793268000,
+      "book": null,
+      "tick": null,
+      "coverage": "643d5437104296e21d906ecb15b2c96ad278f20cfc4af53b12bb6069bd853726"
+    },
+    {
+      "hour": 1793271600,
+      "book": null,
+      "tick": null,
+      "coverage": "643d5437104296e21d906ecb15b2c96ad278f20cfc4af53b12bb6069bd853726"
+    },
+    {
+      "hour": 1793275200,
+      "book": null,
+      "tick": null,
+      "coverage": "643d5437104296e21d906ecb15b2c96ad278f20cfc4af53b12bb6069bd853726"
+    },
+    {
+      "hour": 1793278800,
+      "book": null,
+      "tick": null,
+      "coverage": "643d5437104296e21d906ecb15b2c96ad278f20cfc4af53b12bb6069bd853726"
+    },
+    {
+      "hour": 1793282400,
+      "book": null,
+      "tick": null,
+      "coverage": "643d5437104296e21d906ecb15b2c96ad278f20cfc4af53b12bb6069bd853726"
+    },
+    {
+      "hour": 1793286000,
+      "book": "245b59d8ad1e5278d187fed1e169ccf518ee4560c7ade85a53e3c224153fc15c",
+      "tick": "def1dbc7e9c3c9ba3a5ec619c33655a949ff35c099179393dbcee9eb0b7eab20",
+      "coverage": "db514e6e7d0d9badc71922baa311c7cd26849963bd5bbbabead93a2ead4dd558"
+    },
+    {
+      "hour": 1793289600,
+      "book": "0de304e7f25f89eba7f8a27ac28d11d7218cbb29bf991ae1f590119accd53045",
+      "tick": "0c9fdfb3a1b59239ecd6265e32f4caffe53e66f67d93c43951b00f48a3e9aea8",
+      "coverage": "59c9e409acb6c80d369997557ee3d44592cf36b8150562c7405a06f3db36edbe"
+    },
+    {
+      "hour": 1793293200,
+      "book": "be8ccc518ed956f44dc9d3e79cf1325a4f736de4ad96b07c204948d6bf40e871",
+      "tick": "25a400db4860467ccae44323a95087533ca941972b8cf0914173cbde3edc23be",
+      "coverage": "898afb866116dd5ff6aaffab1656bf6d9a24dc59c2eb4e0225b3b438763278b6"
+    },
+    {
+      "hour": 1793296800,
+      "book": "f5c53c6e1625c4b90dd54b553af4364785b730b97e64e38c2cc8aa0f2973255a",
+      "tick": "91683a0288176782bd4938b7d6fe519c8c6ffe5e06687069d47d298ae13c32ba",
+      "coverage": "a213c716a390c091dac5c0cb0179b27c05437bf5a41713ce2b47250668c31d13"
+    },
+    {
+      "hour": 1793300400,
+      "book": "ef7992edeaf93f4ba98d7fab826d686e60fec692e0e1405e81e1604754a3925f",
+      "tick": "17e3de01d081a557663861c31bd71518ed34cc7a496899d877b715a206be084a",
+      "coverage": "4842163adb18084477364c457b2d2280fd9ab3d68f5ac4a03b19c99aaad2154b"
+    },
+    {
+      "hour": 1793304000,
+      "book": null,
+      "tick": null,
+      "coverage": "643d5437104296e21d906ecb15b2c96ad278f20cfc4af53b12bb6069bd853726"
+    },
+    {
+      "hour": 1793307600,
+      "book": null,
+      "tick": null,
+      "coverage": "643d5437104296e21d906ecb15b2c96ad278f20cfc4af53b12bb6069bd853726"
+    },
+    {
+      "hour": 1793311200,
+      "book": null,
+      "tick": null,
+      "coverage": "643d5437104296e21d906ecb15b2c96ad278f20cfc4af53b12bb6069bd853726"
+    },
+    {
+      "hour": 1793314800,
+      "book": null,
+      "tick": null,
+      "coverage": "643d5437104296e21d906ecb15b2c96ad278f20cfc4af53b12bb6069bd853726"
+    },
+    {
+      "hour": 1793318400,
+      "book": null,
+      "tick": null,
+      "coverage": "643d5437104296e21d906ecb15b2c96ad278f20cfc4af53b12bb6069bd853726"
+    },
+    {
+      "hour": 1793322000,
+      "book": null,
+      "tick": null,
+      "coverage": "643d5437104296e21d906ecb15b2c96ad278f20cfc4af53b12bb6069bd853726"
+    },
+    {
+      "hour": 1793325600,
+      "book": null,
+      "tick": null,
+      "coverage": "643d5437104296e21d906ecb15b2c96ad278f20cfc4af53b12bb6069bd853726"
+    },
+    {
+      "hour": 1793329200,
+      "book": null,
+      "tick": null,
+      "coverage": "643d5437104296e21d906ecb15b2c96ad278f20cfc4af53b12bb6069bd853726"
+    },
+    {
+      "hour": 1793332800,
+      "book": null,
+      "tick": null,
+      "coverage": "643d5437104296e21d906ecb15b2c96ad278f20cfc4af53b12bb6069bd853726"
+    },
+    {
+      "hour": 1793336400,
+      "book": null,
+      "tick": null,
+      "coverage": "643d5437104296e21d906ecb15b2c96ad278f20cfc4af53b12bb6069bd853726"
+    },
+    {
+      "hour": 1793340000,
+      "book": null,
+      "tick": null,
+      "coverage": "643d5437104296e21d906ecb15b2c96ad278f20cfc4af53b12bb6069bd853726"
+    },
+    {
+      "hour": 1793343600,
+      "book": null,
+      "tick": null,
+      "coverage": "643d5437104296e21d906ecb15b2c96ad278f20cfc4af53b12bb6069bd853726"
+    },
+    {
+      "hour": 1793347200,
+      "book": null,
+      "tick": null,
+      "coverage": "643d5437104296e21d906ecb15b2c96ad278f20cfc4af53b12bb6069bd853726"
+    },
+    {
+      "hour": 1793350800,
+      "book": null,
+      "tick": null,
+      "coverage": "643d5437104296e21d906ecb15b2c96ad278f20cfc4af53b12bb6069bd853726"
+    },
+    {
+      "hour": 1793354400,
+      "book": null,
+      "tick": null,
+      "coverage": "643d5437104296e21d906ecb15b2c96ad278f20cfc4af53b12bb6069bd853726"
+    },
+    {
+      "hour": 1793358000,
+      "book": null,
+      "tick": null,
+      "coverage": "643d5437104296e21d906ecb15b2c96ad278f20cfc4af53b12bb6069bd853726"
+    },
+    {
+      "hour": 1793361600,
+      "book": null,
+      "tick": null,
+      "coverage": "643d5437104296e21d906ecb15b2c96ad278f20cfc4af53b12bb6069bd853726"
+    },
+    {
+      "hour": 1793365200,
+      "book": "79829936bdf29ef6a8edb53d0827c6f36254e5db9ba78e7688b73f9c3c69328e",
+      "tick": "c8c5293b9fddc4f2fa06ea9466b6b2766e5c5072a9ede4c4a14d6a154000ddd7",
+      "coverage": "d5c6a864168a63bebda7a689c5099567c0eceec46cd3e5bdc4233d37996fcb84"
+    },
+    {
+      "hour": 1793368800,
+      "book": "72f5c6fde0789326404f4e724df74beca387a7616b40e8eeb5dbb906703e3f27",
+      "tick": "65774d82624ae04a480a34636d360e36732473ba58d71c35300e54b47f5a1cb1",
+      "coverage": "e9e178777ba0473c1adea30160274d37edb905d62aa71a1578e6653967ba95f6"
+    },
+    {
+      "hour": 1793372400,
+      "book": null,
+      "tick": null,
+      "coverage": "643d5437104296e21d906ecb15b2c96ad278f20cfc4af53b12bb6069bd853726"
+    },
+    {
+      "hour": 1793376000,
+      "book": null,
+      "tick": null,
+      "coverage": "643d5437104296e21d906ecb15b2c96ad278f20cfc4af53b12bb6069bd853726"
+    },
+    {
+      "hour": 1793379600,
+      "book": null,
+      "tick": null,
+      "coverage": "643d5437104296e21d906ecb15b2c96ad278f20cfc4af53b12bb6069bd853726"
+    },
+    {
+      "hour": 1793383200,
+      "book": null,
+      "tick": null,
+      "coverage": "643d5437104296e21d906ecb15b2c96ad278f20cfc4af53b12bb6069bd853726"
+    },
+    {
+      "hour": 1793386800,
+      "book": null,
+      "tick": null,
+      "coverage": "643d5437104296e21d906ecb15b2c96ad278f20cfc4af53b12bb6069bd853726"
+    },
+    {
+      "hour": 1793390400,
+      "book": null,
+      "tick": null,
+      "coverage": "643d5437104296e21d906ecb15b2c96ad278f20cfc4af53b12bb6069bd853726"
+    },
+    {
+      "hour": 1793394000,
+      "book": null,
+      "tick": null,
+      "coverage": "643d5437104296e21d906ecb15b2c96ad278f20cfc4af53b12bb6069bd853726"
+    },
+    {
+      "hour": 1793397600,
+      "book": null,
+      "tick": null,
+      "coverage": "643d5437104296e21d906ecb15b2c96ad278f20cfc4af53b12bb6069bd853726"
+    }
+  ],
+  "rawMarketDataIncluded": false
+}

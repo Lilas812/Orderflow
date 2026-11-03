@@ -1,0 +1,182 @@
+[
+  {
+    "file": "data/gpu-heatmap/production-input/prod/instruments/GC/coverage.json",
+    "sha256": "097176419a14854f33dc92641433a4def58ec7cd079f858e067d003df1cc422b",
+    "bytes": 176419
+  },
+  {
+    "file": "data/gpu-heatmap/production-input/prod/instruments/GC/columns/GC/1s/2026-10-29/15.bin.gz",
+    "sha256": "245b59d8ad1e5278d187fed1e169ccf518ee4560c7ade85a53e3c224153fc15c",
+    "bytes": 123828
+  },
+  {
+    "file": "data/gpu-heatmap/production-input/prod/instruments/GC/trades/GC/2026-10-29/15.jsonl.gz",
+    "sha256": "def1dbc7e9c3c9ba3a5ec619c33655a949ff35c099179393dbcee9eb0b7eab20",
+    "bytes": 62210
+  },
+  {
+    "file": "data/gpu-heatmap/production-input/prod/instruments/GC/columns/GC/1s/2026-10-29/16.bin.gz",
+    "sha256": "0de304e7f25f89eba7f8a27ac28d11d7218cbb29bf991ae1f590119accd53045",
+    "bytes": 151969
+  },
+  {
+    "file": "data/gpu-heatmap/production-input/prod/instruments/GC/trades/GC/2026-10-29/16.jsonl.gz",
+    "sha256": "0c9fdfb3a1b59239ecd6265e32f4caffe53e66f67d93c43951b00f48a3e9aea8",
+    "bytes": 62647
+  },
+  {
+    "file": "data/gpu-heatmap/production-input/prod/instruments/GC/columns/GC/1s/2026-10-29/17.bin.gz",
+    "sha256": "be8ccc518ed956f44dc9d3e79cf1325a4f736de4ad96b07c204948d6bf40e871",
+    "bytes": 139282
+  },
+  {
+    "file": "data/gpu-heatmap/production-input/prod/instruments/GC/trades/GC/2026-10-29/17.jsonl.gz",
+    "sha256": "25a400db4860467ccae44323a95087533ca941972b8cf0914173cbde3edc23be",
+    "bytes": 55813
+  },
+  {
+    "file": "data/gpu-heatmap/production-input/prod/instruments/GC/columns/GC/1s/2026-10-29/18.bin.gz",
+    "sha256": "f5c53c6e1625c4b90dd54b553af4364785b730b97e64e38c2cc8aa0f2973255a",
+    "bytes": 195066
+  },
+  {
+    "file": "data/gpu-heatmap/production-input/prod/instruments/GC/trades/GC/2026-10-29/18.jsonl.gz",
+    "sha256": "91683a0288176782bd4938b7d6fe519c8c6ffe5e06687069d47d298ae13c32ba",
+    "bytes": 45824
+  },
+  {
+    "file": "data/gpu-heatmap/production-input/prod/instruments/GC/columns/GC/1s/2026-10-29/19.bin.gz",
+    "sha256": "ef7992edeaf93f4ba98d7fab826d686e60fec692e0e1405e81e1604754a3925f",
+    "bytes": 182085
+  },
+  {
+    "file": "data/gpu-heatmap/production-input/prod/instruments/GC/trades/GC/2026-10-29/19.jsonl.gz",
+    "sha256": "17e3de01d081a557663861c31bd71518ed34cc7a496899d877b715a206be084a",
+    "bytes": 29012
+  },
+  {
+    "file": "data/gpu-heatmap/production-input/prod/instruments/GC/columns/GC/1s/2026-10-30/13.bin.gz",
+    "sha256": "79829936bdf29ef6a8edb53d0827c6f36254e5db9ba78e7688b73f9c3c69328e",
+    "bytes": 164976
+  },
+  {
+    "file": "data/gpu-heatmap/production-input/prod/instruments/GC/trades/GC/2026-10-30/13.jsonl.gz",
+    "sha256": "c8c5293b9fddc4f2fa06ea9466b6b2766e5c5072a9ede4c4a14d6a154000ddd7",
+    "bytes": 110877
+  },
+  {
+    "file": "data/gpu-heatmap/production-input/prod/instruments/GC/columns/GC/1s/2026-10-30/14.bin.gz",
+    "sha256": "72f5c6fde0789326404f4e724df74beca387a7616b40e8eeb5dbb906703e3f27",
+    "bytes": 96532
+  },
+  {
+    "file": "data/gpu-heatmap/production-input/prod/instruments/GC/trades/GC/2026-10-30/14.jsonl.gz",
+    "sha256": "65774d82624ae04a480a34636d360e36732473ba58d71c35300e54b47f5a1cb1",
+    "bytes": 63556
+  },
+  {
+    "file": "data/gpu-heatmap/production-input/prod/coverage.json",
+    "sha256": "ed8f6c9de3a6d8e500233bdac8253e303f3a299165488dcfad6c1d2e948ddb26",
+    "bytes": 403795
+  },
+  {
+    "file": "data/gpu-heatmap/production-input/prod/columns/NQ/1s/2026-10-29/13.bin.gz",
+    "sha256": "b649f083bc7fb5b6b132f98327b9d62dec83e13c39664e3e291edcb6dcb7fc03",
+    "bytes": 214061
+  },
+  {
+    "file": "data/gpu-heatmap/production-input/prod/trades/NQ/2026-10-29/13.jsonl.gz",
+    "sha256": "dd0238ae8a41b02eea6f18674df9b13a1db6a8c6c90b05cf0e719bf78aca5c14",
+    "bytes": 514081
+  },
+  {
+    "file": "data/gpu-heatmap/production-input/prod/columns/NQ/1s/2026-10-29/14.bin.gz",
+    "sha256": "eaed5dcb69fd7659fcddbefc22e03a9f47a49d17b59e2d4c755eed23ac04af1f",
+    "bytes": 268424
+  },
+  {
+    "file": "data/gpu-heatmap/production-input/prod/trades/NQ/2026-10-29/14.jsonl.gz",
+    "sha256": "89191d804034e99e6bdb3c60638ce5eef628ac0eea54add6e27e271d08f24342",
+    "bytes": 578002
+  },
+  {
+    "file": "data/gpu-heatmap/production-input/prod/columns/NQ/1s/2026-10-29/15.bin.gz",
+    "sha256": "8a24872cf2307b91f389a4489e6e5a5c08dbf7d1dcb7cb1ff8b528bbdaaf2836",
+    "bytes": 288848
+  },
+  {
+    "file": "data/gpu-heatmap/production-input/prod/trades/NQ/2026-10-29/15.jsonl.gz",
+    "sha256": "057e9db15c93d24201947be0e713d9212b401028cef1a834d78e4ed2a869e775",
+    "bytes": 405176
+  },
+  {
+    "file": "data/gpu-heatmap/production-input/prod/columns/NQ/1s/2026-10-29/16.bin.gz",
+    "sha256": "d829c65b0cbf2d68da704f33b22d40d2ff30441211babb35a8eddb7a2b42072c",
+    "bytes": 289328
+  },
+  {
+    "file": "data/gpu-heatmap/production-input/prod/trades/NQ/2026-10-29/16.jsonl.gz",
+    "sha256": "e7392ef9970b13f88734f88f8829a927d5701ab15f8648a92da55e9ee90944fa",
+    "bytes": 285750
+  },
+  {
+    "file": "data/gpu-heatmap/production-input/prod/columns/NQ/1s/2026-10-29/17.bin.gz",
+    "sha256": "16f74a91443a50b5bb39a183e33b289fb182f23413c5b1e188a2c538aac44429",
+    "bytes": 118563
+  },
+  {
+    "file": "data/gpu-heatmap/production-input/prod/trades/NQ/2026-10-29/17.jsonl.gz",
+    "sha256": "41024f26c1f3a521b053a2d816ddb5f3a569c08b81f147afe73a758bc287e3e9",
+    "bytes": 405958
+  },
+  {
+    "file": "data/gpu-heatmap/production-input/prod/columns/NQ/1s/2026-10-29/18.bin.gz",
+    "sha256": "5b40ada21c6954f0bd559f9807f0d97fc4c77b4c0acf16034bab161d43155e57",
+    "bytes": 303481
+  },
+  {
+    "file": "data/gpu-heatmap/production-input/prod/trades/NQ/2026-10-29/18.jsonl.gz",
+    "sha256": "7eb72f1d90636f6e1e9b66da398fac10229a6465e433ccdc3ef67b1e653ed7ea",
+    "bytes": 262891
+  },
+  {
+    "file": "data/gpu-heatmap/production-input/prod/columns/NQ/1s/2026-10-29/19.bin.gz",
+    "sha256": "a28ea0bafb85065c5fa727887233ce1f0128175b5de868841355350e0b502745",
+    "bytes": 258315
+  },
+  {
+    "file": "data/gpu-heatmap/production-input/prod/trades/NQ/2026-10-29/19.jsonl.gz",
+    "sha256": "c6ab7fc1cec06ccd005cb0f727f8c57bd54c9600cfc7fdfc8e0251143a07f8d8",
+    "bytes": 392101
+  },
+  {
+    "file": "data/gpu-heatmap/production-input/prod/columns/NQ/1s/2026-10-30/13.bin.gz",
+    "sha256": "99be16e7954bd7f913a7e1741235055f3ae95b2dbd0598b6f6fc1fa8e0e9fb27",
+    "bytes": 175687
+  },
+  {
+    "file": "data/gpu-heatmap/production-input/prod/trades/NQ/2026-10-30/13.jsonl.gz",
+    "sha256": "bc7d6279155b938ea54d6201d7663d458dc5078ba47ce01fc1c4019d4141102e",
+    "bytes": 301044
+  },
+  {
+    "file": "data/gpu-heatmap/production-input/prod/columns/NQ/1s/2026-10-30/14.bin.gz",
+    "sha256": "3a338d79aaf8c89be6185b7b4f9268b03de6369abf144b8214ad3c74c6a87436",
+    "bytes": 116942
+  },
+  {
+    "file": "data/gpu-heatmap/production-input/prod/trades/NQ/2026-10-30/14.jsonl.gz",
+    "sha256": "e8ec4233a00bec599083bd2444b4ff77d41497fe1a9cb9fb0d597da4205940f4",
+    "bytes": 266125
+  },
+  {
+    "file": "data/gpu-heatmap/production-input/prod/columns/NQ/1s/2026-10-30/16.bin.gz",
+    "sha256": "c22fb6fedb4755774f4ae9b38f914449d114d0d6408d19b3c96e457fdd7b4068",
+    "bytes": 248861
+  },
+  {
+    "file": "data/gpu-heatmap/production-input/prod/trades/NQ/2026-10-30/16.jsonl.gz",
+    "sha256": "4757a19d53b6190ee081c213ca5ff0263231ce7f19bbf532eb1964a5a69c086c",
+    "bytes": 358024
+  }
+]

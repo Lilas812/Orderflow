@@ -46,6 +46,8 @@ Agent が更新してよいのは、下の Current Status 節だけ。
 
 ## Current Status
 
+- 2026-11-04：HEATMAP／FOOTPRINTの転換点マークと派生特徴ZIPを隔離実装。NQ／GC各5件、CAS競合・読取失敗・再読込・書出しを確認。既存含む335試験と追加含む関連14試験、画面199試験、両型検査・ビルド成功。親loop最大NQ12.12ms／GC10.85ms（静止fixtureでありライブ負荷未検証）。GC HEATMAPでの配置・実保存の対照不足・公開経路は未確認。所有ブラウザ3PID・fixture・子の終了、WS0を確認。未公開・本番無書込・既存受信再起動なし。詳細docs/TURNING_POINT_LABELS_REPORT.md。
+
 - 2026-11-04：FOOTPRINTリプレイをHEATMAPと連動。停止／再生位置・速度・送り幅を同一タブで共有、約定専用・カーソル前2時間・1画面1接続。保存NQ/GCの60倍600秒は数量とハッシュ一致、描画p95 7.9/6.9ms。サーバー322・フロント196試験、両型検査、本番ビルド成功。所有ブラウザ・WS・隔離サーバー終了確認。未公開・本番無書込。詳細docs/FOOTPRINT_REPLAY_REPORT.md。
 
 - 2026-11-04：HEATMAPのNQ/GCリプレイ操作UI・制御WSを実装。フロント195件、サーバー全体320件と追加CT境界を含む関連8件、両型検査・本番ビルド合格。保存コピーの60倍600秒で数量・全レコード一致、Canvas背景更新p95はNQ22.1ms/GC15.4ms（DPR1）。所有ブラウザ・WS・fixtureの残存0確認。未公開・既存受信未再起動。詳細docs/REPLAY_UI_REPORT.md。

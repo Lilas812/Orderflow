@@ -7,6 +7,7 @@ import { Pipeline } from "./pipeline.ts";
 import { Hub, attachHub } from "./hub/hub.ts";
 import { MemoryMonitor } from "./diagnostics/memory.ts";
 import { HistoryProcess } from "./history/process.ts";
+import { LabelsStore } from "./labels/store.ts";
 import { workCpu } from "./diagnostics/work-cpu.ts";
 import { measurementLogWriter } from "./diagnostics/measurement-log.ts";
 import { MeasurementIsolation, isolationMarker } from "./diagnostics/isolation.ts";
@@ -104,7 +105,8 @@ async function main() {
     () => ({ ...memory.snapshot(), historyProcess: historyProcess.snapshot() }), () => isolation.snapshot(), settings,
     process.env.HEATMAP_SERVE_FRONTEND === "1"
       ? fileURLToPath(new URL("../../artifacts/heatmap/dist/public/", import.meta.url)) : undefined, longVp, longVpSettings, settingsTrace,
-    symbol => symbol === "GC" ? gc : null);
+    symbol => symbol === "GC" ? gc : null, { labels: new LabelsStore(objects ?? new ReplitObjects(), mode.prefix),
+      history: historyProcess, store: symbol => symbol === "GC" ? gc.pipeline.store : pipeline.store });
   let http: Server | null = null;
   let wss: ReturnType<typeof attachHub> | null = null;
   const startup = new AbortController();

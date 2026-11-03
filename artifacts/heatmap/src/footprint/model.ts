@@ -1,4 +1,5 @@
 import { US_PER_SECOND, type Trade } from "../domain.ts";
+import { approachBefore as findApproach } from "../../../../lib/market/labels.ts";
 
 /** Normalized trade; `contract` is optional (absent or UNKNOWN = not identified). */
 export type FpTrade = Trade;
@@ -137,6 +138,14 @@ export class FootprintStore {
   get secondCount(): number { return this.secs.size; }
   get cachedBars(): number { return this.barCache.size; }
   get latest(): FpTrade | null { return this.lastTrade; }
+  approachBefore(us: number, contract: string) {
+    const seconds = this.secs;
+    function* records() {
+      for (const sec of seconds.values()) for (const trade of sec.trades)
+        if (contractKey(trade) === contract) yield trade;
+    }
+    return findApproach(records(), us);
+  }
 
   setTimeframe(tf: DisplayTimeframe): void {
     if (tf === this.tfValue) return;

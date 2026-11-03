@@ -13,6 +13,12 @@ import { clipRanges, subtractRanges } from "../../artifacts/heatmap/src/footprin
 import type { Trade } from "../src/types.ts";
 import type { Column } from "../src/aggregate/columns.ts";
 import type { MarketSymbol } from "../../lib/market/instruments.ts";
+import express from "express";
+import { LabelsStore } from "../src/labels/store.ts";
+import { LabelsCloudFixture } from "./labels-cloud-fixture.ts";
+import { labelsRouter } from "../src/labels/routes.ts";
+import { LocalStore } from "../src/store/local.ts";
+import { HistoryProcess } from "../src/history/process.ts";
 
 const port = Number(process.argv.find(a => a.startsWith("--port="))?.slice(7) ?? 18885);
 const frontRoot = path.resolve(process.argv.find(a => a.startsWith("--front-root="))?.slice(13) ?? "artifacts/heatmap/dist/public");
@@ -93,7 +99,29 @@ for (const [symbol, data] of sources) {
   hubs.set(symbol, new Hub(source, log, { now: () => end * 1000 + (process.argv.includes("--moving-clock") ? Date.now() - replayClockStart : 0),
     later: (f, ms) => setTimeout(f, ms), cancel: id => clearTimeout(id as NodeJS.Timeout) }, symbol));
 }
+const labelsMode = process.argv.includes("--labels-test");
+const labelCloud = new LabelsCloudFixture();
+const labelsWorker = new HistoryProcess("ISOLATED-NO-API", log);
+const labelsApp = express();
+const labelStores = new Map((["NQ", "GC"] as const).map(symbol => [symbol,
+  new LocalStore(path.resolve("data/gpu-heatmap/production-input/prod", symbol === "GC" ? "instruments/GC" : ""),
+    Date.now, fs.rename, symbol)]));
+// No initialize/flush/retention on these read-only source stores. Only request-owned copies are written.
+if (labelsMode) labelsApp.use("/api/labels", labelsRouter({
+  labels: new LabelsStore(labelCloud, "dev/"), history: labelsWorker, store: symbol => labelStores.get(symbol)!,
+}));
 const app = createServer(async (req, res) => {
+  if (labelsMode && req.url?.startsWith("/api/labels")) { labelsApp(req, res); return; }
+  if (labelsMode && req.url?.startsWith("/labels-test-status")) {
+    const url = new URL(req.url, `http://127.0.0.1:${port}`);
+    if (req.method === "POST") {
+      labelCloud.failRead = url.searchParams.get("readFail") === "1";
+      labelCloud.failWrite = url.searchParams.get("writeFail") === "1";
+    }
+    res.setHeader("Content-Type", "application/json");
+    res.end(JSON.stringify({ isolated: true, pid: process.pid, cloudWrites: labelCloud.writes,
+      worker: labelsWorker.snapshot(), failRead: labelCloud.failRead, noRealCloud: true, noUpstream: true })); return;
+  }
   const u = new URL(req.url!, "http://127.0.0.1");
   if (u.pathname === "/__replay") {
     const totalBytes = () => {
@@ -137,6 +165,7 @@ seedBooks();
 const bookTimer = setInterval(seedBooks, 1000);
 app.listen(port, "127.0.0.1", () => log("replay_ready", { port, pid: process.pid, from, end }));
 process.on("SIGTERM", () => {
+  void labelsWorker.stop();
   eventLoop.disable();
   clearInterval(bookTimer);
   for (const h of hubs.values()) h.stop();

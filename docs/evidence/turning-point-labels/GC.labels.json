@@ -1,0 +1,81 @@
+{
+  "version": 1,
+  "generation": "7",
+  "labels": [
+    {
+      "id": "666d0a86-3ec7-469b-bb78-5714813b4637",
+      "symbol": "GC",
+      "tsSec": 1793298279,
+      "priceTicks": 40184,
+      "kind": "bottom",
+      "confidence": 3,
+      "note": "GC user edit: preserve across CAS conflict",
+      "viewMode": "hindsight",
+      "screen": "footprint",
+      "expectedDirection": "up",
+      "futureSeconds": 21,
+      "createdUs": 1793740198114000,
+      "updatedUs": 1793740443261000
+    },
+    {
+      "id": "d148542e-7060-4716-8496-e46329fef713",
+      "symbol": "GC",
+      "tsSec": 1793298263,
+      "priceTicks": 40183,
+      "kind": "top",
+      "confidence": 2,
+      "note": "GC UI mark 2: footprint top",
+      "viewMode": "hindsight",
+      "screen": "footprint",
+      "expectedDirection": "down",
+      "futureSeconds": 37,
+      "createdUs": 1793740260208000,
+      "updatedUs": 1793740260208000
+    },
+    {
+      "id": "e35ca235-a20e-418b-8aac-c7ebe3ebc139",
+      "symbol": "GC",
+      "tsSec": 1793298271,
+      "priceTicks": 40184,
+      "kind": "failed",
+      "confidence": 1,
+      "note": "GC UI mark 3: failed, top intent",
+      "viewMode": "hindsight",
+      "screen": "footprint",
+      "expectedDirection": "down",
+      "futureSeconds": 29,
+      "createdUs": 1793740304359000,
+      "updatedUs": 1793740304359000
+    },
+    {
+      "id": "b004b9bc-8cc1-4a04-8471-d3873740e8d6",
+      "symbol": "GC",
+      "tsSec": 1793298290,
+      "priceTicks": 40184,
+      "kind": "bottom",
+      "confidence": 2,
+      "note": "GC UI mark 4: footprint bottom",
+      "viewMode": "hindsight",
+      "screen": "footprint",
+      "expectedDirection": "up",
+      "futureSeconds": 10,
+      "createdUs": 1793740341544000,
+      "updatedUs": 1793740341544000
+    },
+    {
+      "id": "6f3a938e-bf4a-4da8-b2d8-cd164020b6cf",
+      "symbol": "GC",
+      "tsSec": 1793298297,
+      "priceTicks": 40187,
+      "kind": "top",
+      "confidence": 3,
+      "note": "GC UI mark 5: footprint top",
+      "viewMode": "hindsight",
+      "screen": "footprint",
+      "expectedDirection": "down",
+      "futureSeconds": 3,
+      "createdUs": 1793740381936000,
+      "updatedUs": 1793740381936000
+    }
+  ]
+}

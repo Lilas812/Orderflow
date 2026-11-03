@@ -6,6 +6,8 @@ import { BOOK_OVERLAY_FRACTION, backgroundDpr, followStartUs, timeUsToX, xToTime
 import { HeatmapRenderer, type DrawMetrics } from "./chart/renderer.ts";
 import { formatAxisTicks, type DisplayZone } from "./chart/timezone.ts";
 import { CurrentTradeState } from "./data/trade-aggregate.ts";
+import { mountLabelsUi } from "./labels/ui.ts";
+import { priceTicksToY, yToPriceTicks } from "./chart/coordinates.ts";
 import { TradeOverlayRenderer } from "./chart/trade-overlay.ts";
 import { CurrentBookRenderer } from "./chart/current-book.ts";
 import { LayerScheduler } from "./chart/layer-scheduler.ts";
@@ -281,6 +283,7 @@ const initialQuote = new CurrentTradeState();
 let initialCutoffUs = 0;
 let replayHeadUs: number | null = null;
 let replayUi: ReturnType<typeof mountReplayControls> | undefined;
+let labelsUi: ReturnType<typeof mountLabelsUi> | undefined;
 let depthDrawCount = 0;
 let overlayDrawCount = 0;
 let displayZone: DisplayZone = "jst";
@@ -634,6 +637,7 @@ const drawScheduler = new LayerScheduler(draw => requestAnimationFrame(draw), {
       if (latestPaintSamples.length > 1000) latestPaintSamples.shift();
     }
     crosshair.request();
+    labelsUi?.render();
     if (debugMode) {
       const depthMetrics = renderer.metrics;
       const frameMs = performance.now() - drawStart;
@@ -1024,7 +1028,27 @@ replayUi = mountReplayControls(required("root").querySelector<HTMLElement>(".wor
   document.querySelector<HTMLElement>(".tool-rail")!, canvas, client, () => displayZone,
   x => Math.floor(xToTimeUs(x, viewport, canvas.clientWidth) / US_PER_SECOND),
   () => { crosshair.hide(); follow = true; centeredOnData = false; hasHello = false; }, ACTIVE_SYMBOL);
+labelsUi = mountLabelsUi({
+  symbol: ACTIVE_SYMBOL, screen: "heatmap", rail: document.querySelector<HTMLElement>(".tool-rail")!,
+  workspace: required("root").querySelector<HTMLElement>(".workspace")!, canvas,
+  point: (x, y) => {
+    const reference = replayHeadUs ?? Math.max(cache.latestTimeUs ?? 0, currentTrade.trade?.tsUs ?? 0);
+    const tsSec = Math.floor(xToTimeUs(x, viewport, canvas.clientWidth) / US_PER_SECOND);
+    if (!reference || tsSec * US_PER_SECOND > reference || x < 0 || y < 0 || y > canvas.clientHeight) return null;
+    return { tsSec, priceTicks: Math.round(yToPriceTicks(y, viewport, canvas.clientHeight)) };
+  },
+  project: label => {
+    const reference = replayHeadUs ?? Math.max(cache.latestTimeUs ?? 0, currentTrade.trade?.tsUs ?? 0);
+    if (label.tsSec * US_PER_SECOND > reference) return null;
+    return { x: timeUsToX(label.tsSec * US_PER_SECOND, viewport, canvas.clientWidth),
+      y: priceTicksToY(label.priceTicks, viewport, canvas.clientHeight) };
+  },
+  context: () => ({ referenceUs: replayHeadUs ?? Math.max(cache.latestTimeUs ?? 0, currentTrade.trade?.tsUs ?? 0),
+    replay: replayHeadUs !== null, follow }),
+  approach: second => cache.tradeAggregation.approachBefore(second * US_PER_SECOND),
+});
 window.addEventListener("pagehide", () => {
+  labelsUi?.destroy();
   replayUi?.persistForNavigation(client.replayHeadUs);
   client.stop();
 }, { once: true });

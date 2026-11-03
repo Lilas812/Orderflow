@@ -123,6 +123,39 @@ export class LocalStore implements Store {
     try { await fs.access(file); return true; }
     catch (e) { if ((e as NodeJS.ErrnoException).code === "ENOENT") return false; throw e; }
   }
+  /** A request-owned, immutable disk snapshot. This read cannot poison the writer on failure.
+   * Serialize the copy against append/rotation; no market records are decoded in the parent.
+   */
+  async labelHourInput(hour: number, directory: string) {
+    const job = this.queue.then(async () => {
+      if (this.failure) throw this.failure;
+      await fs.mkdir(directory, { recursive: true, mode: 0o700 });
+      let persisted: Coverage = { book: [], tick: [] };
+      try { persisted = JSON.parse(await fs.readFile(path.join(this.root, "coverage.json"), "utf8")) as Coverage; }
+      catch (e) { if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e; }
+      const out: import("../labels/input.ts").LabelHourInput = { hour,
+        bookCoverage: clipRanges(persisted.book, hour, hour + 3600),
+        tickCoverage: clipRanges(persisted.tick, hour, hour + 3600) };
+      const base = this.file("book", hour);
+      const book = await this.labelColumnPath(hour, base);
+      const tick = this.tradeInputPath(hour);
+      for (const [kind, source] of [["book", book], ["tick", tick]] as const) {
+        if (await this.exists(source)) {
+          const destination = path.join(directory, kind + (source.endsWith(".gz") ? ".gz" : ".bin"));
+          await fs.copyFile(source, destination); out[kind] = destination;
+        }
+      }
+      // A coverage index is not proof that an unavailable body was empty.
+      if (!out.tick) out.tickCoverage = [];
+      if (!out.book) out.bookCoverage = [];
+      return out;
+    });
+    this.queue = job.then(() => {}, () => {});
+    return job;
+  }
+  protected async labelColumnPath(_hour: number, base: string) {
+    return await this.exists(base) ? base : base + ".gz";
+  }
   /** Called only after a successful owned write, replacement, hydration or removal. */
   protected filesChanged(...files: string[]) {
     if (files.length) this.fileRevision++;

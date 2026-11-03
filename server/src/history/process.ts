@@ -5,6 +5,11 @@ import { WindowSplitRequired, WindowUnavailableError, type HistoryNetworkStats, 
 import type { Kind } from "../store/local.ts";
 import type { MarketSymbol } from "../../../lib/market/instruments.ts";
 import type { Log } from "../logger.ts";
+import type { LabelExport } from "../labels/export.ts";
+import type { LabelInputProvider } from "../labels/input.ts";
+import * as fs from "node:fs/promises";
+import path from "node:path";
+import { randomUUID } from "node:crypto";
 
 export interface HistoryLoad { loopP99Ms: number | null; throttledRatio: number | null; }
 export class HistoryProcess {
@@ -18,6 +23,7 @@ export class HistoryProcess {
   private tail: Promise<unknown> = Promise.resolve();
   private serial = 0;
   private stopped = false;
+  private labelsBusy = false;
   private abort = new AbortController();
   private retiring: Promise<void> = Promise.resolve();
   private active: { id: number; reject(error: Error): void; child: ChildProcess } | null = null;
@@ -173,6 +179,71 @@ export class HistoryProcess {
     });
   }
   snapshot() { return { ...this.stats, childRss: this.stats.childPid === null ? null : this.stats.childRss }; }
+  /** Share the existing nice-19 worker and serial queue, but grant only request-owned disk snapshots.
+   * A labels job has no API key or REST capability in its message.
+   */
+  async labelsExport(job: LabelExport, input: LabelInputProvider, signal: AbortSignal): Promise<{ zip: string; summary: unknown }> {
+    if (this.labelsBusy) throw Error("labels_export_busy");
+    this.labelsBusy = true;
+    const work = this.tail.catch(() => {}).then(async () => {
+      signal.throwIfAborted(); await this.admit(signal);
+      const child = await this.ensureChild(), id = ++this.serial;
+      return new Promise<{ zip: string; summary: unknown }>((resolve, reject) => {
+        const pending = new Set<Promise<void>>(), leases = new Map<number, string>();
+        const openHour = Math.floor(Date.now() / 3_600_000) * 3600;
+        let openInput: import("../labels/input.ts").LabelHourInput | null = null;
+        let ended = false;
+        const finish = async (error?: Error, response?: { zip: string; summary: unknown }) => {
+          if (ended) return; ended = true;
+          child.off("message", receive); signal.removeEventListener("abort", abort);
+          if (this.active?.id === id) this.active = null;
+          await Promise.allSettled(pending);
+          if (error) reject(error); else resolve(response!);
+        };
+        const abort = () => { this.retire(child); void finish(Error("labels_export_aborted")); };
+        const send = (message: object) => {
+          if (!ended && child.connected) child.send({ id, ...message }, () => {});
+        };
+        const receive = (value: unknown) => {
+          const m = value as { id: number; type: string; hour?: number; response?: { zip: string; summary: unknown }; reason?: string };
+          if (m.id !== id || ended) return;
+          if (m.type === "labels_done") { void finish(undefined, m.response); return; }
+          if (m.type === "labels_failed") { void finish(Error(m.reason ?? "labels_export_failed")); return; }
+          if (m.type !== "labels_input" && m.type !== "labels_release") return;
+          const hour = m.hour!;
+          if (!Number.isSafeInteger(hour) || hour < 0 || hour % 3600 !== 0 || hour > 0xffffffff) {
+            void finish(Error("invalid_labels_hour")); return;
+          }
+          const task = Promise.resolve().then(async () => {
+            try {
+              signal.throwIfAborted();
+              if (m.type === "labels_release") {
+                const dir = leases.get(hour);
+                if (dir && hour !== openHour) { leases.delete(hour); await fs.rm(dir, { recursive: true, force: true }); }
+                send({ type: "labels_released", hour }); return;
+              }
+              if (hour === openHour && openInput) { send({ type: "labels_input_ready", hour, input: openInput }); return; }
+              if (leases.has(hour)) throw Error("duplicate_labels_lease");
+              const directory = path.join(job.directory, `hour-${hour}-${randomUUID()}`);
+              leases.set(hour, directory);
+              const result = await input(hour, directory);
+              if (hour === openHour) openInput = result;
+              send({ type: "labels_input_ready", hour, input: result });
+            } catch { send({ type: "labels_input_failed", hour }); }
+          });
+          pending.add(task); void task.finally(() => pending.delete(task));
+        };
+        this.active = { id, child, reject: error => { void finish(error); } };
+        child.on("message", receive); signal.addEventListener("abort", abort, { once: true });
+        if (signal.aborted) { abort(); return; }
+        child.send({ id, type: "labels_export", job }, error => {
+          if (error) { this.retire(child); void finish(Error("labels_export_child_send_failed")); }
+        });
+      });
+    });
+    this.tail = work.then(() => {}, () => {});
+    try { return await work; } finally { this.labelsBusy = false; }
+  }
   async stop() {
     this.stopped = true;
     this.abort.abort(Error("history_process_stopped"));

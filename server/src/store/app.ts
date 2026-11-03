@@ -250,16 +250,20 @@ export class AppStore extends LocalStore {
     } finally { await fs.rm(staged, { force: true }); }
   }
   private async withRange<T>(start: number, end: number, work: () => Promise<T>,
-    kinds: readonly Kind[] = ["book", "tick"]): Promise<T> {
+    kinds: readonly Kind[] = ["book", "tick"], nonFatalRead = false): Promise<T> {
     const keys: string[] = [];
     for (let h = hourOf(start); h < end; h += 3600) for (const kind of kinds) {
       const k = this.key(kind, h); keys.push(k); this.pins.set(k, (this.pins.get(k) ?? 0) + 1);
     }
     try {
+      let readFailure: unknown;
       await this.run(async () => {
-        for (let h = hourOf(start); h < end; h += 3600)
-          for (const kind of kinds) await this.hydrate(kind, h, false);
+        try {
+          for (let h = hourOf(start); h < end; h += 3600)
+            for (const kind of kinds) await this.hydrate(kind, h, false);
+        } catch (e) { if (!nonFatalRead) throw e; readFailure = e; }
       });
+      if (readFailure) throw readFailure;
       return await work();
     } finally {
       for (const k of keys) {
@@ -275,6 +279,12 @@ export class AppStore extends LocalStore {
   }
   protected override tradeInputPath(hour: number) {
     return this.temporary.get(this.key("tick", hour)) ?? super.tradeInputPath(hour);
+  }
+  protected override async labelColumnPath(hour: number, base: string) {
+    return this.temporary.get(this.key("book", hour)) ?? super.labelColumnPath(hour, base);
+  }
+  override labelHourInput(hour: number, directory: string) {
+    return this.withRange(hour, hour + 3600, () => super.labelHourInput(hour, directory), ["book", "tick"], true);
   }
   protected override async readColumnRange(hour: number, start: number, end: number) {
     const base = this.file("book", hour);

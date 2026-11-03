@@ -1,4 +1,5 @@
 import { MAX_CACHE_SECONDS, US_PER_SECOND, type Trade } from "../domain.ts";
+import { approachBefore as findApproach } from "../../../../lib/market/labels.ts";
 
 export interface TradeCell { secondUs: number; price: number; buy: number; sell: number; undirected?: number; }
 export interface LastPrice { secondUs: number; price: number; }
@@ -39,6 +40,11 @@ export class TradeAggregator {
   }
   get trades(): readonly Trade[] {
     return [...this.buckets].sort(([a], [b]) => a - b).flatMap(([, bucket]) => [...bucket.records.values()]);
+  }
+  approachBefore(us: number) {
+    const buckets = this.buckets;
+    function* records() { for (const bucket of buckets.values()) yield* bucket.records.values(); }
+    return findApproach(records(), us);
   }
 
   /** Exact half-open viewport bounds; uncommitted history is not included. */

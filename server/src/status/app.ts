@@ -12,6 +12,7 @@ import { longVpSettingsRouter } from "../settings/longvp.ts";
 import type { LongVpSettings } from "../settings/longvp.ts";
 import type { SettingsTrace } from "../settings/trace.ts";
 import { INSTRUMENTS, marketSymbol, type MarketSymbol } from "../../../lib/market/instruments.ts";
+import { labelsRouter, type LabelsService } from "../labels/routes.ts";
 export interface MarketStatus {
   receiver: Receiver; extra(): unknown; delivery(): unknown; longVp: AppLongVp | null;
 }
@@ -35,7 +36,7 @@ export function statusSnapshot(upstream: Upstream, receiver: Receiver, apiKey: s
 export function createStatusApp(upstream: Upstream, receiver: Receiver, apiKey: string, extra?: () => unknown, delivery?: () => unknown,
   memory?: () => unknown, isolation?: () => unknown, settings?: SettingsPersistence, staticDirectory?: string,
   longVp?: AppLongVp | null, longVpSettings?: LongVpSettings, settingsTrace?: SettingsTrace,
-  markets?: (symbol: MarketSymbol) => MarketStatus | null) {
+  markets?: (symbol: MarketSymbol) => MarketStatus | null, labels?: LabelsService) {
   const app = express();
   app.use((_req, _res, next) => namedWork("http-request", next));
   app.disable("x-powered-by");
@@ -56,6 +57,7 @@ export function createStatusApp(upstream: Upstream, receiver: Receiver, apiKey: 
   });
   if (longVpSettings) app.use("/api/settings/longvp", longVpSettingsRouter(longVpSettings, settingsTrace));
   if (settings) app.use("/api/settings", settingsRouter(settings, settingsTrace));
+  if (labels) app.use("/api/labels", labelsRouter(labels));
   app.use("/api/longvp", longVpRouter(longVp ?? null, markets
     ? symbol => symbol === "NQ" ? longVp ?? null : markets(symbol)?.longVp ?? null : undefined));
   app.get("/api/healthz", (_req, res) => { res.json({ status: "ok" }); });

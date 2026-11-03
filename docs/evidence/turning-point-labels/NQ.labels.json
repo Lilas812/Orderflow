@@ -1,0 +1,81 @@
+{
+  "version": 1,
+  "generation": "8",
+  "labels": [
+    {
+      "id": "184e5116-a87e-49c8-a7fa-f5cef277fc25",
+      "symbol": "NQ",
+      "tsSec": 1793297980,
+      "priceTicks": 117908,
+      "kind": "top",
+      "confidence": 3,
+      "note": "NQ UI mark 1: top",
+      "viewMode": "hindsight",
+      "screen": "heatmap",
+      "expectedDirection": "down",
+      "futureSeconds": 320,
+      "createdUs": 1793739921463000,
+      "updatedUs": 1793739921463000
+    },
+    {
+      "id": "c72af075-c0fb-4f91-9a7c-b3cfeb846079",
+      "symbol": "NQ",
+      "tsSec": 1793298058,
+      "priceTicks": 117897,
+      "kind": "bottom",
+      "confidence": 2,
+      "note": "NQ UI mark 2: bottom",
+      "viewMode": "hindsight",
+      "screen": "heatmap",
+      "expectedDirection": "up",
+      "futureSeconds": 242,
+      "createdUs": 1793739971596000,
+      "updatedUs": 1793739971596000
+    },
+    {
+      "id": "95d741bb-3eda-4390-8c8b-a873fd8b9df1",
+      "symbol": "NQ",
+      "tsSec": 1793298162,
+      "priceTicks": 117897,
+      "kind": "failed",
+      "confidence": 2,
+      "note": "NQ heatmap edit: failed bottom intent",
+      "viewMode": "hindsight",
+      "screen": "heatmap",
+      "expectedDirection": "up",
+      "futureSeconds": 138,
+      "createdUs": 1793740015280000,
+      "updatedUs": 1793740595828000
+    },
+    {
+      "id": "6b8aa339-1419-4869-88a7-f67b5a2eb910",
+      "symbol": "NQ",
+      "tsSec": 1793298279,
+      "priceTicks": 117923,
+      "kind": "bottom",
+      "confidence": 2,
+      "note": "NQ UI mark 4: footprint bottom",
+      "viewMode": "hindsight",
+      "screen": "footprint",
+      "expectedDirection": "up",
+      "futureSeconds": 21,
+      "createdUs": 1793740076123000,
+      "updatedUs": 1793740076123000
+    },
+    {
+      "id": "92a66de7-419c-409e-84b2-f1552e7f1d85",
+      "symbol": "NQ",
+      "tsSec": 1793298293,
+      "priceTicks": 117923,
+      "kind": "top",
+      "confidence": 3,
+      "note": "NQ UI mark 5: footprint top",
+      "viewMode": "hindsight",
+      "screen": "footprint",
+      "expectedDirection": "down",
+      "futureSeconds": 7,
+      "createdUs": 1793740109733000,
+      "updatedUs": 1793740109733000
+    }
+  ]
+}
