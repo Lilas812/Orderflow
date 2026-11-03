@@ -1,0 +1,179 @@
+{
+  "baselineCommit": "c300f3d5635bdd13debd586aa1eea4e2adc97839",
+  "baselineSourceSha256": "dd7b1d1deb829af170d3bd9cf5c9189fcc8c89ffa344984269d9701aab9e4b4f",
+  "candidateSourceSha256": "9090fe7cfb8e896fa1383ec01deb1e099bdc69605ca6e1799112f4600d243033",
+  "note": "Synthetic microbenchmark, not actual normalization/feed/Canvas or production validation. RSS includes native event-loop histogram. Explicit stall is after timed workload.",
+  "results": [
+    {
+      "mode": "before",
+      "repeat": 0,
+      "input": "SYNTHETIC counter-only receiver",
+      "iterations": 200000,
+      "adopted": 202000,
+      "elapsedMs": 168.972248,
+      "cpuMs": 153.781,
+      "rss": 96186368,
+      "eventLoop": {
+        "enabled": false,
+        "unit": "ms",
+        "windowMs": 325.008099,
+        "samples": 0,
+        "meanMs": null,
+        "p95Ms": null,
+        "maxMs": null
+      },
+      "diagnostics": null,
+      "stopped": "stopped"
+    },
+    {
+      "mode": "after",
+      "repeat": 0,
+      "input": "SYNTHETIC counter-only receiver",
+      "iterations": 200000,
+      "adopted": 202000,
+      "elapsedMs": 234.049939,
+      "cpuMs": 210.948,
+      "rss": 96210944,
+      "eventLoop": {
+        "enabled": true,
+        "unit": "ms",
+        "windowMs": 396.85357700000003,
+        "samples": 29,
+        "meanMs": 12.608052965517242,
+        "p95Ms": 11.149311,
+        "maxMs": 84.082687
+      },
+      "diagnostics": {
+        "scope": "shared_upstream_raw_messages",
+        "symbols": [
+          "NQ",
+          "GC"
+        ],
+        "connectionSerial": 1,
+        "totalMessages": 202000,
+        "connectionMessages": 202000,
+        "connectionLastReceivedUs": 1793697962313000,
+        "messageAgeMs": 141.94406099999998,
+        "lastMessageGapMs": 0.0005170000000020991,
+        "maxMessageGapMs": 3.9463329999999814,
+        "lastReceiveMs": 0.0004920000000083746,
+        "maxReceiveMs": 3.9368829999999946
+      },
+      "stopped": "stopped"
+    },
+    {
+      "mode": "before",
+      "repeat": 1,
+      "input": "SYNTHETIC counter-only receiver",
+      "iterations": 200000,
+      "adopted": 202000,
+      "elapsedMs": 152.17969899999997,
+      "cpuMs": 143.908,
+      "rss": 96231424,
+      "eventLoop": {
+        "enabled": false,
+        "unit": "ms",
+        "windowMs": 305.40084,
+        "samples": 0,
+        "meanMs": null,
+        "p95Ms": null,
+        "maxMs": null
+      },
+      "diagnostics": null,
+      "stopped": "stopped"
+    },
+    {
+      "mode": "after",
+      "repeat": 1,
+      "input": "SYNTHETIC counter-only receiver",
+      "iterations": 200000,
+      "adopted": 202000,
+      "elapsedMs": 236.58914699999997,
+      "cpuMs": 225.645,
+      "rss": 97320960,
+      "eventLoop": {
+        "enabled": true,
+        "unit": "ms",
+        "windowMs": 389.5881350000001,
+        "samples": 29,
+        "meanMs": 12.724153379310346,
+        "p95Ms": 13.426687,
+        "maxMs": 84.344831
+      },
+      "diagnostics": {
+        "scope": "shared_upstream_raw_messages",
+        "symbols": [
+          "NQ",
+          "GC"
+        ],
+        "connectionSerial": 1,
+        "totalMessages": 202000,
+        "connectionMessages": 202000,
+        "connectionLastReceivedUs": 1793697963480000,
+        "messageAgeMs": 142.091545,
+        "lastMessageGapMs": 0.0005069999999705033,
+        "maxMessageGapMs": 4.591610000000003,
+        "lastReceiveMs": 0.00045800000003737296,
+        "maxReceiveMs": 3.4901709999999753
+      },
+      "stopped": "stopped"
+    },
+    {
+      "mode": "before",
+      "repeat": 2,
+      "input": "SYNTHETIC counter-only receiver",
+      "iterations": 200000,
+      "adopted": 202000,
+      "elapsedMs": 171.98784899999998,
+      "cpuMs": 165.409,
+      "rss": 96129024,
+      "eventLoop": {
+        "enabled": false,
+        "unit": "ms",
+        "windowMs": 325.30992,
+        "samples": 0,
+        "meanMs": null,
+        "p95Ms": null,
+        "maxMs": null
+      },
+      "diagnostics": null,
+      "stopped": "stopped"
+    },
+    {
+      "mode": "after",
+      "repeat": 2,
+      "input": "SYNTHETIC counter-only receiver",
+      "iterations": 200000,
+      "adopted": 202000,
+      "elapsedMs": 236.82644300000004,
+      "cpuMs": 223.1,
+      "rss": 96636928,
+      "eventLoop": {
+        "enabled": true,
+        "unit": "ms",
+        "windowMs": 394.15505799999994,
+        "samples": 28,
+        "meanMs": 13.068726857142856,
+        "p95Ms": 13.058047,
+        "maxMs": 86.704127
+      },
+      "diagnostics": {
+        "scope": "shared_upstream_raw_messages",
+        "symbols": [
+          "NQ",
+          "GC"
+        ],
+        "connectionSerial": 1,
+        "totalMessages": 202000,
+        "connectionMessages": 202000,
+        "connectionLastReceivedUs": 1793697964643000,
+        "messageAgeMs": 140.85985,
+        "lastMessageGapMs": 0.0005360000000109721,
+        "maxMessageGapMs": 5.137101000000001,
+        "lastReceiveMs": 0.0004660000000171749,
+        "maxReceiveMs": 4.321322000000009
+      },
+      "stopped": "stopped"
+    }
+  ]
+}

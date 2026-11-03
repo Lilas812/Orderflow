@@ -18,6 +18,19 @@ export class Upstream {
   private createSocket: (url: string) => Socket;
   private now: () => number;
   private random: () => number;
+  private monotonicNow: () => number;
+  private eventLoopSnapshot: () => unknown;
+  private watchdogArmedAt = 0;
+  private watchdogArmedAtUs = 0;
+  private connectionSerial = 0;
+  private lastMessageAt: number | null = null;
+  private connectionLastReceivedUs: number | null = null;
+  private messages = 0;
+  private connectionMessages = 0;
+  private maxMessageGapMs: number | null = null;
+  private lastMessageGapMs: number | null = null;
+  private lastReceiveMs: number | null = null;
+  private maxReceiveMs: number | null = null;
   private socket: Socket | null = null;
   private retryTimer: ReturnType<typeof setTimeout> | null = null;
   private watchdogTimer: ReturnType<typeof setTimeout> | null = null;
@@ -43,6 +56,8 @@ export class Upstream {
     apiKey: string; receiver: Pick<Receiver, "metrics" | "receive">; log: Log; symbols?: string[];
     createSocket?: (url: string) => Socket;
     now?: () => number; random?: () => number;
+    monotonicNow?: () => number;
+    eventLoopSnapshot?: () => unknown;
   }) {
     this.apiKey = options.apiKey;
     this.symbols = options.symbols ?? ["NQ"];
@@ -51,6 +66,20 @@ export class Upstream {
     this.createSocket = options.createSocket ?? ((url) => new WebSocket(url));
     this.now = options.now ?? Date.now;
     this.random = options.random ?? Math.random;
+    this.monotonicNow = options.monotonicNow ?? (() => performance.now());
+    this.eventLoopSnapshot = options.eventLoopSnapshot ?? (() => null);
+  }
+
+  /** Shared raw WS activity, including ping/control messages; not trade counts.
+   * Gap measurements end at handler entry, not at network arrival.
+   */
+  receiveDiagnostics() {
+    return { scope: "shared_upstream_raw_messages", symbols: [...this.symbols],
+      connectionSerial: this.connectionSerial, totalMessages: this.messages, connectionMessages: this.connectionMessages,
+      connectionLastReceivedUs: this.connectionLastReceivedUs,
+      messageAgeMs: this.lastMessageAt === null ? null : Math.max(0, this.monotonicNow() - this.lastMessageAt),
+      lastMessageGapMs: this.lastMessageGapMs, maxMessageGapMs: this.maxMessageGapMs,
+      lastReceiveMs: this.lastReceiveMs, maxReceiveMs: this.maxReceiveMs };
   }
 
   start() {
@@ -61,6 +90,11 @@ export class Upstream {
 
   private connect(retry: boolean) {
     if (this.stopping || this.socket) return;
+    this.connectionSerial++;
+    this.connectionMessages = 0;
+    this.lastMessageAt = null;
+    this.connectionLastReceivedUs = null;
+    this.lastMessageGapMs = null;
     this.status.state = "connecting";
     this.status.connectedAtUs = null;
     this.status.retryDelayMs = null;
@@ -96,16 +130,30 @@ export class Upstream {
     });
     socket.addEventListener("message", (event) => {
       if (this.socket !== socket || this.stopping || this.closeReason) return;
+      const receiveStarted = this.monotonicNow();
+      if (this.lastMessageAt !== null) {
+        this.lastMessageGapMs = Math.max(0, receiveStarted - this.lastMessageAt);
+        this.maxMessageGapMs = Math.max(this.maxMessageGapMs ?? 0, this.lastMessageGapMs);
+      }
+      this.lastMessageAt = receiveStarted;
+      this.messages++; this.connectionMessages++;
       const recvUs = this.now() * 1000;
+      this.connectionLastReceivedUs = recvUs;
       this.status.lastReceivedUs = recvUs;
       this.armWatchdog();
-      this.receiver.receive(event.data, recvUs, () => {
-        try { socket.send('{"op":"pong"}'); }
-        catch (error) {
-          this.log("upstream_send_error", { error });
-          this.reconnect("pong_error");
-        }
-      });
+      try {
+        this.receiver.receive(event.data, recvUs, () => {
+          try { socket.send('{"op":"pong"}'); }
+          catch (error) {
+            this.log("upstream_send_error", { error });
+            this.reconnect("pong_error");
+          }
+        });
+      } finally {
+        // Measure existing synchronous normalization + callbacks; do not swallow exceptions.
+        this.lastReceiveMs = Math.max(0, this.monotonicNow() - receiveStarted);
+        this.maxReceiveMs = Math.max(this.maxReceiveMs ?? 0, this.lastReceiveMs);
+      }
     });
     socket.addEventListener("error", () => {
       // Browser-compatible error events do not expose a reliable safe cause.
@@ -135,9 +183,18 @@ export class Upstream {
 
   private armWatchdog() {
     this.clearWatchdog();
+    this.watchdogArmedAt = this.monotonicNow();
+    this.watchdogArmedAtUs = this.now() * 1000;
     this.watchdogTimer = setTimeout(() => {
       this.receiver.metrics.count("watchdog");
-      this.log("upstream_watchdog", { silentMs: 30_000 });
+      const elapsedMs = Math.max(0, this.monotonicNow() - this.watchdogArmedAt);
+      let eventLoop: unknown;
+      try { eventLoop = this.eventLoopSnapshot(); }
+      catch { eventLoop = { available: false, reason: "snapshot_failed" }; }
+      this.log("upstream_watchdog", { silentMs: 30_000, thresholdMs: 30_000,
+        armedAtUs: this.watchdogArmedAtUs, firedAtUs: this.now() * 1000,
+        elapsedMs, overdueMs: Math.max(0, elapsedMs - 30_000),
+        receive: this.receiveDiagnostics(), eventLoop });
       this.reconnect("watchdog");
     }, 30_000);
   }

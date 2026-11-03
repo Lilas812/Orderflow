@@ -4,6 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Log } from "../logger.ts";
 import { CpuMonitor } from "./cpu.ts";
+import { EventLoopMonitor } from "./event-loop.ts";
 
 /** Numeric diagnostics only: allocation profiles contain stacks/sizes, not object
  * contents. Never write an unrestricted heap snapshot containing credentials.
@@ -18,6 +19,7 @@ export class MemoryMonitor {
   private stopped = false;
   private samples = 0;
   private cpu = new CpuMonitor();
+  readonly eventLoop = new EventLoopMonitor();
   private readonly directory = fileURLToPath(new URL("../../../data/perf-memory/profiles/", import.meta.url));
 
   constructor(log: Log, state: () => unknown = () => ({})) {
@@ -26,10 +28,12 @@ export class MemoryMonitor {
 
   snapshot() {
     return { sampledAtUs: Date.now() * 1000, pid: process.pid, ...process.memoryUsage(),
-      rssMaxBytes: process.resourceUsage().maxRSS * 1024, cpu: this.cpu.snapshot() };
+      rssMaxBytes: process.resourceUsage().maxRSS * 1024, cpu: this.cpu.snapshot(),
+      eventLoop: this.eventLoop.snapshot() };
   }
 
   start(): void {
+    this.eventLoop.start();
     this.session.connect();
     this.session.post("HeapProfiler.startSampling", { samplingInterval: 524288 }, error => {
       if (error) this.log("memory_profile_error", { operation: "start_sampling" });
@@ -44,6 +48,7 @@ export class MemoryMonitor {
     if (this.stopped) return;
     this.cpu.sample();
     this.log("process_memory", { ...this.snapshot(), activity: this.state() });
+    this.eventLoop.reset();
     this.samples++;
     if (this.samples % 6 === 0) void this.saveProfile();
   }
@@ -78,5 +83,6 @@ export class MemoryMonitor {
       await new Promise<void>(resolve => this.session.post("HeapProfiler.stopSampling", () => resolve()));
     }
     this.session.disconnect();
+    this.eventLoop.stop();
   }
 }

@@ -65,7 +65,8 @@ async function main() {
         backfillState: pipeline.backfill.status.state, vpHistoryState: pipeline.vpHistory.state.state }),
     });
   } else log("long_vp_disabled", longStatus());
-  const upstream = new Upstream({ apiKey: config.apiKey, receiver: new MarketReceiver(receiver, gc.receiver), log, symbols: ["NQ", "GC"] });
+  const upstream = new Upstream({ apiKey: config.apiKey, receiver: new MarketReceiver(receiver, gc.receiver), log, symbols: ["NQ", "GC"],
+    eventLoopSnapshot: () => memory.eventLoop.snapshot() });
   const hub: Hub = new Hub({
     savedRange: () => pipeline.store.savedRange,
     read: (from, to) => pipeline.readRange(from, to),
@@ -162,7 +163,8 @@ async function main() {
   }
   if (shuttingDown) return;
   log("storage_initialized", { elapsedMs: performance.now() - started });
-  activity = () => ({ delivery: hub.snapshot(), backfill: pipeline.backfill.snapshot().state });
+  activity = () => ({ delivery: hub.snapshot(), backfill: pipeline.backfill.snapshot().state,
+    upstreamReceive: upstream.receiveDiagnostics() });
   settingsTrace?.start();
   // Neither HTTP readiness nor WS rangeDone can be exposed before full recovery.
   http = app.listen(config.port, "0.0.0.0");

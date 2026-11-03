@@ -46,6 +46,7 @@ export function createStatusApp(upstream: Upstream, receiver: Receiver, apiKey: 
     res.set("Cache-Control", "no-store");
     res.json({ ...(statusSnapshot(upstream, selected?.receiver ?? receiver, apiKey, selected?.extra ?? extra,
       selected?.delivery ?? delivery) as Record<string, unknown>), symbol,
+      upstreamDiagnostics: upstream.receiveDiagnostics(),
       ...(memory ? { memory: memory() } : {}), ...(isolation ? { measurementIsolation: isolation() } : {}),
       ...(settings ? { settings: settings.snapshot() } : {}),
       ...(longVpSettings ? { longVpSettings: longVpSettings.snapshot() } : {}),
