@@ -108,13 +108,13 @@ test("FOOTPRINT replay uses the saved-trade reader only, clips at the fractional
   assert.deepEqual(playback.map(v => v.seq), [2]);
   assert(playback.every(v => v.tsUs < 101_125_000));
 
-  await session.range({ reqId: 8, fromSec: 100, toSec: 101 });
+  await session.range({ reqId: 8, fromSec: 100, toSec: 102 });
   const rangeRows = json(events).filter(v => v.type === "rangeTrades").flatMap(v => v.trades) as Trade[];
   assert.deepEqual(rangeRows.map(v => v.seq), [1, 2]);
   const done = json(events).findLast(v => v.type === "rangeDone");
   assert.equal(done.trades, 2);
   assert.deepEqual(done.footprint, {
-    coverage: [[100, 101]], gaps: [], noData: [], quality: "recorded_not_guaranteed",
+    coverage: [[100, 102]], gaps: [], noData: [], quality: "recorded_not_guaranteed",
   });
   assert.equal(events.some(v => Buffer.isBuffer(v)), false);
   assert.equal(json(events).some(v => v.type === "vp" || v.type === "sessionIndicators"), false);

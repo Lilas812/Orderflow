@@ -118,7 +118,8 @@ try {
     await p.screenshot(`${evidenceDir}/${symbol}-footprint-backward.png`);
 
     const beforeSwitch = await p.evaluate(stateExpr + ".positionUs");
-    await p.evaluate("document.querySelector('[data-testid=\"link-view-heatmap\"]').click()");
+    await p.evaluate(`(() => { const a=document.querySelector('[data-testid="link-view-heatmap"]');
+      const u=new URL(a.href);u.searchParams.set('debug','1');u.searchParams.set('renderer','canvas');a.href=u;a.click(); })()`);
     await waitFor(() => p.evaluate(`document.querySelector('#heatmap') && ${stateExpr}?.state === 'paused'`), 30000);
     const heatHead = await p.evaluate(stateExpr + ".positionUs");
     assert.equal(heatHead, beforeSwitch, `${symbol}: heatmap did not restore the shared replay position`);
@@ -126,7 +127,8 @@ try {
     assert.equal(totalPeers(await readPeers()), 1, `${symbol}: screen switch opened overlapping replay sockets`);
     await p.screenshot(`${evidenceDir}/${symbol}-heatmap-shared-replay.png`);
 
-    await p.evaluate("document.querySelector('[data-testid=\"link-view-footprint\"]').click()");
+    await p.evaluate(`(() => { const a=document.querySelector('[data-testid="link-view-footprint"]');
+      const u=new URL(a.href);u.searchParams.set('debug','1');u.searchParams.set('renderer','canvas');a.href=u;a.click(); })()`);
     await waitFor(() => p.evaluate(`window.__footprintDebug && ${stateExpr}?.state === 'paused'`), 30000);
     assert.equal(await p.evaluate(stateExpr + ".positionUs"), beforeSwitch,
       `${symbol}: footprint did not restore the shared replay position`);

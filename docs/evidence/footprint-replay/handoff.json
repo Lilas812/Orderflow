@@ -1,0 +1,67 @@
+{
+  "checks": [
+    {
+      "symbol": "NQ",
+      "grouping": {
+        "timeframe": 300,
+        "rowTicks": 50,
+        "trades": 423,
+        "tradesBefore": 423
+      },
+      "playingHandoffs": [
+        {
+          "view": "heatmap",
+          "positionUs": 1793299220000000,
+          "state": "playing"
+        },
+        {
+          "view": "footprint",
+          "positionUs": 1793299224500000,
+          "state": "playing"
+        }
+      ],
+      "liveOnBothScreens": true
+    },
+    {
+      "symbol": "GC",
+      "grouping": {
+        "timeframe": 300,
+        "rowTicks": 50,
+        "trades": 1766,
+        "tradesBefore": 31
+      },
+      "playingHandoffs": [
+        {
+          "view": "heatmap",
+          "positionUs": 1793299220000000,
+          "state": "playing"
+        },
+        {
+          "view": "footprint",
+          "positionUs": 1793299225252000,
+          "state": "playing"
+        }
+      ],
+      "liveOnBothScreens": true
+    }
+  ],
+  "browser": {
+    "pid": 36855,
+    "exited": true,
+    "exitCode": 0,
+    "signal": null,
+    "port": 46013,
+    "profile": "/tmp/footprint-cdp-ClwqCG"
+  },
+  "browserPidAbsent": true,
+  "peers": [
+    [
+      "NQ",
+      0
+    ],
+    [
+      "GC",
+      0
+    ]
+  ]
+}

@@ -45,16 +45,17 @@
       }
     ],
     "metrics": {
-      "elapsedMs": 202245.593932,
+      "elapsedMs": 77509.697082,
       "cpu": {
-        "user": 2710903,
-        "system": 584961
+        "user": 2143254,
+        "system": 649937
       },
-      "eventLoopMaxMs": 46.268415,
-      "txWireBytes": 0,
-      "rss": 450342912,
+      "eventLoopMaxMs": 81.854463,
+      "txWireBytes": 859701,
+      "rss": 582893568,
       "replayWorkMax": {
-        "window": 1.4144880000094417
+        "window": 0.40385199999946053,
+        "advance": 0.3957769999997254
       }
     },
     "peers": [
@@ -67,8 +68,8 @@
         0
       ]
     ],
-    "maxReplayPeers": 0,
-    "pid": 34631,
+    "maxReplayPeers": 1,
+    "pid": 35330,
     "symbols": [
       {
         "symbol": "NQ",
@@ -96,15 +97,120 @@
       }
     ]
   },
-  "symbols": [],
+  "symbols": [
+    {
+      "symbol": "NQ",
+      "startSec": 1793298720,
+      "endSec": 1793299320,
+      "virtualSeconds": 600,
+      "speed": 60,
+      "wallMs": 10052,
+      "server": {
+        "pid": 35330,
+        "cpuUs": 578241,
+        "cpuCores": 0.05680622479027663,
+        "eventLoopMaxMs": 14.573567,
+        "txWireBytes": 120120,
+        "replayWorkMax": {
+          "window": 0,
+          "advance": 4.5265309999958845
+        },
+        "rss": 596172800,
+        "maxReplayPeers": 1
+      },
+      "browser": {
+        "taskDurationSec": 1.0529549999999999,
+        "scriptDurationSec": 0.252953,
+        "heapDeltaBytes": 6130728,
+        "receivedBytes": 1622675
+      },
+      "footprint": {
+        "draw": {
+          "count": 52,
+          "p50Ms": 5.299999997019768,
+          "p95Ms": 7.9000000059604645,
+          "maxMs": 19.5
+        },
+        "playback": {
+          "count": 7646,
+          "quantity": 8162,
+          "sha256": "3ae27d34a01060a03607e2428b63403ebfa16e58fb0117ab08afc33d6d1867da"
+        },
+        "cache": {
+          "trades": 8787,
+          "maxTrades": 300000,
+          "seconds": 647,
+          "bars": 131,
+          "barBuilds": 394,
+          "evictions": 0
+        },
+        "quality": "recorded_not_guaranteed",
+        "futureFrames": 0,
+        "binaryFrames": 0,
+        "errors": []
+      }
+    },
+    {
+      "symbol": "GC",
+      "startSec": 1793298720,
+      "endSec": 1793299320,
+      "virtualSeconds": 600,
+      "speed": 60,
+      "wallMs": 10112,
+      "server": {
+        "pid": 35330,
+        "cpuUs": 353594,
+        "cpuCores": 0.034872916337701204,
+        "eventLoopMaxMs": 11.821055,
+        "txWireBytes": 17817,
+        "replayWorkMax": {
+          "window": 0,
+          "advance": 0.774784000008367
+        },
+        "rss": 591204352,
+        "maxReplayPeers": 1
+      },
+      "browser": {
+        "taskDurationSec": 0.8888199999999999,
+        "scriptDurationSec": 0.2124410000000001,
+        "heapDeltaBytes": 5412760,
+        "receivedBytes": 176597
+      },
+      "footprint": {
+        "draw": {
+          "count": 52,
+          "p50Ms": 4.899999998509884,
+          "p95Ms": 6.899999998509884,
+          "maxMs": 15.800000004470348
+        },
+        "playback": {
+          "count": 534,
+          "quantity": 551,
+          "sha256": "236211bb1934716afe6d5a9d0df4aec91df9a2c9c57247309224a217ec45b669"
+        },
+        "cache": {
+          "trades": 598,
+          "maxTrades": 300000,
+          "seconds": 217,
+          "bars": 131,
+          "barBuilds": 375,
+          "evictions": 0
+        },
+        "quality": "recorded_not_guaranteed",
+        "futureFrames": 0,
+        "binaryFrames": 0,
+        "errors": []
+      }
+    }
+  ],
   "cleanup": {
     "browser": {
-      "pid": 35055,
+      "pid": 35545,
       "exited": true,
       "exitCode": 0,
       "signal": null,
-      "port": 33995,
-      "profile": "/tmp/footprint-cdp-nI4Xos"
+      "port": 33545,
+      "profile": "/tmp/footprint-cdp-Z1N9hm"
     },
     "browserPidAbsent": true,
     "peers": [
@@ -118,6 +224,6 @@
       ]
     ],
     "zeroPeers": true,
-    "fixture": 34631
+    "fixture": 35330
   }
 }

@@ -15,4 +15,12 @@ description: SPECの250msという記述について承認された仮想時間�
 
 **Why:** ツール欄を2アイコンに限定する旧記述などがリプレイ追加を妨げないよう、ユーザーが今回の指示の優先を承認した。
 
-**How to apply:** リプレイUIを旧規則に合わせて撤去しない。置き換えた解釈は `docs/REPLAY_UI_REPORT.md` の「仕様にない値」で確認する。FOOTPRINT・LONG VPへのリプレイ追加や本番操作には広げない。
+**How to apply:** リプレイUIを旧規則に合わせて撤去しない。置き換えた解釈は `docs/REPLAY_UI_REPORT.md` の「仕様にない値」で確認する。LONG VPへのリプレイ追加や本番操作には広げない。
+
+## FOOTPRINTへの限定拡張
+
+ユーザーは後続の指示で、HEATMAPだけだったリプレイをFOOTPRINTと連動させ、FOOTPRINTの「最新から2時間」をリプレイ中のみ「再生位置から前2時間」へ置き換えることを明示的に許可した。正本本文は次の差し替えまで変更しない。
+
+**Why:** 旧仕様とこのメモのHEATMAP限定を理由に、承認済みのFOOTPRINTリプレイを撤去・拒否しないため。
+
+**How to apply:** 今回の限定優先は `docs/FOOTPRINT_REPLAY_REPORT.md` で確認する。ライブの閲覧範囲、LONG VP、本番操作への拡大許可ではない。
