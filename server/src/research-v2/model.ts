@@ -47,10 +47,13 @@ export function integerUs(v: string | number) {
   return n;
 }
 export function knownContract(v: string) { return !!v && !["UNKNOWN", "MIXED"].includes(v); }
-export function eligible(a: Availability | undefined, asOfUs: number, mode: Mode) {
-  return mode === "event_time_research" || !!a && a.basis === "local_arrival_and_finalization"
+export function hasAvailabilityEvidence(a: Availability | undefined): a is Availability {
+  return !!a && a.basis === "local_arrival_and_finalization"
     && Number.isSafeInteger(a.localArrivalUs) && Number.isSafeInteger(a.finalizedUs)
-    && a.localArrivalUs >= 0 && a.finalizedUs >= a.localArrivalUs
+    && a.localArrivalUs >= 0 && a.finalizedUs >= a.localArrivalUs;
+}
+export function eligible(a: Availability | undefined, asOfUs: number, mode: Mode) {
+  return mode === "event_time_research" || hasAvailabilityEvidence(a)
     && a.localArrivalUs <= asOfUs && a.finalizedUs <= asOfUs;
 }
 /** Union coverage, with a deadline only for strict X/history. A missing body has no ranges. */

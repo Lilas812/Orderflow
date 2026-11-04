@@ -79,14 +79,49 @@ test("unknown volume changes VP without directional allocation; exact event-orde
 test("strict arrival excludes late events and does not promote recvUs or missing aggregate evidence", () => {
   const f = fixture(), strict = { ...calc, mode: "arrival_verified" as const };
   assert.equal(build(f, strict).x.buy_60s, 60);
-  f.ticks[1790]!.availability = proof(a + 1);
-  assert.equal(build(f, strict).x.buy_60s, 59);
+  f.ticks[1790]!.availability = proof(a + 2);
+  const late = build(f, strict);
+  assert.equal(late.x.buy_60s, 59); assert.equal(late.history[1790]!.coverage_mask, 1);
+  assert.equal(late.history[1790]!.buy, 0); assert.equal(late.audit.verifiedLatePast, 1);
+  const oneUnknown = fixture(); delete oneUnknown.ticks[1790]!.availability;
+  const uncertain = build(oneUnknown, strict);
+  assert.equal(uncertain.x.buy_60s, null); assert.equal(uncertain.x.distance_poc, null);
+  assert.equal(uncertain.x.cvd_slope_10m, null); assert.equal(uncertain.history[1790]!.coverage_mask, 0);
+  assert.equal(uncertain.history[1790]!.buy, null); assert.equal(uncertain.history[1790]!.close, null);
+  assert.equal(uncertain.history[1790]!.missing_reason, "trade_arrival_or_finalization_evidence_missing");
+  assert.equal(uncertain.reference_price_ticks, 100); // A later verified price does not cross this unknown second.
+  delete oneUnknown.ticks.at(-1)!.availability;
+  const lastUnknown = build(oneUnknown, strict);
+  assert.equal(lastUnknown.reference_price_ticks, null);
+  assert.equal(lastUnknown.reference_reason, "trade_arrival_or_finalization_evidence_missing");
   f.ticks.forEach(t => { delete t.availability; t.recvUs = 0; });
   const r = build(f, strict);
-  assert.equal(r.reference_price_ticks, null); assert.equal(r.x.buy_60s, 0); // proved snapshot coverage, but no locally available trades
+  assert.equal(r.reference_price_ticks, null); assert.equal(r.x.buy_60s, null);
+  assert.ok(r.history.every(b => b.coverage_mask === 0 && b.buy === null && b.carried_close === null));
   f.coverage.ticks.forEach(c => { delete c.availability; });
   const unknown = build(f, strict);
   assert.equal(unknown.x.buy_60s, null); assert.ok(unknown.history.every(b => b.buy === null));
+});
+test("pre-window real price seeds empty leading seconds: hand RV=2, provenance and no fabricated OHLC", () => {
+  const f = fixture();
+  f.ticks = f.ticks.slice(3);
+  f.ticks.push({ ...f.ticks[0]!, tsUs: a - 1800e6 - 1, seq: -1, price: 98 });
+  f.coverage.ticks[0]!.fromUs = a - 1801e6;
+  const r = build(f);
+  assert.equal(r.x.rv_30m, 2); assert.equal(r.x.rv_5m, 0);
+  assert.equal(r.history_initial_price_used, 1); assert.equal(r.history_initial_price_ticks, 98);
+  assert.equal(r.history_initial_price_ts, String(a - 1800e6 - 1));
+  assert.ok(r.history.slice(0, 3).every(h => h.carried_close === 98 && h.carried_from_pre_window === 1 && h.open === null && h.count === 0));
+  assert.equal(r.history[3]!.carried_from_pre_window, 0);
+  for (const failure of ["gap", "contract", "unknown_arrival", "late"] as const) {
+    const bad = structuredClone(f), seed = bad.ticks.at(-1)!;
+    if (failure === "gap") bad.coverage.ticks[0]!.fromUs = a - 1800e6;
+    if (failure === "contract") seed.contract = "NQH7";
+    if (failure === "unknown_arrival") delete seed.availability;
+    if (failure === "late") seed.availability = proof(a + 2);
+    const b = build(bad, failure === "unknown_arrival" || failure === "late" ? { ...calc, mode: "arrival_verified" } : calc);
+    assert.equal(b.x.rv_30m, null, failure); assert.equal(b.history_initial_price_used, 0, failure);
+  }
 });
 test("known empty vs gap, exact duplicate trades, contract change, missing reference, partial outcome", () => {
   const f = fixture();
@@ -208,4 +243,24 @@ test("explicit research settings validation has no fitted quantiles or implicit 
   const config: Config = { schema: "orderflow.research.v2.1", calculation: calc, sources: [], splits: null };
   assert.doesNotThrow(() => validateConfig(config));
   assert.throws(() => validateConfig({ ...config, calculation: { ...calc, lookbackSeconds: NaN } }));
+});
+test("real read path finds a continuous same-contract seed across the preceding hour without modifying input", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "research-v2-test-seed-"));
+  try {
+    const f = fixture(), source = path.join(root, "source"), directory = path.join(source, "trades/NQ/2026-10-29");
+    await fs.mkdir(directory, { recursive: true });
+    const seed = { ...f.ticks[0]!, tsUs: a - 1800e6 - 1, price: 98 };
+    await fs.writeFile(path.join(directory, "21.jsonl.gz"), gzipSync(JSON.stringify(seed) + "\n"));
+    await fs.writeFile(path.join(directory, "22.jsonl.gz"), gzipSync(f.ticks.slice(3).map(t => JSON.stringify(t)).join("\n") + "\n"));
+    await fs.writeFile(path.join(source, "coverage.json"), JSON.stringify({ tick: [[a / 1e6 - 1801, a / 1e6 + 900]], book: [] }));
+    const before = await hashFile(path.join(directory, "21.jsonl.gz"));
+    const c: Config = { schema: "orderflow.research.v2.1", calculation: calc, splits: null,
+      sources: [{ symbol: "NQ", contract: "NQZ6", root: source, sourceKind: "synthetic_test_only", asOfUs: [String(a)] }] };
+    const out = await exportV2(c, path.join(root, "out"), { revision: "fixture", sourceHash: "fixture" }, new AbortController().signal);
+    const rows = parseCsv(await fs.readFile(path.join(out.directory, "features.csv"), "utf8"));
+    assert.equal(rows[1]![rows[0]!.indexOf("rv_30m")], "2");
+    const samples = parseCsv(await fs.readFile(path.join(out.directory, "samples.csv"), "utf8"));
+    assert.equal(samples[1]![samples[0]!.indexOf("history_initial_price_used")], "1");
+    assert.equal(await hashFile(path.join(directory, "21.jsonl.gz")), before);
+  } finally { await fs.rm(root, { recursive: true, force: true }); }
 });

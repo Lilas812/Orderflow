@@ -62,7 +62,8 @@ export async function exportV2(config: Config, output: string, code: { revision:
   try {
     const xs = await open("features.csv", ["sample_id", ...X_ALLOWLIST]);
     const hs = await open("history.csv", ["sample_id", "from_us", "to_us", "coverage_mask", "contract_mask",
-      "open", "high", "low", "close", "buy", "sell", "unknown", "count", "carried_close", "carried"]);
+      "open", "high", "low", "close", "buy", "sell", "unknown", "count", "carried_close", "carried",
+      "carried_from_pre_window", "missing_reason"]);
     const ys = await open("targets.csv", ["sample_id", "horizon_seconds", "from_us", "to_us", "observation_end_us", "last_trade_us",
       "endpoint_change_ticks", "upward_excursion_ticks", "downward_excursion_ticks", "missing_reason", "availability_basis"]);
     const an = await open("annotations.csv", ["annotation_id", "sample_id", "symbol", "event_us", "annotation_price_ticks",
@@ -106,6 +107,8 @@ export async function exportV2(config: Config, output: string, code: { revision:
             as_of_basis: [...bases].sort().join("|"), actual_judgment_us: null, availability_mode: config.calculation.mode,
             reference_price_ticks: r.reference_price_ticks, reference_price_ts: r.reference_price_ts, reference_age_us: r.reference_age_us,
             reference_reason: r.reference_reason, session_group: `${s.symbol}:${s.contract}:${r.session_start_us}`,
+            history_initial_price_used: r.history_initial_price_used, history_initial_price_ticks: r.history_initial_price_ticks,
+            history_initial_price_ts: r.history_initial_price_ts,
             near_group: "", feature_start_us: r.feature_start_us, target_end_us: r.target_end_us,
             tick_size: INSTRUMENTS[s.symbol].tickSize, source_kind: s.sourceKind };
           dedup.set(sample_id, sample); samples.push(sample);
@@ -137,6 +140,7 @@ export async function exportV2(config: Config, output: string, code: { revision:
     }
     const sc = await open("samples.csv", ["sample_id", "symbol", "contract", "as_of_us", "as_of_basis", "actual_judgment_us",
       "availability_mode", "reference_price_ticks", "reference_price_ts", "reference_age_us", "reference_reason",
+      "history_initial_price_used", "history_initial_price_ticks", "history_initial_price_ts",
       "session_group", "near_group", "feature_start_us", "target_end_us", "tick_size", "source_kind"]);
     for (const s of samples) await sc.row(s);
     const splitRows = assignSplits(sampleResults, config.splits);
@@ -155,6 +159,9 @@ export async function exportV2(config: Config, output: string, code: { revision:
       + "\n\nhistory: from/to_usはas_ofから逆算した1秒半開区間、全行as_of未満。OHLCはその区間の実約定だけ。"
       + "known-emptyはOHLC=null、数量/件数=0。欠損・限月混在は数量もnull。carried_closeだけ別列で既知無約定秒を持越す。"
       + "coverage_maskは選択した可用性モードでのcoverage、contract_maskはその秒の実約定の限月整合（無約定は1、限月の新証明ではない）。\n"
+      + "arrival_verifiedでは根拠のない約定の秒をcoverage_mask=0としmissing_reasonを記録。証拠付き後着の除外とは区別する。\n"
+      + "carried_from_pre_window=1は、同限月・連続coverageで窓前の実約定から持越した秒。実OHLCは生成しない。"
+      + "samplesのhistory_initial_price_used/price_ticks/tsに初期値の利用と由来を記録する。\n"
       + "targets: [as_of,as_of+H)の最終実価格-reference、上向き最大幅、下向き最大幅。既知無約定のみ前値保持。"
       + "annotationsのcreatedUs/futureSecondsは当時の判断時刻や先読みなしを証明しない。\n", { mode: 0o600 });
     await fs.writeFile(path.join(owned, "README.md"), "# 比較検証用データセットv2.1\n\n"

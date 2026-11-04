@@ -67,6 +67,25 @@ export class Snapshot {
       if (v.book) for await (const column of columnFileRange(v.book, hour, hour + 3600))
         builder.acceptBoard({ column, contract: null }); // The stored Column has neither contract nor arrival/finalization proof.
     }
+    // Most sessions already contain the pre-window trade. Only when absent, look
+    // backwards through the continuous indexed range, streaming one hour at a time.
+    if (builder.hasPreWindowTrade() || builder.config.mode !== "event_time_research") return;
+    const file = path.join(this.source.root, "coverage.json");
+    let bytes: Buffer;
+    try { bytes = await fs.readFile(file); }
+    catch (e) { if ((e as NodeJS.ErrnoException).code === "ENOENT") return; throw e; }
+    const proof = this.proofs.find(p => p.path === file);
+    if (proof?.before !== createHash("sha256").update(bytes).digest("hex")) throw Error("v2_coverage_changed_before_seed_search");
+    const ranges = (JSON.parse(bytes.toString("utf8")).tick as [number, number][]).sort((u, v) => v[0] - u[0]);
+    let boundary = builder.startUs;
+    for (const [a, b] of ranges) if (a * 1e6 < boundary && b * 1e6 >= boundary) boundary = a * 1e6;
+    for (let hour = Math.floor(from / 3_600e6) * 3600 - 3600; (hour + 3600) * 1e6 > boundary; hour -= 3600) {
+      this.signal.throwIfAborted();
+      const v = await this.hour(hour);
+      builder.input.ticks.push(...v.tickCoverage.map(([a, b]) => ({ fromUs: a * 1e6, toUs: b * 1e6 })));
+      if (v.tick) for await (const { trade } of tradeFileEntries(v.tick, this.signal)) builder.accept(trade);
+      if (builder.hasPreWindowTrade()) break;
+    }
   }
   async verifyOriginals() {
     for (const p of this.proofs) {

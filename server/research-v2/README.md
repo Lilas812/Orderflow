@@ -57,6 +57,42 @@ unzip -t data/research-v2/pilot-new/dataset/dataset-v2.zip
 - CSVのnullは空欄。ID/us列は十進文字列として読み込む。Excel等の自動数値変換では
   16桁usが丸められるため、列型を文字列に指定する（CSV自体に浮動小数変換を加えない）。
 
+## v2.1検証後の修正と、再実行できる照合
+
+arrival_verifiedの証拠がない約定は、当時未到着だと断定せず、その1秒を
+`coverage_mask=0`とする。数量/実OHLC/依存する特徴や参照をnullにし、
+`missing_reason`を残す。証拠付きで締切後に到着/確定した約定は別計数して除外できる。
+
+窓前の最新実約定を同限月・連続coverage・可用性で検証できれば、先頭の無約定秒の
+終値だけへ初期値として持ち越す。実OHLCは作らない。`samples.csv`の
+`history_initial_price_used/history_initial_price_ticks/history_initial_price_ts`と
+`history.csv`の`carried_from_pre_window`に利用・由来を残す。
+通常の読取で初期値が見つからない場合だけ、連続したcoverage内を1時間ずつ逆方向に
+ストリーム探索する。欠損や未知限月を越えて古い値を拾い直さない。
+
+照合対象は明示引数にする。従来のpilot-event等を暗黙に選ばない。生成済みのdatasetを
+変更せず、証拠JSONは`wx`で新規作成するため、再実行時は`--out`だけ別名にできる。
+inspectはdataset自身のconfigを使用する。下記の`NEW1/NEW2`は新しい出力名に置き換える。
+
+```sh
+node --max-old-space-size=256 server/src/research-v2/cli.ts \
+  --config server/research-v2/pilot.json --out data/research-v2/NEW1
+node --max-old-space-size=256 server/src/research-v2/cli.ts \
+  --config server/research-v2/pilot.json --out data/research-v2/NEW2
+node server/research-v2/verify-pilot.mjs \
+  --first data/research-v2/NEW1/dataset --second data/research-v2/NEW2/dataset \
+  --out data/research-v2/NEW-evidence/verify-01.json
+node server/research-v2/inspect-pilot.mjs \
+  --dataset data/research-v2/NEW1/dataset --out data/research-v2/NEW-evidence/inspect-01.json
+node server/research-v2/compare-pilot.mjs \
+  --before data/research-v2/pilot-final-01/dataset --after data/research-v2/NEW1/dataset \
+  --out data/research-v2/NEW-evidence/diff-01.json
+```
+
+verifyは同じ入力・注釈・コードでのcontent_hashと各payload hashを照合し、ZIPはCRCだけ検査する。
+コミット記録で変わるZIP全体SHA-256を、修正前後の再現性比較には使わない。
+式の説明更新でsample_idも変わるので、前後比較はsymbol/contract/as_ofをキーにする。
+
 採用特徴の式・単位はZIPのcolumns.md、列別欠損理由はquality.jsonに記録する。
 VP/POC/VAはNも含むセッションのas_of未満だけ。吸収の買い・売り代理を両方計算し、
 距離・近傍板の原点はreferenceへ統一。手動ラベル・クリック価格でX/Yを切り替えない。

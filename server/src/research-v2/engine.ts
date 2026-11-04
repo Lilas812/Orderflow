@@ -2,14 +2,14 @@ import { createHash } from "node:crypto";
 import { INSTRUMENTS } from "../../../lib/market/instruments.ts";
 import { sessionStartSec } from "../vp/state.ts";
 import { valueArea, sessionClock } from "../labels/features.ts";
-import { covered, eligible, knownContract, type Anchor, type Calculation, type MarketInput, type Tick, type Board } from "./model.ts";
+import { covered, eligible, hasAvailabilityEvidence, knownContract, type Anchor, type Calculation, type MarketInput, type Tick, type Board } from "./model.ts";
 
 export const FORMULAS: Record<string, string> = {
   session: "CT17/01/08/09/14:30/15のv1時間分類、DST対応",
   minutes_from_ct17: "CT17からの実経過分",
   minutes_from_us_open: "CT08:30からの実経過分",
-  rv_5m: "300個の1秒区間終値の差の二乗和平方根、ticks。初期価格/coverageなしはnull",
-  rv_30m: "同1800個",
+  rv_5m: "300個の1秒区間終値の差の二乗和平方根、ticks。窓前の実約定は同限月・連続coverage・到着根拠を確認して初期化。根拠なしはnull",
+  rv_30m: "同1800個。窓前からの初期価格利用はhistory/sampleのフラグと元時刻・価格で区別",
   range_30m: "1800秒の実約定high-low、ticks",
   direction_30m: "1800秒の(last-first)/(high-low)、幅0はnull",
   distance_session_high: "reference−CT17以後as_of未満の実約定high、ticks",
@@ -41,6 +41,7 @@ export interface HistoryRow {
   open: number | null; high: number | null; low: number | null; close: number | null;
   buy: number | null; sell: number | null; unknown: number | null; count: number | null;
   carried_close: number | null; carried: number;
+  carried_from_pre_window: number; missing_reason: string | null;
 }
 export class SampleBuilder {
   readonly anchor: Anchor; readonly config: Calculation; readonly input: MarketInput;
@@ -51,6 +52,8 @@ export class SampleBuilder {
   private sessionLow = Infinity;
   private reference: Tick | null = null;
   private referenceMixed = false;
+  private preWindow: Tick | null = null;
+  private unverifiedSeconds = new Set<number>();
   private events: Tick[] = [];
   private eventBudget = false;
   private boards = new Map<number, Board>();
@@ -58,7 +61,8 @@ export class SampleBuilder {
   readonly startUs: number;
   readonly sessionUs: number;
   audit = { records: 0, past: 0, future: 0, buy: 0, sell: 0, unknown: 0, unknownContract: 0,
-    otherContract: 0, unavailablePast: 0, boardRecords: 0, boardIdentityMissing: 0 };
+    otherContract: 0, unavailablePast: 0, unverifiedPast: 0, verifiedLatePast: 0,
+    boardRecords: 0, boardIdentityMissing: 0 };
   constructor(anchor: Anchor, config: Calculation, input: MarketInput) {
     if (!knownContract(anchor.contract)) throw Error("v2_requires_explicit_confirmed_contract");
     this.anchor = anchor; this.config = config; this.input = input;
@@ -71,7 +75,7 @@ export class SampleBuilder {
       if (!Number.isSafeInteger(n)) throw Error("invalid_trade_integer");
     if (t.size <= 0 || t.price <= 0 || !["buy", "sell", "unknown"].includes(t.side)) throw Error("invalid_trade");
     const a = this.anchor.asOfUs;
-    if (t.tsUs < Math.min(this.startUs, this.sessionUs) || t.tsUs >= a + Math.max(...this.config.horizonsSeconds) * 1e6) return;
+    if (t.tsUs >= a + Math.max(...this.config.horizonsSeconds) * 1e6) return;
     this.audit.records++; this.audit[t.side] += t.size;
     if (!knownContract(t.contract ?? "UNKNOWN")) this.audit.unknownContract++;
     else if (t.contract !== this.anchor.contract) this.audit.otherContract++;
@@ -86,7 +90,17 @@ export class SampleBuilder {
       return;
     }
     this.audit.past++;
-    if (!eligible(t.availability, a, this.config.mode)) { this.audit.unavailablePast++; return; }
+    if (!eligible(t.availability, a, this.config.mode)) {
+      this.audit.unavailablePast++;
+      if (!hasAvailabilityEvidence(t.availability)) {
+        this.audit.unverifiedPast++;
+        // The same one-second grid as history, including bins before the window.
+        this.unverifiedSeconds.add(this.startUs + Math.floor((t.tsUs - this.startUs) / 1e6) * 1e6);
+      } else this.audit.verifiedLatePast++;
+      return;
+    }
+    if (t.tsUs < this.startUs && (!this.preWindow || t.tsUs > this.preWindow.tsUs
+      || t.tsUs === this.preWindow.tsUs && t.seq >= this.preWindow.seq)) this.preWindow = t;
     if (t.tsUs >= this.sessionUs) {
       this.sessionMixed ||= t.contract !== this.anchor.contract;
       if (t.contract === this.anchor.contract) {
@@ -113,6 +127,7 @@ export class SampleBuilder {
       else this.eventBudget = true;
     }
   }
+  hasPreWindowTrade() { return this.preWindow !== null; }
   acceptBoard(b: Board) {
     const sec = b.column.tsSec, a = this.anchor.asOfUs, now = Math.floor(a / 1e6) - 1;
     if (sec < now - 60 || sec > now) return;
@@ -127,21 +142,41 @@ export class SampleBuilder {
       x[k] = typeof v === "number" && !Number.isFinite(v) ? null : v;
       if (x[k] === null) reasons[k] = why;
     };
+    const uncertain = [...this.unverifiedSeconds].sort((u, v) => u - v);
+    const uncertainRange = (from: number, to: number) => {
+      if (from >= to) return false;
+      let low = 0, high = uncertain.length;
+      while (low < high) {
+        const mid = (low + high) >>> 1;
+        if (uncertain[mid]! + 1e6 <= from) low = mid + 1; else high = mid;
+      }
+      return low < uncertain.length && uncertain[low]! < to;
+    };
+    const tickKnown = (from: number, to: number) => !uncertainRange(from, to)
+      && covered(this.input.ticks, from, to, mode, a);
     const reference = this.reference && !this.referenceMixed
-      && covered(this.input.ticks, this.reference.tsUs, a, mode, a) ? this.reference : null;
+      && tickKnown(this.reference.tsUs, a) ? this.reference : null;
     const ref = reference?.price ?? null;
-    let carried: number | null = null;
+    const seed = this.preWindow?.contract === this.anchor.contract
+      && tickKnown(this.preWindow.tsUs, this.startUs) ? this.preWindow : null;
+    let carried: number | null = seed?.price ?? null, seedActive = !!seed, seedUsed = false;
     const history: HistoryRow[] = [];
     for (let i = 0; i < this.config.lookbackSeconds; i++) {
       const from = this.startUs + i * 1e6, b = this.bars.get(i);
-      const mask = covered(this.input.ticks, from, from + 1e6, mode, a);
+      const unknownArrival = uncertainRange(from, from + 1e6);
+      const mask = tickKnown(from, from + 1e6);
       const identity = !b?.mixed, good = mask && identity;
-      if (!good) carried = null; else if (b) carried = b.close;
+      if (!good) { carried = null; seedActive = false; }
+      else if (b) { carried = b.close; seedActive = false; }
+      if (i === 0 && good && !b && carried !== null && seedActive) seedUsed = true;
       history.push({ from_us: String(from), to_us: String(from + 1e6), coverage_mask: +mask, contract_mask: +identity,
         open: good && b ? b.open : null, high: good && b ? b.high : null, low: good && b ? b.low : null,
         close: good && b ? b.close : null, buy: good ? b?.buy ?? 0 : null, sell: good ? b?.sell ?? 0 : null,
         unknown: good ? b?.unknown ?? 0 : null, count: good ? b?.count ?? 0 : null,
-        carried_close: carried, carried: +(good && !b && carried !== null) });
+        carried_close: carried, carried: +(good && !b && carried !== null),
+        carried_from_pre_window: +(good && !b && seedActive && carried !== null),
+        missing_reason: unknownArrival ? "trade_arrival_or_finalization_evidence_missing"
+          : !mask ? "coverage_or_coverage_availability_incomplete" : !identity ? "contract_changed_or_unknown" : null });
     }
     const window = (n: number) => history.slice(-n);
     const good = (n: number) => this.config.lookbackSeconds >= n && window(n).every(b => b.coverage_mask && b.contract_mask);
@@ -166,7 +201,7 @@ export class SampleBuilder {
     const high = Math.max(...rows30.map(b => b.high!)), low = Math.min(...rows30.map(b => b.low!));
     put("range_30m", good(1800) && rows30.length ? high - low : null, generic);
     put("direction_30m", good(1800) && high > low ? (rows30.at(-1)!.close! - rows30[0]!.open!) / (high - low) : null, generic + "_or_zero_range");
-    const sg = !this.sessionMixed && covered(this.input.ticks, this.sessionUs, a, mode, a);
+    const sg = !this.sessionMixed && tickKnown(this.sessionUs, a);
     put("distance_session_high", sg && ref !== null && Number.isFinite(this.sessionHigh) ? ref - this.sessionHigh : null, generic + "_or_no_reference");
     put("distance_session_low", sg && ref !== null && Number.isFinite(this.sessionLow) ? ref - this.sessionLow : null, generic + "_or_no_reference");
     const va = sg ? valueArea(this.profile) : null;
@@ -232,7 +267,11 @@ export class SampleBuilder {
     for (const k of X_ALLOWLIST) if (x[k] === null) reasons[k] ??= generic;
     return { reference_price_ticks: ref, reference_price_ts: reference ? String(reference.tsUs) : null,
       reference_age_us: reference ? String(a - reference.tsUs) : null,
-      reference_reason: reference ? null : this.referenceMixed ? "latest_trade_contract_unverified" : "no_contiguous_known_reference",
+      reference_reason: reference ? null : (this.reference && uncertainRange(this.reference.tsUs, a))
+        || (!this.reference && uncertain.length) ? "trade_arrival_or_finalization_evidence_missing"
+        : this.referenceMixed ? "latest_trade_contract_unverified" : "no_contiguous_known_reference",
+      history_initial_price_used: +seedUsed, history_initial_price_ticks: seedUsed ? seed!.price : null,
+      history_initial_price_ts: seedUsed ? String(seed!.tsUs) : null,
       x, history, targets, reasons, audit: this.audit,
       feature_start_us: String(this.startUs), session_start_us: String(this.sessionUs),
       target_end_us: String(a + Math.max(...this.config.horizonsSeconds) * 1e6) };

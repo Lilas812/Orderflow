@@ -1,54 +1,36 @@
-// Private-output verification only. No network, receiver, browser, credentials or real-time source.
+// Read-only comparison of two explicit completed exports. Never generates/replaces datasets.
 import * as fs from "node:fs/promises";
-import { spawn } from "node:child_process";
+import { createReadStream } from "node:fs";
+import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import path from "node:path";
-const base = path.resolve("data/research-v2");
-const config = JSON.parse(await fs.readFile("server/research-v2/pilot.json", "utf8"));
-const owned = [];
-async function run(file, dir) {
-  const child = spawn(process.execPath, ["--max-old-space-size=256", "server/src/research-v2/cli.ts", "--config", file, "--out", dir],
-    { stdio: ["ignore", "pipe", "pipe"] });
-  owned.push(child.pid);
-  let text = ""; child.stdout.on("data", b => text += b); child.stderr.on("data", b => text += b);
-  const code = await new Promise((resolve, reject) => { child.once("error", reject); child.once("close", resolve); });
-  if (code !== 0) throw Error(text);
-  return JSON.parse(text.trim());
+import assert from "node:assert/strict";
+const args = process.argv.slice(2), arg = flag => args[args.indexOf(flag) + 1];
+if (!["--first", "--second", "--out"].every(f => args.includes(f) && arg(f)))
+  throw Error("usage: verify-pilot.mjs --first DATASET_DIR --second DATASET_DIR --out NEW_EVIDENCE_JSON");
+async function hash(file) {
+  const h = createHash("sha256"); for await (const b of createReadStream(file)) h.update(b); return h.digest("hex");
 }
-const first = JSON.parse(await fs.readFile(path.join(base, "pilot-event-01/dataset/manifest.json"), "utf8"));
-const repeat = await run("server/research-v2/pilot.json", path.join(base, "pilot-event-02"));
-if (first.content_hash !== repeat.contentHash) throw Error("repeat_normalized_hash_mismatch");
-execFileSync("unzip", ["-t", path.join(base, "pilot-event-01/dataset/dataset-v2.zip")]);
-execFileSync("unzip", ["-t", path.join(base, "pilot-event-02/dataset/dataset-v2.zip")]);
-const strictFile = path.join(base, "strict-config.json");
-config.calculation.mode = "arrival_verified";
-for (const s of config.sources) s.annotationIds = [];
-await fs.writeFile(strictFile, JSON.stringify(config, null, 2), { mode: 0o600, flag: "wx" });
-const strict = await run(strictFile, path.join(base, "pilot-strict-01"));
-if (strict.arrivalVerifiedSamples !== 0 || strict.completeTargets !== 0) throw Error("legacy_data_was_promoted_to_strict");
-const cancelDir = path.join(base, "pilot-cancel-01");
-await fs.mkdir(cancelDir, { mode: 0o700 });
-await fs.writeFile(path.join(cancelDir, "other-job-sentinel"), "do not remove", { mode: 0o600 });
-const child = spawn(process.execPath, ["--max-old-space-size=256", "server/src/research-v2/cli.ts",
-  "--config", "server/research-v2/pilot.json", "--out", cancelDir], { stdio: ["ignore", "pipe", "pipe"] });
-owned.push(child.pid);
-let logs = ""; child.stderr.on("data", b => logs += b); child.stdout.resume();
-const closed = new Promise((resolve, reject) => { child.once("error", reject); child.once("close", resolve); });
-let observed = false;
-for (let i = 0; i < 200; i++) {
-  if ((await fs.readdir(cancelDir)).some(s => s.startsWith(".v2-working-"))) { observed = true; break; }
-  await new Promise(r => setTimeout(r, 10));
+const dirs = [path.resolve(arg("--first")), path.resolve(arg("--second"))], manifests = [];
+const expected = ["samples.csv", "features.csv", "history.csv", "annotations.csv", "targets.csv",
+  "splits.csv", "quality.json", "columns.md", "README.md", "config.json"].sort();
+for (const dir of dirs) {
+  const m = JSON.parse(await fs.readFile(path.join(dir, "manifest.json"), "utf8"));
+  assert.deepEqual(m.files.map(f => f.name).sort(), expected);
+  assert.equal(createHash("sha256").update(JSON.stringify(m.files)).digest("hex"), m.content_hash);
+  for (const f of m.files) assert.equal(await hash(path.join(dir, f.name)), f.sha256, f.name);
+  assert.ok(m.input.every(s => s.files.every(f => f.original_unchanged)));
+  execFileSync("unzip", ["-t", path.join(dir, "dataset-v2.zip")]);
+  manifests.push(m);
 }
-child.kill("SIGTERM");
-const cancelCode = await closed;
-if (!observed || cancelCode === 0) throw Error("cancellation_did_not_reach_active_job");
-const remaining = await fs.readdir(cancelDir);
-if (remaining.join() !== "other-job-sentinel") throw Error("cancel_cleanup_ownership_failed");
-if (await fs.readFile(path.join(cancelDir, remaining[0]), "utf8") !== "do not remove") throw Error("sentinel_changed");
-const states = owned.map(pid => { try { process.kill(pid, 0); return { pid, remaining: true }; }
-  catch (e) { if (e.code !== "ESRCH") throw e; return { pid, remaining: false }; } });
-if (states.some(s => s.remaining)) throw Error("own_cli_remaining");
-const result = { repeat, strict, cancellation: { observedActiveJob: observed, pid: child.pid, code: cancelCode,
-  message: logs.trim(), remainingOnlyOtherJobSentinel: true }, ownedProcesses: states };
-await fs.writeFile(path.join(base, "pilot-verification.json"), JSON.stringify(result, null, 2), { mode: 0o600 });
+const [a, b] = manifests;
+assert.equal(a.code.sourceHash, b.code.sourceHash, "same executed source required; commit metadata is not payload");
+assert.deepEqual(a.input, b.input, "same frozen inputs required");
+assert.deepEqual(a.annotation_snapshots, b.annotation_snapshots);
+assert.equal(a.content_hash, b.content_hash);
+const result = { datasets: dirs, sameCode: true, sameInput: true, contentHash: a.content_hash,
+  sourceHash: a.code.sourceHash, recordedRevisions: manifests.map(m => m.code.revision),
+  payloadHashesVerified: true, zipCrcPassed: true, zipHashCompared: false, counts: a.counts };
+await fs.mkdir(path.dirname(arg("--out")), { recursive: true, mode: 0o700 });
+await fs.writeFile(arg("--out"), JSON.stringify(result, null, 2), { mode: 0o600, flag: "wx" });
 console.log(JSON.stringify(result));
