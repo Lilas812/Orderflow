@@ -686,3 +686,17 @@ mtime_ms = 1793807627798
 storage_uri = "gcs://replit-rams-assets-pike/rams/assets/repl:c326af06-2355-4bfb-a52e-f433587c4cd9/b31e4120-3627-4802-b32d-65b5c6758971/6414495c-9a98-4906-9e0f-c8391b21fd65"
 storage_version_token = "1793807684625909"
 content_type = "text/markdown"
+
+[[outputs]]
+id = "ruypNhyxGiTYeU7MwQd5a"
+uri = "file://docs/RESEARCH_NQ_REBUILD_V22_REPORT.md"
+type = "text"
+title = "NQ研究世代の再生成・v2.2再出力報告"
+description = "原因照合、購入原本との一致、NQ品質改善、GC完全一致、再現性、試験結果と再実行コマンド。"
+logical_id = "d09ced5a-af6c-42b4-9a73-409930b1a439"
+content_hash = "sha256:4d1c7fdc076e93034f40ce76fd77a9f8639745b9ec30eb780607de9ca8d2ad6e"
+size = 20192
+mtime_ms = 1793810899811
+storage_uri = "gcs://replit-rams-assets-pike/rams/assets/repl:c326af06-2355-4bfb-a52e-f433587c4cd9/d09ced5a-af6c-42b4-9a73-409930b1a439/dd3ac42c-2bd3-4c72-a975-c7ce6283f5fa"
+storage_version_token = "1793810964347878"
+content_type = "text/markdown"
