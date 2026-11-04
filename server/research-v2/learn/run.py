@@ -131,6 +131,8 @@ def run(preparation, out):
         "thread_pools": threadpool_info(),
         "thread_environment": {k: os.environ.get(k) for k in
             ("OMP_NUM_THREADS", "OMP_THREAD_LIMIT", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS", "HIGHS_THREADS")},
+        "native_runtime": {name: sha(Path(os.environ["ORDERFLOW_LEARN_NATIVE_LIB"]) / name)
+                           for name in ("libstdc++.so.6", "libgomp.so.1")},
     })
 
 

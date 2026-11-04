@@ -31,5 +31,5 @@
 - [受信停止対策の承認](receive-stall-exceptions.md) — 履歴fork分離とwatchdog再確認・猶予は正本に優先する限定承認。本番反映の承認ではない。
 - [静かな秒の取得済み解釈](coverage-semantics.md) — 実ライブ板＋先行する板データ時刻によるtick coverage承認。正本未反映の限定例外。
 - [転換点マークの承認](turning-point-labels-decisions.md) — ツールバーの旧制約よりマーク追加指示を優先。仕様書本文は変更しない。
-- [研究データの比較目的](research-comparison-scope.md) — 主観の天底・客観反転・売買結果を分けて比較し、v2完成を訓練開始やv1置換の許可としない。
+- [研究の目的と承認境界](research-comparison-scope.md) — 主観・反転・売買を分離し、再出力・学習・test利用・依存操作の承認範囲を区別する。
 - [Library登録上限](library-asset-limit.md) — 100MiB超は登録拒否。出力の生成・検証成功と、Libraryへの登録成功を区別する。

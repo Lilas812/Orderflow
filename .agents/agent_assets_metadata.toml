@@ -728,3 +728,17 @@ mtime_ms = 1793813828812
 storage_uri = "gcs://replit-rams-assets-pike/rams/assets/repl:c326af06-2355-4bfb-a52e-f433587c4cd9/b2b5e6cc-1c87-43dd-9d5d-aad3a3bddc88/60c4e01a-4475-46d5-b48d-d7a762b6dd9f"
 storage_version_token = "1793813841023412"
 content_type = "text/markdown"
+
+[[outputs]]
+id = "NeObkbPDQ7cybsxP-71kB"
+uri = "file://docs/RESEARCH_V22_LEARNING_REPORT.md"
+type = "text"
+title = "v2.2 最小学習比較の結果"
+description = "testを封印した10日walk-forwardの結果、照合、資源使用量、再現性を記録。"
+logical_id = "e0dceeca-a916-4df0-8e45-5c56a7dfda2d"
+content_hash = "sha256:44c89e83750359eb22d25b64c7d57d5bec652cc5e8a6f53e7de6a6a6c8908a56"
+size = 26053
+mtime_ms = 1793817804119
+storage_uri = "gcs://replit-rams-assets-pike/rams/assets/repl:c326af06-2355-4bfb-a52e-f433587c4cd9/e0dceeca-a916-4df0-8e45-5c56a7dfda2d/e8ee8f82-a064-4458-b8d0-31bcfbe69e3c"
+storage_version_token = "1793817842519389"
+content_type = "text/markdown"

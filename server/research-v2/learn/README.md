@@ -24,6 +24,11 @@ uv pip install \
 新コード版として記録する。暗黙に3.13へ切り替えない。
 ネイティブライブラリ不足なら依存エラーで停止し、製品設定は変更しない。
 
+この環境ではpip wheelのimportに既存GCC15.2のC++/OpenMPランタイムが必要だった。
+`execute.sh`が既存`/nix/store/xc0ga87wdclrx54qjaryahkkmkmqi9qz-gcc-15.2.0-lib/lib`
+を研究プロセスの`LD_LIBRARY_PATH`だけへ追加する。新たなシステム依存は入れず、
+製品・ワークフローの環境変数は変えない。2ライブラリのSHAを実行manifestへ記録する。
+
 ## 実行
 
 すべてプロジェクトルートで実行する。既存出力への再書込みは拒否する。
