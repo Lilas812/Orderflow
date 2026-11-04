@@ -1,0 +1,8 @@
+# CPython 3.12.12; install only into data/research-v2/learn-01/python-site.
+# All direct and transitive dependencies pinned; no project or workflow changes.
+numpy==2.3.5
+scipy==1.16.3
+scikit-learn==1.7.2
+lightgbm==4.6.0
+joblib==1.5.2
+threadpoolctl==3.6.0
