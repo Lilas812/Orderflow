@@ -25,3 +25,8 @@ channel = "stable-25_05"
 
 [objectStorage]
 defaultBucketID = "replit-objstore-f5a3fd54-b86f-4426-9496-f40948d925e9"
+
+[userenv]
+
+[userenv.shared]
+DATABENTO_API_KEY = "db-C7wJ35qwujAcVS87sQbAdsbhssg8m"
