@@ -672,3 +672,17 @@ mtime_ms = 1793800963569
 storage_uri = "gcs://replit-rams-assets-pike/rams/assets/repl:c326af06-2355-4bfb-a52e-f433587c4cd9/30dd9d7e-c57b-44ac-be20-8a5591da1210/23c93954-7ccc-4dcc-b7a5-7c7992f5a6a6"
 storage_version_token = "1793801248646761"
 content_type = "application/octet-stream"
+
+[[outputs]]
+id = "qDj7jxIHlfTylucHMOF6G"
+uri = "file://docs/RESEARCH_DATASET_V22_REPORT.md"
+type = "text"
+title = "v2.2 全期間出力・検証報告"
+description = "64,800標本の出力、共有履歴、時系列分割、再現性、サーバー試験の未合格3件を記録。"
+logical_id = "b31e4120-3627-4802-b32d-65b5c6758971"
+content_hash = "sha256:4a65c499a4feeb48508838d8021ec54e83d3226e6a5f0a46dd53848afb69a79f"
+size = 18622
+mtime_ms = 1793807627798
+storage_uri = "gcs://replit-rams-assets-pike/rams/assets/repl:c326af06-2355-4bfb-a52e-f433587c4cd9/b31e4120-3627-4802-b32d-65b5c6758971/6414495c-9a98-4906-9e0f-c8391b21fd65"
+storage_version_token = "1793807684625909"
+content_type = "text/markdown"
