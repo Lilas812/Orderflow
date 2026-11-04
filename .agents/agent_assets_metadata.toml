@@ -700,3 +700,31 @@ mtime_ms = 1793810899811
 storage_uri = "gcs://replit-rams-assets-pike/rams/assets/repl:c326af06-2355-4bfb-a52e-f433587c4cd9/d09ced5a-af6c-42b4-9a73-409930b1a439/dd3ac42c-2bd3-4c72-a975-c7ce6283f5fa"
 storage_version_token = "1793810964347878"
 content_type = "text/markdown"
+
+[[outputs]]
+id = "HcvWVNT5SKAiTwSj-83ab"
+uri = "file://docs/RESEARCH_V22_MINIMAL_LEARNING_DESIGN.md"
+type = "text"
+title = "v2.2 最小学習比較の設計書・未承認"
+description = "目的・入力・モデル・評価・環境の選択肢と推奨案、13項目の承認事項。学習は未実施。"
+logical_id = "16d72102-6b8f-4ea8-b205-c5da3d0df38a"
+content_hash = "sha256:af2ce175c62829f04b2f5b494858974024144e502bf63df28392de204bc3afa7"
+size = 27015
+mtime_ms = 1793813154847
+storage_uri = "gcs://replit-rams-assets-pike/rams/assets/repl:c326af06-2355-4bfb-a52e-f433587c4cd9/16d72102-6b8f-4ea8-b205-c5da3d0df38a/0e7714e9-a16b-4180-a4d6-751b9334adb6"
+storage_version_token = "1793813839696617"
+content_type = "text/markdown"
+
+[[outputs]]
+id = "wMxDqQtUXkk8hrTFjfL3h"
+uri = "file://docs/RESEARCH_V22_CT1026_REPORT.md"
+type = "text"
+title = "NQ CT10/26追加・再現性と既存行一致の報告"
+description = "1,440標本追加、全期間2回出力のcontent_hash一致、旧NQ/GC行の不変、fold別件数・保護・試験結果。"
+logical_id = "b2b5e6cc-1c87-43dd-9d5d-aad3a3bddc88"
+content_hash = "sha256:f36ccc9f3b9f8874d608705fae53161e17ce8cd83b49978ed4ae6229c8535c03"
+size = 11991
+mtime_ms = 1793813828812
+storage_uri = "gcs://replit-rams-assets-pike/rams/assets/repl:c326af06-2355-4bfb-a52e-f433587c4cd9/b2b5e6cc-1c87-43dd-9d5d-aad3a3bddc88/60c4e01a-4475-46d5-b48d-d7a762b6dd9f"
+storage_version_token = "1793813841023412"
+content_type = "text/markdown"
