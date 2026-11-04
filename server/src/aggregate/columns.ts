@@ -26,6 +26,8 @@ export class ColumnAggregator {
   expire(nowUs: number) {
     if (this.pending && nowUs >= (Math.floor(this.pending.tsUs / 1_000_000) + 3) * 1_000_000) this.finish();
   }
+  /** Final observed snapshot only: no wall-clock advancement or gap filling. */
+  flushObserved() { this.finish(); }
 
   /** History input is complete for a half-open window, so its last second is final. */
   finish() {

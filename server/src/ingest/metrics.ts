@@ -1,6 +1,7 @@
 import type { Log } from "../logger.ts";
 
 export class Metrics {
+  readonly bookRejections: Record<string, number> = Object.create(null);
   readonly byType: Record<string, number> = Object.create(null);
   readonly counts: Record<string, number> = {
     nonPositiveBookLevels: 0, crossedBook: 0, bookOrder: 0,

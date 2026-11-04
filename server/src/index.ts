@@ -18,6 +18,7 @@ import { AppStore } from "./store/app.ts";
 import { ReplitObjects, storageMode } from "./store/objects.ts";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
+import { BoardStageLogger } from "./diagnostics/board-stages.ts";
 import { productionAccumulation, accumulationEnabled, AppLongVp } from "./long-vp/app-service.ts";
 import { LongRest } from "./long-vp/rest.ts";
 import { LongObjects } from "./long-vp/objects.ts";
@@ -112,6 +113,8 @@ async function main() {
   const startup = new AbortController();
   let initialization: Promise<void> | null = null;
   let initialized = false;
+  const boardStages = [new BoardStageLogger(receiver, pipeline, () => upstream, log),
+    new BoardStageLogger(gc.receiver, gc.pipeline, () => upstream, log)];
   let shuttingDown = false;
 
   async function shutdown(signal: string, exitCode = 0) {
@@ -147,6 +150,7 @@ async function main() {
     await httpClosed;
     settingsTrace?.stop();
     await memory.stop();
+    for (const stages of boardStages) stages.stop();
     log("server_stopped", { upstream: upstream.status.state, httpClosed: true,
       storageInitialized: initialized, elapsedMs: performance.now() - started, uploadDeadlineReached: budget.signal.aborted });
     clearTimeout(abortTimer);
@@ -168,6 +172,7 @@ async function main() {
     await pipeline.initialize(startup.signal);
     await gc.pipeline.initialize(startup.signal);
     initialized = true;
+    for (const stages of boardStages) stages.start();
   })();
   try { await initialization; }
   catch {

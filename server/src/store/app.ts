@@ -3,12 +3,15 @@ import path from "node:path";
 import type { MarketSymbol } from "../../../lib/market/instruments.ts";
 import { randomUUID } from "node:crypto";
 import { gzipSync } from "node:zlib";
+import { createGzip } from "node:zlib";
+import { createReadStream, createWriteStream } from "node:fs";
+import { pipeline as streamPipeline } from "node:stream/promises";
 import { LocalStore, hourOf, ranges } from "./local.ts";
 import type { Coverage, Kind, Range } from "./local.ts";
 import type { Column } from "../aggregate/columns.ts";
 import type { Trade } from "../types.ts";
 import type { Log } from "../logger.ts";
-import { columnFileRange } from "./records.ts";
+import { columnFileRange, scanColumnFile, tradeFileRows } from "./records.ts";
 import { digest, uploadVerified } from "./objects.ts";
 import type { Objects } from "./objects.ts";
 import { TradeReadPool } from "./trade-read.ts";
@@ -50,6 +53,7 @@ export class AppStore extends LocalStore {
   private retryAt = new Map<string, number>();
   private stopping = false;
   private stopHour = 0;
+  private checkpointReady = false;
   private stopAttempted = new Set<string>();
   private activeObject: string | null = null;
   private stopSignal?: AbortSignal;
@@ -207,15 +211,20 @@ export class AppStore extends LocalStore {
       active: this.activeObject, cutoffHour: this.stopHour };
   }
   private closed(hour: number) {
-    return this.stopping ? hour < this.stopHour : hour + 3600 <= this.clock() / 1000;
+    // Orderly shutdown checkpoints the observed open hour too. Normal operation
+    // still publishes only closed hours; never invent a future column.
+    return this.stopping ? hour < this.stopHour || this.checkpointReady && hour === this.stopHour
+      : hour + 3600 <= this.clock() / 1000;
   }
   private async shutdownFiles() {
     if (!this.stopping) return;
     const previous = new Map(this.stopFiles.map(f => [f.object, f.reason]));
+    const index = parseCoverage(await fs.readFile(path.join(this.root, "coverage.json"), "utf8"));
     this.stopFiles = [];
     for (const file of await this.allFiles()) {
-      const { hour, name } = this.describe(file);
-      if (this.confirmed.get(name) === await this.fingerprint(file)) continue;
+      const { hour, name, kind } = this.describe(file);
+      if (this.confirmed.get(name) === await this.fingerprint(file)
+        && includesRanges(this.cloud[kind], intersect(index[kind], hour))) continue;
       this.stopFiles.push({ object: name, file,
         reason: !this.closed(hour) ? "open_at_signal" : previous.get(name) ?? "not_attempted" });
     }
@@ -231,7 +240,10 @@ export class AppStore extends LocalStore {
   private async hydrate(kind: Kind, hour: number, writable: boolean) {
     const key = this.key(kind, hour), base = this.file(kind, hour);
     if (await this.exists(base) || kind === "book" && await this.exists(base + ".gz")) return;
-    if (!this.durable(kind, hour)) return;
+    // A successful data upload followed by an index failure leaves an orphan
+    // object. Never overwrite its first half with a fresh process's second half.
+    const orphan = !this.durable(kind, hour);
+    if (orphan && (!writable || !await this.objects.exists(this.object(kind, hour)))) return;
     if (!writable && this.temporary.has(key)) return;
     const old = hour + 3600 <= this.clock() / 1000 - 48 * 3600;
     const destination = old && !writable
@@ -241,11 +253,30 @@ export class AppStore extends LocalStore {
     try {
       await fs.mkdir(path.dirname(destination), { recursive: true });
       await this.objects.download(this.object(kind, hour), staged);
+      const seconds = new Set<number>();
+      if (orphan) {
+        // Staged suffix is .download, so explicitly retain the gzip extension.
+        const inspect = staged + ".gz";
+        await fs.rename(staged, inspect);
+        try {
+          if (kind === "book") await scanColumnFile(inspect, sec => seconds.add(sec));
+          else for await (const t of tradeFileRows(inspect)) seconds.add(Math.floor(t.tsUs / 1e6));
+          for (const sec of seconds) {
+            if (!Number.isSafeInteger(sec) || sec < hour || sec >= hour + 3600)
+              throw Error("orphan_record_outside_hour");
+          }
+          await fs.rename(inspect, staged);
+        } finally { await fs.rm(inspect, { force: true }); }
+      }
       await fs.rename(staged, destination);
       if (!(old && !writable)) this.filesChanged(destination);
       this.cloudStatus.downloads++;
       if (old && !writable) this.temporary.set(key, destination);
-      else this.confirmed.set(this.object(kind, hour), await this.fingerprint(destination));
+      else if (!orphan) this.confirmed.set(this.object(kind, hour), await this.fingerprint(destination));
+      if (orphan) {
+        for (const [a, b] of ranges([...seconds].map(s => [s, s + 1]))) this.markCovered(kind, a, b);
+        this.log("app_storage_orphan_recovered", { symbol: this.symbol, kind, hour, seconds: seconds.size });
+      }
       this.log("app_storage_downloaded", { object: this.object(kind, hour), temporary: old && !writable });
     } finally { await fs.rm(staged, { force: true }); }
   }
@@ -295,6 +326,9 @@ export class AppStore extends LocalStore {
     return result;
   }
   override readColumns(a: number, b: number) { return this.withRange(a, b, () => super.readColumns(a, b)); }
+  override actualBookSeconds(a: number, b: number) {
+    return this.withRange(a, b, () => super.actualBookSeconds(a, b), ["book"]);
+  }
   override readTrades(a: number, b: number) { return this.withRange(a, b, () => super.readTrades(a, b)); }
   override readView(a: number, b: number) { return this.withRange(a, b, () => super.readView(a, b)); }
   override visitTrades(a: number, b: number, visit: (t: Trade) => void) {
@@ -359,7 +393,7 @@ export class AppStore extends LocalStore {
             hours++; await checkpoint();
             if (!this.closed(h) || this.held.has(h) || this.durable(kind, h)) continue;
             const file = this.file(kind, h) + (kind === "book" ? ".gz" : "");
-            if (!await this.exists(file)) {
+            if (!await this.exists(file) && !(kind === "book" && await this.exists(this.file(kind, h)))) {
               await fs.mkdir(path.dirname(file), { recursive: true }); await fs.writeFile(file, gzipSync(""));
               this.filesChanged(file);
             }
@@ -370,11 +404,12 @@ export class AppStore extends LocalStore {
           this.publicationStats.preprocessLastMs);
       });
       const candidates = await this.allFiles();
+      if (this.stopping) candidates.sort((a, b) => this.describe(b).hour - this.describe(a).hour);
       const localIndex = parseCoverage(await fs.readFile(path.join(this.root, "coverage.json"), "utf8"));
       this.cloudStatus.pending = [];
       for (const file of candidates) {
         if (this.stopSignal?.aborted) break;
-        if (!file.endsWith(".gz")) continue;
+        if (!file.endsWith(".gz") && !(this.stopping && file.endsWith(".bin"))) continue;
         const m = file.match(/(\d{4}-\d\d-\d\d)[/\\](\d\d)\./)!;
         const h = Date.parse(`${m[1]}T${m[2]}:00:00Z`) / 1000;
         const kind: Kind = file.includes("columns/") ? "book" : "tick", name = this.object(kind, h);
@@ -393,7 +428,11 @@ export class AppStore extends LocalStore {
             await fs.mkdir(path.dirname(staged), { recursive: true });
             stamp = await this.fingerprint(file);
             coverageOnly = this.confirmed.get(name) === stamp;
-            if (!coverageOnly) await fs.copyFile(file, staged);
+            if (!coverageOnly) {
+              if (file.endsWith(".bin")) await streamPipeline(createReadStream(file), createGzip(),
+                createWriteStream(staged), { signal: this.publicationAbort.signal });
+              else await fs.copyFile(file, staged);
+            }
             const index = parseCoverage(await fs.readFile(path.join(this.root, "coverage.json"), "utf8"));
             covered = intersect(index[kind], h);
           });
@@ -410,7 +449,12 @@ export class AppStore extends LocalStore {
           this.cloudStatus.pending = this.cloudStatus.pending.filter(n => n !== name);
           this.cloudStatus.lastError = null;
           this.log("app_storage_uploaded", { object: name, covered, sha256Verified: true, coverageOnly });
-          this.outcome(name, "uploaded");
+          let unchanged = stamp === await this.fingerprint(file);
+          if (this.stopping && unchanged) await this.run(async () => {
+            const index = parseCoverage(await fs.readFile(path.join(this.root, "coverage.json"), "utf8"));
+            unchanged = includesRanges(this.cloud[kind], intersect(index[kind], h));
+          });
+          this.outcome(name, unchanged ? "uploaded" : "changed_after_snapshot");
         } catch {
           if (this.stopping) {
             const reason = this.stopSignal?.aborted ? "deadline" : "upload_or_index_failed";
@@ -459,6 +503,7 @@ export class AppStore extends LocalStore {
   override async maintenance() { if (this.stopping) return; await super.maintenance(); void this.pump(); }
   override async flush() {
     await super.flush();
+    if (this.stopping) this.checkpointReady = true;
     await this.initialStopPlan;
     await this.shutdownFiles();
     if (this.stopping && this.stopSignal) {

@@ -4,6 +4,7 @@ import { createGzip } from "node:zlib";
 import { Readable } from "node:stream";
 import { pipeline as streamPipeline } from "node:stream/promises";
 import path from "node:path";
+import { inspectBookSeconds } from "./book-seconds.ts";
 import type { MarketSymbol } from "../../../lib/market/instruments.ts";
 import { workCpu } from "../diagnostics/work-cpu.ts";
 import { namedWork } from "../diagnostics/main-thread.ts";
@@ -64,6 +65,21 @@ export function includeRange(input: Range[], start: number, end: number): boolea
 
 /** One serialization queue protects live append, history merge, rotation and readers. */
 export class LocalStore implements Store {
+  readonly boardWrites = { columns: 0 };
+  /** Research/indicator callers must opt into actual persisted availability.
+   * Does not certify feed completeness or mutate the existing coverage index. */
+  async actualBookSeconds(start: number, end: number) {
+    const result: Awaited<ReturnType<typeof inspectBookSeconds>>[] = [];
+    await this.run(async () => {
+      for (let hour = hourOf(start); hour < end; hour += 3600) {
+        const file = await this.labelColumnPath(hour, this.file("book", hour));
+        result.push(await this.exists(file)
+          ? await inspectBookSeconds(file, hour, start, end)
+          : { hour, count: 0, intervals: [] });
+      }
+    });
+    return result;
+  }
   readonly symbol: MarketSymbol;
   readonly root: string;
   readonly stats = { files: 0, bytes: 0, latestColumnSec: null as number | null, pendingColumns: 0, pendingTrades: 0 };
@@ -299,15 +315,18 @@ export class LocalStore implements Store {
       const closed = hour + 3600 <= Math.floor(this.now() / 1000);
       const compressed = await this.exists(file + ".gz");
       const knownLast = this.columnLastSeconds.get(hour);
+      let written = 0;
       let last: number;
       if (!closed && knownLast !== undefined && incoming[0][0] > knownLast && !compressed) {
         // The only writer owns this metadata; ordinary live append never needs
         // to decode or copy the entire growing hour.
         await fs.mkdir(path.dirname(file), { recursive: true, mode: 0o700 });
         await fs.appendFile(file, Buffer.concat(incoming.map(([, bytes]) => bytes)), { mode: 0o600 });
+        written = incoming.length;
         last = incoming.at(-1)![0];
       } else {
         const merged = mergeColumnRecords(await this.columnBytes(hour), pending);
+        written = merged.freshCount;
         if (!closed && merged.appendOnly && !compressed) {
           if (merged.freshCount) {
             await fs.mkdir(path.dirname(file), { recursive: true, mode: 0o700 });
@@ -320,6 +339,7 @@ export class LocalStore implements Store {
         last = merged.lastSecond;
       }
       if (last >= 0) this.columnLastSeconds.set(hour, last);
+      this.boardWrites.columns += written;
       this.filesChanged(file, file + ".gz");
       for (const [second] of incoming) this.markCovered("book", second, second + 1);
       this.stats.latestColumnSec = Math.max(this.stats.latestColumnSec ?? 0, incoming.at(-1)![0]);

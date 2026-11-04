@@ -82,7 +82,7 @@ test("ダミー：公開判定はREPLIT_DEPLOYMENTだけ。NODE_ENV本番でもd
   assert.deepEqual(storageMode({ NODE_ENV: "production", HEATMAP_STORAGE: "app-storage" }), { app: true, prefix: "dev/" });
   assert.deepEqual(storageMode({ REPLIT_DEPLOYMENT: "1", HEATMAP_STORAGE: "local" }), { app: true, prefix: "prod/" });
 });
-test("ダミー：停止は失敗し続けても各完了時間を1回だけ。失敗した範囲はクラウドcoverageに入れない", async () => {
+test("ダミー：停止は書きかけも各1回だけ。失敗した範囲はクラウドcoverageに入れない", async () => {
   const dir = await root(), cloud = new DummyObjects();
   let now = (hour + 5) * 1000;
   const events: any[] = [];
@@ -97,12 +97,11 @@ test("ダミー：停止は失敗し続けても各完了時間を1回だけ。�
     store.beginShutdown(budget.signal);
     const start = performance.now(); await store.flush();
     assert.ok(performance.now() - start < 1000);
-    assert.equal(cloud.uploads.length, 2); assert.equal(new Set(cloud.uploads).size, 2);
-    assert.ok(cloud.uploads.every(n => n.includes("/00.")));
+    assert.equal(cloud.uploads.length, 4); assert.equal(new Set(cloud.uploads).size, 4);
     assert.equal(cloud.files.has("dev/coverage.json"), false);
     assert.equal(store.cloudStatus.nextRetryAtUs, null);
     assert.equal(events.some(e => e.event === "app_storage_retry"), false);
-    assert.equal(store.shutdownSummary().remaining.filter(f => f.reason === "open_at_signal").length, 2);
+    assert.equal(store.shutdownSummary().remaining.filter(f => f.reason === "upload_or_index_failed").length, 4);
     await fs.access(path.join(dir, "columns/NQ/1s/2026-10-28/01.bin"));
     await fs.access(path.join(dir, "trades/NQ/2026-10-28/01.jsonl.gz"));
   } finally { await fs.rm(dir, { recursive: true, force: true }); }
@@ -114,15 +113,20 @@ test("ダミー：応答しないアップロードも全体期限で戻り、�
     const store = new AppStore(dir, cloud, "dev/", log, () => now);
     await store.initialize(); await store.addColumns([col(hour + 1)]);
     const original = cloud.upload.bind(cloud);
+    let entered!: () => void;
+    const uploadStarted = new Promise<void>(resolve => { entered = resolve; });
     cloud.upload = async (name, file) => {
       const bytes = await fs.readFile(file); cloud.uploads.push(name);
+      entered();
       await new Promise(resolve => setTimeout(resolve, 200));
       cloud.files.set(name, bytes);
     };
     now = (hour + 3605) * 1000;
     const budget = new AbortController(); store.beginShutdown(budget.signal);
+    const flushing = store.flush();
+    await uploadStarted; // Exclude filesystem setup contention from the in-flight deadline test.
     const timer = setTimeout(() => budget.abort(), 50);
-    const start = performance.now(); await store.flush(); clearTimeout(timer);
+    const start = performance.now(); await flushing; clearTimeout(timer);
     assert.ok(performance.now() - start < 150);
     assert.equal(cloud.files.has("dev/coverage.json"), false);
     await store.publicationSettled();
@@ -152,15 +156,15 @@ test("ダミー：確認済みキャッシュの再起動では再アップロ�
     assert.equal(cloud.uploads.filter(n => n.includes("/00.jsonl.gz")).length, 1);
   } finally { await fs.rm(dir, { recursive: true, force: true }); }
 });
-test("ダミー：SIGTERM時の書きかけは停止処理中にUTC境界を越えても上げない", async () => {
+test("ダミー：SIGTERM時の書きかけもUTC境界を越えて安全に保存する", async () => {
   const dir = await root(), cloud = new DummyObjects(); let now = (hour + 3599) * 1000;
   try {
     const store = new AppStore(dir, cloud, "dev/", log, () => now);
     await store.initialize(); await store.addColumns([col(hour + 1)]); await store.addTrades([tick(hour + 1)]);
     store.beginShutdown(new AbortController().signal); now = (hour + 3601) * 1000;
     await store.flush();
-    assert.equal(cloud.uploads.length, 0);
-    assert.equal(store.shutdownSummary().remaining.filter(f => f.reason === "open_at_signal").length, 2);
+    assert.equal(cloud.uploads.filter(n => n !== "dev/coverage.json").length, 2);
+    assert.equal(store.shutdownSummary().remaining.length, 0);
   } finally { await fs.rm(dir, { recursive: true, force: true }); }
 });
 test("ダミー：通常運転のアップロード途中にSIGTERMが来ても同じファイルを二度試さない", async () => {
@@ -182,28 +186,20 @@ test("ダミー：通常運転のアップロード途中にSIGTERMが来ても�
     assert.equal(store.cloudStatus.nextRetryAtUs, null);
   } finally { await fs.rm(dir, { recursive: true, force: true }); }
 });
-test("ダミー：同じ時間内の停止・再起動は前半を保持し、書きかけをクラウドへ上書きしない", async () => {
+test("ダミー：停止後ディスク全消失・同じ時間内再起動でも前半と後半を保持する", async () => {
   const dir = await root(), fresh = await root(), cloud = new DummyObjects();
   let now = (hour + 5) * 1000;
   try {
     const one = new AppStore(dir, cloud, "dev/", log, () => now);
     await one.initialize(); await one.addColumns([col(hour + 1)]); await one.addTrades([tick(hour + 1)]);
     one.beginShutdown(new AbortController().signal); await one.flush();
-    assert.equal(cloud.uploads.length, 0);
-    const two = new AppStore(dir, cloud, "dev/", log, () => now);
+    assert.equal(cloud.uploads.filter(n => n !== "dev/coverage.json").length, 2);
+    const two = new AppStore(fresh, cloud, "dev/", log, () => now);
     await two.initialize(); await two.addColumns([col(hour + 3)]); await two.addTrades([{ ...tick(hour + 3), seq: 2 }]);
     assert.deepEqual((await two.readView(hour, hour + 5)).columns.map(c => c.tsSec), [hour + 1, hour + 3]);
     assert.equal((await two.readTrades(hour, hour + 5)).length, 2);
-    two.beginShutdown(new AbortController().signal); await two.flush(); assert.equal(cloud.uploads.length, 0);
-    // A wiped disk has no remote current-hour coverage. Backfill must restore
-    // the first half before the completed hour may become durable.
-    const three = new AppStore(fresh, cloud, "dev/", log, () => now);
-    await three.initialize(); assert.equal(three.covered("tick", hour + 1), false);
-    await three.addColumns([col(hour + 3)]); await three.addTrades([{ ...tick(hour + 3), seq: 2 }]);
-    await three.addColumns([col(hour + 1)]);
-    await three.replaceTradeRange(hour + 1, hour + 2, [tick(hour + 1)]);
-    await three.flush(); assert.equal(cloud.uploads.length, 0);
-    now = (hour + 3605) * 1000; await three.flush();
+    two.beginShutdown(new AbortController().signal); await two.flush();
+    now = (hour + 3605) * 1000;
     const four = new AppStore(await root(), cloud, "dev/", log, () => now);
     try {
       await four.initialize();

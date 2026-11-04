@@ -17,6 +17,7 @@ import { LiveGapRepair } from "./history/live-gap.ts";
 import { namedWork } from "./diagnostics/main-thread.ts";
 
 export class Pipeline {
+  readonly boardStages = { finalizedColumns: 0, finalizedSecondRejectedBooks: 0 };
   readonly store: LocalStore;
   readonly historyMetrics: Metrics;
   readonly client: Pick<HistoryClient, "symbol" | "get" | "stats">;
@@ -57,12 +58,15 @@ export class Pipeline {
       this.onHistoryRepair(start, end);
     });
     this.aggregate = new ColumnAggregator(column => {
+      this.boardStages.finalizedColumns++;
       if (this.seam === null) {
         this.seam = column.tsSec;
         this.log("live_history_seam", { tsSec: this.seam });
-        this.backfill.start(this.seam); // Hold before enqueuing the first live write.
-        this.vpHistory.start(this.seam, this.backfill.settled());
-        this.tradeBatch = this.tradeBatch.filter(t => t.tsUs >= this.seam! * 1_000_000);
+        if (!this.stopped) {
+          this.backfill.start(this.seam); // Hold before enqueuing the first live write.
+          this.vpHistory.start(this.seam, this.backfill.settled());
+        }
+        if (!this.stopped) this.tradeBatch = this.tradeBatch.filter(t => t.tsUs >= this.seam! * 1_000_000);
         // Trades received before the first finalized column were buffered but
         // not yet counted. L belongs to live; only timestamps strictly below L
         // are owned by history. This branch runs once, even across rollbacks.
@@ -95,6 +99,7 @@ export class Pipeline {
   book(book: BookSnapshot) {
     if (this.stopped) return;
     if (this.aggregate.accept(book)) this.acceptedBookTsUs = Math.max(this.acceptedBookTsUs ?? 0, book.tsUs);
+    else this.boardStages.finalizedSecondRejectedBooks++;
     if (this.expiry) clearTimeout(this.expiry);
     const second = this.aggregate.pendingSecond;
     if (second !== null) this.expiry = setTimeout(() => {
@@ -209,8 +214,9 @@ export class Pipeline {
     await this.backfill.stop();
     await this.vpHistory.stop();
     await this.repair.stop();
-    this.aggregate.expire(Date.now() * 1000);
-    if (this.seam !== null && this.tradeBatch.length) {
+    this.aggregate.flushObserved();
+    // A book-free connection can still have received real trades before L.
+    if (this.tradeBatch.length) {
       const batch = this.tradeBatch; this.tradeBatch = [];
       this.track(this.store.addTrades(batch));
     }

@@ -13,6 +13,10 @@ export interface Socket {
 }
 
 export class Upstream {
+  sharedCounts() {
+    return { watchdog: this.receiver.metrics.counts.watchdog ?? 0,
+      disconnects: this.receiver.metrics.counts.disconnects ?? 0 };
+  }
   private lastPingAt: number | null = null;
   private lastPongAt: number | null = null;
   private maxPingIntervalMs: number | null = null;
