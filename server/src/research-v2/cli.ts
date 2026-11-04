@@ -4,6 +4,7 @@ import { execFileSync } from "node:child_process";
 import { setPriority } from "node:os";
 import { fileURLToPath } from "node:url";
 import { exportV2 } from "./export.ts";
+import { exportBulk } from "./bulk-export.ts";
 import { hashFile } from "./snapshot.ts";
 import { digest } from "./engine.ts";
 import type { Config } from "./model.ts";
@@ -33,15 +34,16 @@ async function main() {
   const controller = new AbortController(), abort = () => controller.abort(Error("v2_cancelled"));
   process.once("SIGINT", abort); process.once("SIGTERM", abort);
   const before = process.cpuUsage(), started = performance.now();
+  const timer = setTimeout(() => controller.abort(Error("v2_two_hour_budget")), 7200_000); timer.unref();
   try {
-    const result = await exportV2(config, out, await codeIdentity(), controller.signal);
+    const result = await (config.schema === "orderflow.research.v2.2" ? exportBulk : exportV2)(config, out, await codeIdentity(), controller.signal);
     const metrics = { pid: process.pid, priority: 19, elapsedMs: performance.now() - started,
       cpuUs: process.cpuUsage(before), finalRss: process.memoryUsage().rss,
       peakRssKiB: process.resourceUsage().maxRSS, sourceUnchanged: true, temporarySnapshotsRemaining: false };
     await fs.writeFile(path.join(out, "run-metrics.json"), JSON.stringify(metrics, null, 2), { mode: 0o600 });
     console.log(JSON.stringify({ ...result.manifest.counts, directory: result.directory,
       contentHash: result.manifest.content_hash, zipSha256: result.zipSha256, metrics }));
-  } finally { process.off("SIGINT", abort); process.off("SIGTERM", abort); }
+  } finally { clearTimeout(timer); process.off("SIGINT", abort); process.off("SIGTERM", abort); }
 }
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url))
   main().catch(e => { console.error(e instanceof Error ? e.message : "v2_export_failed"); process.exitCode = 1; });

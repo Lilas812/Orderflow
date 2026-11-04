@@ -1,4 +1,4 @@
-# Orderflow 比較検証用データセット v2.1（独立CLI）
+# Orderflow 比較検証用データセット v2.1 / v2.2（独立CLI）
 
 v1のAPI・マーク保存・3ファイルZIP・列の意味・CASに変更を加えない。
 稼働receiverへ接続せず、ローカルの閉じた時間ファイルを読み取り専用でコピーする。
@@ -28,6 +28,8 @@ unzip -t data/research-v2/pilot-new/dataset/dataset-v2.zip
 入れない`run-metrics.json`へ分離。CLI自身をnice19にし、上記コマンドでheapを制限する。
 
 ## 設定と出力
+
+以下は既存v2.1の設定。新しい整数秒バッチの制約・共有形式は末尾のv2.2節を参照。
 
 - `lookbackSeconds`：初期1800、1秒の相対区間。サブ秒のas_ofも整数usで扱う。
 - `horizonsSeconds`：初期60/300/900、半開区間の結果。最適期限・売買ルールではない。
@@ -102,3 +104,67 @@ VP/POC/VAはNも含むセッションのas_of未満だけ。吸収の買い・�
 v2を使うモデル訓練・反転の自動正解化・利益/リアルタイム再現の保証は今回行わない。
 戻す場合は新規`server/src/research-v2/`、`server/research-v2/`、
 `server/test/research-v2.test.ts`と説明・隔離出力だけが対象。既存v1や原本を戻す必要はない。
+
+## v2.2：購入済みセッションの60秒グリッド
+
+`grid-v22.json`は今回確認した全索引セッションと共通fold境界を固定した設定。
+NQZ26とGCZ26を別々に扱い、別限月をつながない。60秒は研究用の暫定値であり、
+最適化・学習・売買判定を行った値ではない。全期間出力は注釈0件。
+`sourceKind`は既存generationの説明を引き継ぐが、UI試験注釈をグリッドへ流用しない。
+
+```sh
+node server/research-v2/prepare-grid.mjs --out data/research-v2/NEW-plan
+# まず少数セッションの実測を取得し、次の予算判定を実施する。
+node server/research-v2/check-grid-budget.mjs --plan data/research-v2/NEW-plan \
+  --calibration data/research-v2/CALIBRATION --out data/research-v2/NEW-approved
+node --max-old-space-size=256 server/src/research-v2/cli.ts \
+  --config server/research-v2/grid-v22.json --out data/research-v2/NEW-full-01
+node --max-old-space-size=256 server/src/research-v2/cli.ts \
+  --config server/research-v2/grid-v22.json --out data/research-v2/NEW-full-02
+node server/research-v2/verify-batch.mjs --first data/research-v2/NEW-full-01/dataset \
+  --second data/research-v2/NEW-full-02/dataset --out data/research-v2/NEW-verification
+```
+
+見積ZIPが2GBまたは所要2時間を超えるなら全期間のコマンドは実行せず、
+予算判定が作った**各3セッションだけのconfig**を使用して停止する。間引きに変更しない。
+CLIはnice19、上記heap256MiB、1実行2時間タイマー。heap上限とRSSは別で、
+ネイティブI/O・ソート・V8確保済み領域を含むRSS実測はrun-metrics.jsonを参照する。
+
+- 整数秒・event_time_researchのas_ofをソートし、時間ファイルのgzip展開は各1回。
+  時刻巻き戻りを25,000行ずつの安定外部ソートで並べ、同時刻/sequenceの原順を維持。
+  同内容の別約定も削除しない。入力本体のコピー・SHA照合は展開回数とは別のI/Oである。
+- 原約定の月間RAMキャッシュを作らず、秒別十分統計・ローリング窓・現在セッションVPを使う。
+  上限：sourceあたり100,000アンカー、10,000秒、250,000秒×価格セル、
+  100,000 VP価格、250,000板段、8,784時間、10,000入力ファイル、
+  1時間ソート最大256 run（最大640万行）。超過はエラーとし、自動間引きしない。
+- 出力ZIPはSTORE、上限2,000,000,000 bytes。作業用`.v2-bulk-*`と内部`.order-*`
+  はジョブ所有のものだけ解放する。正常/例外/中断でも原本や他ジョブを削除しない。
+- `history-shared.csv`はinput_version/symbol/contract/CTセッションごとの基礎1秒行。
+  `samples.history_ranges`の半開区間参照で履歴を復元する。
+  `history.csv`は旧ヘッダーを残すが整数秒バッチでは本体0行。
+  **旧history.csvだけを読む利用側はv2.2未対応**であり空履歴として正常扱いしない。
+- 共有行にcarried系は入れない。標本側initial-priceと基礎行を
+  `history.ts/reconstructHistory()`へ渡し、欠け/別限月で持越しを切る。
+  `carried_from_pre_window`は窓ごとに復元する。OHLCを架空補間しない。
+  非整数秒・arrival_verifiedは既存v2.1経路を使う（新バッチは明示拒否）。
+- `input_version`は全入力coverage/約定/板の相対名とバイトSHAから作る。
+  sample_idにも入るため、グリッド増減では既存IDを変えず、入力版が違えば変わる。
+  結合前に`inventory.ts/assertInputVersions()`を使い、同一symbol/contractの別版を拒否する。
+  manifestに原本の前後SHAを記録する。単に時刻・価格・枚数が同じ行を削除する方式ではない。
+- `near_group`はグリッド増減に依存しない保守的なsession_groupと同じ値。
+  v2.1の連結観測区間IDとは意味が異なるのでschemaをv2.2に分けた。
+- `quality.json`はセッション棚卸し、`sample-quality.csv`は標本別理由。
+  X非null率・Y完備率は値や分布ではなく品質指標。分割決定にY実値/X分布を使わない。
+  日付境界はNQ/GC共通。train→評価とvalidation→testのY侵入を除外する。
+  同じfoldの窓の重複や、検証/テストの過去特徴が直前期間を参照することは許容する。
+- 再現性は同じ入力/コードで全payloadのcontent_hashを比較する。
+  manifestのcommit情報が変わり得るZIP全体SHAを合否基準にはしない。
+
+既存4標本との照合（市場値・全7,200秒・Y・理由）は次で行う。
+
+```sh
+node server/research-v2/compare-batch-pilot.mjs \
+  --before data/research-v2/v21-fix-01/dataset \
+  --after data/research-v2/NEW-batch-pilot/dataset \
+  --out data/research-v2/NEW-evidence/pilot.json
+```

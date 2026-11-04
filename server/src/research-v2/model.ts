@@ -23,6 +23,8 @@ export interface Anchor { symbol: MarketSymbol; contract: string; asOfUs: number
 export interface MarketInput {
   ticks: Coverage[];
   books: Coverage[];
+  /** Immutable event-time batch index; never used to invent arrival evidence. */
+  index?: { ticks: (a: number, b: number) => boolean; books: (a: number, b: number) => boolean };
 }
 export interface Source {
   symbol: MarketSymbol;
@@ -33,12 +35,27 @@ export interface Source {
   annotationFile?: string;
   annotationIds?: string[];
   grid?: { fromUs: string; toUs: string; stepUs: string };
+  grids?: { fromUs: string; toUs: string; stepUs: string }[];
 }
 export interface Config {
-  schema: "orderflow.research.v2.1";
+  schema: "orderflow.research.v2.1" | "orderflow.research.v2.2";
   calculation: Calculation;
   sources: Source[];
   splits: null | { fold: "train" | "validation" | "test"; fromUs: string; toUs: string }[];
+}
+export function coverageIndex(rows: Coverage[]) {
+  const merged: Span[] = [];
+  for (const r of [...rows].sort((a, b) => a.fromUs - b.fromUs)) {
+    const last = merged.at(-1);
+    if (last && r.fromUs <= last[1]) last[1] = Math.max(last[1], r.toUs);
+    else merged.push([r.fromUs, r.toUs]);
+  }
+  return (a: number, b: number) => {
+    if (a >= b) return true;
+    let lo = 0, hi = merged.length;
+    while (lo < hi) { const m = (lo + hi) >>> 1; if (merged[m]![0] <= a) lo = m + 1; else hi = m; }
+    return lo > 0 && merged[lo - 1]![1] >= b;
+  };
 }
 export function integerUs(v: string | number) {
   if (typeof v === "string" && !/^\d+$/.test(v)) throw Error("invalid_integer_microseconds");

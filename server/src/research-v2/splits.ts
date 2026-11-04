@@ -10,6 +10,8 @@ export function assignSplits(samples: Interval[], config: Config["splits"]) {
     const f = folds[0]!;
     if (f.fold === "train" && config.some(v => v.fold !== "train" && t < integerUs(v.toUs) && end > integerUs(v.fromUs)))
       return { sample_id: s.sample_id, fold: f.fold, status: "excluded", reason: "train_target_overlaps_evaluation_judgment_interval" };
+    if (f.fold === "validation" && config.some(v => v.fold === "test" && t < integerUs(v.toUs) && end > integerUs(v.fromUs)))
+      return { sample_id: s.sample_id, fold: f.fold, status: "excluded", reason: "validation_target_overlaps_test_judgment_interval" };
     return { sample_id: s.sample_id, fold: f.fold, status: "assigned", reason: null };
   });
 }

@@ -32,9 +32,15 @@ for (const [n, suffix] of [[30, "30s"], [60, "60s"], [300, "5m"]] as const)
     FORMULAS[`${side}_${suffix}`] = `${n}秒の${side}枚数。total=B+A+N、delta=B-A。coverage/限月不完全はnull`;
 export const X_ALLOWLIST = Object.freeze(Object.keys(FORMULAS));
 export const digest = (v: unknown) => createHash("sha256").update(JSON.stringify(v)).digest("hex");
-interface Bar {
+export interface Bar {
   open: number; high: number; low: number; close: number; firstUs: number; lastUs: number;
   firstSeq: number; lastSeq: number; buy: number; sell: number; unknown: number; count: number; mixed: boolean;
+}
+export interface PreparedState {
+  bars: Map<number, Bar>; profile: Map<number, number>; sessionMixed: boolean;
+  sessionHigh: number; sessionLow: number; reference: Tick | null; preWindow: Tick | null;
+  boards: Map<number, Board>; futures: { last: Tick | null; high: number; low: number; mixed: boolean }[];
+  eventBudget: boolean; divergence: { value: number | null; reason: string };
 }
 export interface HistoryRow {
   from_us: string; to_us: string; coverage_mask: number; contract_mask: number;
@@ -56,6 +62,7 @@ export class SampleBuilder {
   private unverifiedSeconds = new Set<number>();
   private events: Tick[] = [];
   private eventBudget = false;
+  private divergence: PreparedState["divergence"] | null = null;
   private boards = new Map<number, Board>();
   private futures: { last: Tick | null; high: number; low: number; mixed: boolean }[];
   readonly startUs: number;
@@ -69,6 +76,16 @@ export class SampleBuilder {
     this.startUs = anchor.asOfUs - config.lookbackSeconds * 1e6;
     this.sessionUs = sessionStartSec(anchor.asOfUs / 1e6) * 1e6;
     this.futures = config.horizonsSeconds.map(() => ({ last: null, high: -Infinity, low: Infinity, mixed: false }));
+  }
+  /** Batch sufficient statistics; the original accept()/finish() route remains the oracle. */
+  static prepared(anchor: Anchor, config: Calculation, input: MarketInput, s: PreparedState) {
+    const b = new SampleBuilder(anchor, config, input);
+    b.bars = s.bars; b.profile = s.profile; b.sessionMixed = s.sessionMixed;
+    b.sessionHigh = s.sessionHigh; b.sessionLow = s.sessionLow; b.reference = s.reference;
+    b.referenceMixed = !!s.reference && s.reference.contract !== anchor.contract;
+    b.preWindow = s.preWindow; b.boards = s.boards; b.futures = s.futures;
+    b.eventBudget = s.eventBudget; b.divergence = s.divergence;
+    return b;
   }
   accept(t: Tick) {
     for (const n of [t.tsUs, t.recvUs, t.seq, t.price, t.size])
@@ -152,8 +169,10 @@ export class SampleBuilder {
       }
       return low < uncertain.length && uncertain[low]! < to;
     };
-    const tickKnown = (from: number, to: number) => !uncertainRange(from, to)
-      && covered(this.input.ticks, from, to, mode, a);
+    const coverage = (kind: "ticks" | "books", from: number, to: number, deadline = a) =>
+      mode === "event_time_research" && this.input.index ? this.input.index[kind](from, to)
+        : covered(this.input[kind], from, to, mode, deadline);
+    const tickKnown = (from: number, to: number) => !uncertainRange(from, to) && coverage("ticks", from, to);
     const reference = this.reference && !this.referenceMixed
       && tickKnown(this.reference.tsUs, a) ? this.reference : null;
     const ref = reference?.price ?? null;
@@ -219,7 +238,8 @@ export class SampleBuilder {
       let numerator = 0, denominator = 0;
       cvds.forEach((v, i) => { numerator += (i - 299.5) * v; denominator += (i - 299.5) ** 2; });
       put("cvd_slope_10m", numerator / denominator * 60, "");
-      if (!this.eventBudget) {
+      if (this.divergence) put("cvd_divergence", this.divergence.value, this.divergence.reason);
+      else if (!this.eventBudget) {
         const halves = [{ h: -Infinity, l: Infinity, hc: 0, lc: 0 }, { h: -Infinity, l: Infinity, hc: 0, lc: 0 }];
         cvd = 0;
         for (const t of this.events.sort((u, v) => u.tsUs - v.tsUs || u.seq - v.seq)) {
@@ -238,7 +258,7 @@ export class SampleBuilder {
     const nowSec = Math.floor(a / 1e6) - 1;
     const board = (s: number) => {
       const b = this.boards.get(s);
-      return b && b.contract === this.anchor.contract && covered(this.input.books, s * 1e6, (s + 1) * 1e6, mode, a) ? b.column : null;
+      return b && b.contract === this.anchor.contract && coverage("books", s * 1e6, (s + 1) * 1e6) ? b.column : null;
     };
     const now = board(nowSec), before = board(nowSec - 60);
     for (const n of [1, 5, 10]) {
@@ -255,7 +275,8 @@ export class SampleBuilder {
     put("near_change_60s", n !== null && p !== null ? n - p : null, "both_book_snapshots_reference_or_depth_unverified");
     const targets = this.futures.map((f, i) => {
       const end = a + this.config.horizonsSeconds[i]! * 1e6;
-      const ok = reference && !f.mixed && covered(this.input.ticks, a, end, "event_time_research", end);
+      const ok = reference && !f.mixed && (this.input.index ? this.input.index.ticks(a, end)
+        : covered(this.input.ticks, a, end, "event_time_research", end));
       return { horizon_seconds: this.config.horizonsSeconds[i]!, from_us: String(a), to_us: String(end),
         observation_end_us: ok ? String(end) : null, last_trade_us: ok && f.last ? String(f.last.tsUs) : null,
         endpoint_change_ticks: ok ? (f.last?.price ?? ref!) - ref! : null,
