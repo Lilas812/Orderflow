@@ -1,0 +1,30 @@
+{
+  "schema": "orderflow.research.v2.1",
+  "calculation": {
+    "mode": "event_time_research",
+    "lookbackSeconds": 1800,
+    "horizonsSeconds": [60, 300, 900],
+    "maxDivergenceEvents": 100000
+  },
+  "sources": [
+    {
+      "symbol": "NQ",
+      "contract": "NQZ26",
+      "sourceKind": "isolated_purchased_generation_with_prior_ui_test_annotations",
+      "root": "data/databento-import/generations/9d3cfb11-ae8d-4aeb-b679-f3ef7fea1125/NQZ26",
+      "asOfUs": ["1793296320000000"],
+      "annotationFile": "docs/evidence/turning-point-labels/NQ.labels.json",
+      "annotationIds": ["184e5116-a87e-49c8-a7fa-f5cef277fc25"]
+    },
+    {
+      "symbol": "GC",
+      "contract": "GCZ26",
+      "sourceKind": "isolated_purchased_generation_with_prior_ui_test_annotations",
+      "root": "data/databento-gc-import/generations/c13e46e4-f6c6-4eda-898e-cb5a2c79146b/GCZ26",
+      "asOfUs": ["1793296320000000"],
+      "annotationFile": "docs/evidence/turning-point-labels/GC.labels.json",
+      "annotationIds": ["666d0a86-3ec7-469b-bb78-5714813b4637"]
+    }
+  ],
+  "splits": null
+}

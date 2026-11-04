@@ -658,3 +658,17 @@ mtime_ms = 1793449993556
 storage_uri = "gcs://replit-rams-assets-pike/rams/assets/repl:c326af06-2355-4bfb-a52e-f433587c4cd9/3cac8c66-4ad9-45bd-b9ff-eced7ef86814/d9d52dac-aca9-4c01-9728-1530716bdad3"
 storage_version_token = "1793450151070538"
 content_type = "image/jpeg"
+
+[[outputs]]
+id = "OT_MURxxOgENsT4pNkHYN"
+uri = "file://data/research-v2/pilot-final-01/dataset/dataset-v2.zip"
+type = "unspecified"
+title = "比較検証用データセット v2.1"
+description = "NQ・GCの実データpilot。4標本、過去系列7,200行、方向非依存の結果12行。探索研究用で、当時の利用可能性や収益性を保証するものではありません。"
+logical_id = "30dd9d7e-c57b-44ac-be20-8a5591da1210"
+content_hash = "sha256:f5b4864ff1bff91520958f6ab1398dad6eaa9d70ed20783f736814c63bf031cb"
+size = 1049004
+mtime_ms = 1793800963569
+storage_uri = "gcs://replit-rams-assets-pike/rams/assets/repl:c326af06-2355-4bfb-a52e-f433587c4cd9/30dd9d7e-c57b-44ac-be20-8a5591da1210/23c93954-7ccc-4dcc-b7a5-7c7992f5a6a6"
+storage_version_token = "1793801248646761"
+content_type = "application/octet-stream"
