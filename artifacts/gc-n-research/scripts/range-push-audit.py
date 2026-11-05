@@ -14,12 +14,30 @@ def git(*args):
 
 
 base = sys.argv[1] if len(sys.argv) > 1 else "origin/main"
+allow_revoked_removal = "--allow-revoked-key-removal" in sys.argv[2:]
 forbidden = [".replit", "scripts/mbo_dbn.mjs"]
 commits = git("rev-list", f"{base}..HEAD").decode().splitlines()
 findings = []
 for commit in commits:
     paths = git("diff-tree", "--no-commit-id", "--name-only", "-r", commit).decode().splitlines()
     for p in paths:
+        if p == ".replit" and allow_revoked_removal:
+            before = git("show", f"{commit}^:.replit")
+            after = git("show", f"{commit}:.replit")
+            section = b""
+            removed = 0
+            kept = []
+            for line in before.splitlines(keepends=True):
+                if line.lstrip().startswith(b"["):
+                    section = line.strip()
+                if section == b"[userenv.shared]" and re.match(rb"^\s*DATABENTO_API_KEY\s*=", line):
+                    removed += 1
+                else:
+                    kept.append(line)
+            if removed == 1 and b"".join(kept) == after:
+                continue
+            findings.append({"commit": commit, "path": p, "reason": "not exactly authorized key-line deletion"})
+            continue
         if p in forbidden or p.startswith(("data/", "artifacts/gc-n-research/public/research-data/")):
             findings.append({"commit": commit, "path": p, "reason": "forbidden changed path"})
 objects = git("rev-list", "--objects", "HEAD", "--not", base).decode().splitlines()
