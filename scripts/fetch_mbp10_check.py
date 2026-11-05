@@ -1,6 +1,7 @@
 """Three authorized GCZ26 hours only. No packages, config edits, or key output."""
 import base64
 from decimal import Decimal
+from datetime import datetime, timezone, timedelta
 import hashlib
 import json
 import os
@@ -39,6 +40,9 @@ def main():
                 "session-open": "2026-11-03T23:00:00Z"}
     if len(rows) != 3 or {r["label"]: r["start"] for r in rows} != expected:
         raise ValueError("unexpected windows")
+    if any(datetime.fromisoformat(r["end"].replace("Z", "+00:00")) !=
+           datetime.fromisoformat(r["start"].replace("Z", "+00:00")) + timedelta(hours=1) for r in rows):
+        raise ValueError("only the three authorized one-hour windows are permitted")
     if any(r["columns"] < 1800 for r in rows):
         raise ValueError("insufficient saved app columns")
     key = os.environ.get("DATABENTO_API_KEY")
@@ -54,7 +58,7 @@ def main():
             raise ValueError("invalid quote")
         quotes.append(dict(label=row["label"], parameters=parameters(row), costUsd=str(cost)))
     total = sum(Decimal(q["costUsd"]) for q in quotes)
-    estimate = dict(quotedAtUtc=__import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat(),
+    estimate = dict(quotedAtUtc=datetime.now(timezone.utc).isoformat(),
                     quotes=quotes, totalUsd=str(total), budgetUsd="2", withinBudget=total <= 2)
     (ROOT / "cost.json").write_text(json.dumps(estimate, indent=2))
     print(json.dumps(estimate))
