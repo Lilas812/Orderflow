@@ -161,6 +161,44 @@ async function run() {
     const restored=r.readBackground()!;
     results.push({center,step:"context-restored",style:"glow",...compare(restored.rgba,previous.rgba,previous.width),
       mode:r.rendererMode,gpu:r.gpuMetrics});
+    // Zoom-out glow lines (SPEC 7, MIN_LINE_PX): 1 tick = 1.6..4 px at DPR1, per-pixel line strength texture.
+    r.setStyle("glow"); reference.setStyle("glow");
+    r.setSmoothing({time:"mean",price:"auto"}); reference.setSmoothing({time:"mean",price:"auto"});
+    r.setScaleOptions(fixed); reference.setScaleOptions(fixed);
+    for (const span of [40, 60, 100, 60]) {
+      (r as any).lastScaleAt = -Infinity; (reference as any).lastScaleAt = -Infinity;
+      const lineView = { startUs: followStartUs((head + span / 20) * 1e6, 60, width), durationSec: 60,
+        centerPriceTicks: center + .125, priceSpanTicks: span };
+      r.draw(cols, lineView, 60 + span, "jst"); reference.draw(cols, lineView, 60 + span, "jst");
+      const pa = r.readBackground()!, pb = reference.readBackground()!;
+      results.push({ center, step: `line-${span}`, style: "glow", ...compare(pa.rgba, pb.rgba, pa.width),
+        mode: r.rendererMode, gpu: r.gpuMetrics, line: (r as any).gpu?.bg?.line });
+      if (span === 60) capture(`${center}-line-${span}`, pa, pb);
+    }
+    // Latest-book band in line mode: CPU column shown 1:1 by the GPU composite.
+    {
+      gpuBook.bandSink = r.bandSink;
+      const lineView = { startUs: (head - 50) * 1e6, durationSec: 60, centerPriceTicks: center + .125, priceSpanTicks: 100 };
+      (r as any).lastScaleAt = -Infinity; (reference as any).lastScaleAt = -Infinity;
+      r.draw(cols, lineView, 70, "jst"); reference.draw(cols, lineView, 70, "jst");
+      const latest = column(head, center, 73);
+      gpuBook.draw(latest, lineView, 200, head * 1e6, { style: "glow" });
+      cpuBook.draw(latest, lineView, 200, head * 1e6, { style: "glow" });
+      const pa = r.readBackground()!, ref = reference.readBackground()!;
+      const composed = document.createElement("canvas"); composed.width = ref.width; composed.height = ref.height;
+      const ctx = composed.getContext("2d")!;
+      ctx.putImageData(new ImageData(new Uint8ClampedArray(ref.rgba), ref.width, ref.height), 0, 0);
+      ctx.imageSmoothingEnabled = false; ctx.drawImage(bookB, 0, 0, ref.width, ref.height);
+      const actual = ctx.getImageData(0, 0, ref.width, ref.height).data;
+      const end = Math.ceil(cpuBook.metrics.bandEnd! / devicePixelRatio * backgroundDpr(devicePixelRatio));
+      for (let y = 0; y < ref.height; y++) for (let x = end; x < ref.width; x++)
+        actual.set(ref.rgba.subarray((y * ref.width + x) * 4, (y * ref.width + x + 1) * 4), (y * ref.width + x) * 4);
+      const allowed = devicePixelRatio === 1 ? [cpuBook.metrics.bandStart!, end] as [number, number] : undefined;
+      results.push({ center, step: "book-line", style: "glow", ...compare(pa.rgba, actual, ref.width, allowed),
+        mode: r.rendererMode, gpu: r.gpuMetrics, band: cpuBook.metrics, line: (r as any).gpu?.band?.line !== undefined });
+      capture(`${center}-book-line`, pa, { rgba: new Uint8Array(actual), width: ref.width, height: ref.height });
+      r.bandSink(null);
+    }
     // Keep the actual canvases visible for evidence screenshots; release GL resources.
     r.destroy(); reference.destroy();
   }

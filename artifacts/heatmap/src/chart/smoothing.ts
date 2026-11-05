@@ -1,6 +1,6 @@
 import type { HeatColumn, Viewport } from "../domain.ts";
 import { COLOR_LUT, lutIndex } from "./palette.ts";
-import { coreAlpha, fadeFactor, gaussianKernel, glowK, rowStrength, verticalBlur } from "./glow.ts";
+import { MIN_LINE_PX, coreAlpha, fadeFactor, gaussianKernel, glowK, lineStrength, rowStrength, verticalBlur, wideLines } from "./glow.ts";
 import type { TradeAggregator } from "../data/trade-aggregate.ts";
 
 export interface SmoothingOptions { time: "mean" | "max"; price: "auto" | "none" }
@@ -25,10 +25,16 @@ export function temporalQuantities(columns: readonly HeatColumn[], from: number,
   }
   return ticks;
 }
-export interface ProfileColumn { readonly id: number; readonly values: Float32Array; readonly coverage: Float32Array }
+export interface ProfileColumn {
+  readonly id: number; readonly values: Float32Array; readonly coverage: Float32Array;
+  /** Per physical row glow strength in zoom-out line mode (frame.line); null uses the shared per-row strength. */
+  readonly strength: Float32Array | null;
+}
 export interface ProfileFrame {
   list: readonly ProfileColumn[]; start: number; dx: number; aligned: boolean; firstPixel: number; top: number;
   step: number; k: number; kernel: Float32Array; strength: Float64Array; strengthKey: string;
+  /** Glow zoom-out line mode: every list entry carries its own strength (ProfileColumn.strength). */
+  line: boolean;
   eaten: ReadonlyMap<number, { mask: Uint8Array; signature: string }>; eatenVersion: number; recomputed: number; cachedBytes: number;
 }
 export function projectQuantities(ticks: ReadonlyMap<number, WeightedQuantity>, duration: number,
@@ -51,9 +57,35 @@ export function projectQuantities(ticks: ReadonlyMap<number, WeightedQuantity>, 
   return { values, coverage: weights };
 }
 
+/**
+ * Glow at zoom-out (SPEC 7, 2026-11-05 user approval): every known price is a line `thickness` physical pixels tall
+ * centred on its tick, wider than the tick itself. Where lines overlap, the price with the larger
+ * quantity x line strength wins the row (scale independent, so profiles stay cacheable); ties keep the stronger
+ * (nearer) line. A row takes the winner's own quantity, strength and time coverage: the price "auto" area mean does
+ * not apply here. Rows reached by no known price stay unknown (coverage 0).
+ */
+export function projectLines(ticks: ReadonlyMap<number, WeightedQuantity>, duration: number,
+  top: number, span: number, height: number, options: SmoothingOptions, thickness: number, k: number) {
+  const values = new Float32Array(height), coverage = new Float32Array(height), strength = new Float32Array(height);
+  const score = new Float64Array(height).fill(-1), half = thickness / 2;
+  for (const [price, q] of ticks) {
+    const quantity = options.time === "mean" ? q.sum / q.weight : q.max;
+    const known = Math.min(1, q.weight / duration), center = (top - price) / span * height;
+    for (let y = Math.max(0, Math.floor(center - half)); y < Math.min(height, Math.ceil(center + half)); y++) {
+      const s = lineStrength(y + .5 - center, thickness, k);
+      if (s <= 0) continue;
+      const v = quantity * s;
+      if (v > score[y]! || (v === score[y]! && s > strength[y]!)) {
+        score[y] = v; values[y] = quantity; coverage[y] = known; strength[y] = s;
+      }
+    }
+  }
+  return { values, coverage, strength };
+}
+
 interface Entry {
   id: number; refs: readonly HeatColumn[]; from: number; to: number;
-  values: Float32Array; coverage: Float32Array; core: Float32Array; blur: Float32Array;
+  values: Float32Array; coverage: Float32Array; strength: Float32Array | null; core: Float32Array; blur: Float32Array;
   rgba: Uint8ClampedArray; sig: string; paintSig: string; generation: number; bytes: number;
   pixels: Uint32Array; paintVersion: number;
 }
@@ -108,7 +140,9 @@ export class SmoothingRaster {
     const aligned = Math.round(firstPixel * pixelUs) === view.startUs;
     const edge = (x: number) => aligned
       ? Math.round((firstPixel + x) * pixelUs) / 1e6 : start + x * dx;
-    const geometry = `${height}|${view.centerPriceTicks}|${view.priceSpanTicks}|${options.time}|${options.price}`;
+    // Glow zoom-out: lines thicker than a tick (SPEC 7, MIN_LINE_PX). Block and zoomed-in glow keep tick rows.
+    const line = style === "glow" && wideLines(height / view.priceSpanTicks);
+    const geometry = `${height}|${view.centerPriceTicks}|${view.priceSpanTicks}|${options.time}|${options.price}|${line ? "line" : "tick"}`;
     if (geometry !== this.geometry) { this.reset(); this.geometry = geometry; }
     const bySecond = this.bySecond; bySecond.clear();
     // Last version of a second wins. Never feed display interpolation to statistics.
@@ -124,11 +158,13 @@ export class SmoothingRaster {
       let e = this.entries.get(key);
       if (!e || e.refs.length !== refs.length || e.refs.some((c, i) => c !== refs[i])) {
         if (e) { this.bytes -= e.bytes; this.entries.delete(key); }
-        const p = projectQuantities(temporalQuantities(refs, from, to), to - from, top, view.priceSpanTicks, height, options);
+        const ticks = temporalQuantities(refs, from, to);
+        const p = line ? projectLines(ticks, to - from, top, view.priceSpanTicks, height, options, MIN_LINE_PX, glowK(MIN_LINE_PX))
+          : { ...projectQuantities(ticks, to - from, top, view.priceSpanTicks, height, options), strength: null };
         const rgba = new Uint8ClampedArray(height * 4);
         e = { ...p, id: ++this.nextId, refs: refs.slice(), from, to, core: new Float32Array(height),
           blur: new Float32Array(height), rgba, pixels: new Uint32Array(rgba.buffer), paintVersion: 0, sig: "", paintSig: "",
-          generation: 0, bytes: height * 20 + refs.length * 8 };
+          generation: 0, bytes: height * (p.strength ? 24 : 20) + refs.length * 8 };
         this.bytes += e.bytes; recomputed++;
       } else this.entries.delete(key);
       this.entries.set(key, e); list.push(e);
@@ -146,8 +182,11 @@ export class SmoothingRaster {
       for (const c of trades.cells(view.startUs, view.startUs + view.durationSec * 1e6)) {
         const x = Math.floor((c.secondUs / 1e6 - start) / dx);
         if (x < 0 || x >= width) continue;
-        const first = Math.max(0, Math.floor((top - c.price - .5) / view.priceSpanTicks * height));
-        const end = Math.min(height, Math.ceil((top - c.price + .5) / view.priceSpanTicks * height));
+        // In line mode the eaten cut covers the price's whole line, not only its tick.
+        const center = (top - c.price) / view.priceSpanTicks * height;
+        const half = line ? MIN_LINE_PX / 2 : height / view.priceSpanTicks / 2;
+        const first = Math.max(0, Math.floor(line ? center - half : (top - c.price - .5) / view.priceSpanTicks * height));
+        const end = Math.min(height, Math.ceil(line ? center + half : (top - c.price + .5) / view.priceSpanTicks * height));
         if (first >= end) continue;
         let entry = this.eaten.get(x);
         if (!entry) this.eaten.set(x, entry = { mask: new Uint8Array(height), signature: "" });
@@ -159,7 +198,7 @@ export class SmoothingRaster {
       }
       this.tradeRevision = trades.revision; this.tradeKey = tradeKey; this.eatenVersion++;
     }
-    const step = Math.max(1, Math.round(1 / dx)), k = glowK(height / view.priceSpanTicks);
+    const step = Math.max(1, Math.round(1 / dx)), k = glowK(line ? MIN_LINE_PX : height / view.priceSpanTicks);
     if (this.kernelK !== k) { this.kernel = gaussianKernel(k); this.kernelK = k; }
     const strengthKey = `${height}|${top}|${view.priceSpanTicks}|${k}`;
     if (strengthKey !== this.strengthKey) {
@@ -172,7 +211,7 @@ export class SmoothingRaster {
       }
     }
     return { list, start, dx, aligned, firstPixel, top, step, k, kernel: this.kernel, strength: this.strengthRows,
-      strengthKey, eaten: this.eaten, eatenVersion: this.eatenVersion, recomputed, cachedBytes: this.bytes };
+      strengthKey, line, eaten: this.eaten, eatenVersion: this.eatenVersion, recomputed, cachedBytes: this.bytes };
   }
   frame(columns: readonly HeatColumn[], view: Viewport, width: number, height: number,
     options: SmoothingOptions, scale: { upper: number; lower: number; gamma: number },
@@ -182,7 +221,8 @@ export class SmoothingRaster {
     const list = this.list;
     let cores = 0, paints = 0;
     const strengthRows = prepared.strength;
-    const strength = (y: number) => strengthRows[y]!;
+    // Line mode: each column's own strength (its winning line per row); otherwise the shared tick sub-row strength.
+    const strength = (e: Entry, y: number) => e.strength ? e.strength[y]! : strengthRows[y]!;
     const position = (n: number) => n > 0 && n > scale.lower
       ? Math.min(1, Math.max(0, (n - scale.lower) / Math.max(1, scale.upper - scale.lower))) ** scale.gamma : 0;
     const state = (x: number, y: number) => !list[x] || !list[x]!.coverage[y] ? 2 : position(list[x]!.values[y]!) > 0 ? 1 : 0;
@@ -198,7 +238,7 @@ export class SmoothingRaster {
       for (let y = 0; y < height; y++) {
         const fade = style === "glow" ? fadeFactor(o => state(x + o * step, y),
           o => Boolean(this.eaten.get(x + o * step)?.mask[y])) : 1;
-        e.core[y] = position(e.values[y]!) * fade * (style === "glow" ? strength(y) : 1);
+        e.core[y] = position(e.values[y]!) * fade * (style === "glow" ? strength(e, y) : 1);
       }
       verticalBlur(e.core, kernel, e.blur as Float32Array<ArrayBuffer>);
       e.sig = sig; e.generation++; cores++;
@@ -227,7 +267,7 @@ export class SmoothingRaster {
         for (let y = 0; y < height; y++) {
           const c = e.core[y]!, ci = lutIndex(c) * 3, coverage = e.coverage[y]!;
           const h = ((left?.blur[y] ?? 0) + 2 * e.blur[y]! + (right?.blur[y] ?? 0)) / 4;
-          const gi = lutIndex(Math.min(1, h * 1.8)) * 3, a = c > 0 ? coreAlpha(strength(y)) : 0;
+          const gi = lutIndex(Math.min(1, h * 1.8)) * 3, a = c > 0 ? coreAlpha(strength(e, y)) : 0;
           for (let channel = 0; channel < 3; channel++) e.rgba[y * 4 + channel] = coverage * (style === "block"
             ? (c > 0 ? COLOR_LUT[ci + channel]! : 0)
             : COLOR_LUT[gi + channel]! * .9 * (1 - a) + COLOR_LUT[ci + channel]! * a);
