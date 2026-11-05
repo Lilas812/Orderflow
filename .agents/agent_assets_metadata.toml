@@ -742,3 +742,59 @@ mtime_ms = 1793817804119
 storage_uri = "gcs://replit-rams-assets-pike/rams/assets/repl:c326af06-2355-4bfb-a52e-f433587c4cd9/e0dceeca-a916-4df0-8e45-5c56a7dfda2d/e8ee8f82-a064-4458-b8d0-31bcfbe69e3c"
 storage_version_token = "1793817842519389"
 content_type = "text/markdown"
+
+[[outputs]]
+id = "CluDw4ptaorrWy_v_L8Sj"
+uri = "file://data/research-range-bars/evidence/nq-month-desktop.jpg"
+type = "image"
+title = "NQ レンジバー・PC月間表示"
+description = "NQ40ticks、47,293足。headless Chromium 1440×1100。実機ではありません。"
+logical_id = "a49da19d-ecb7-4427-99b6-749b29dfb1c2"
+content_hash = "sha256:c6c8e47e2abc4db58350affc9ac02bc3e3f192d0f8b91c129c1e94fa319a1ce1"
+size = 186518
+mtime_ms = 1793897551091
+storage_uri = "gcs://replit-rams-assets-pike/rams/assets/repl:c326af06-2355-4bfb-a52e-f433587c4cd9/a49da19d-ecb7-4427-99b6-749b29dfb1c2/ff9c5325-abde-47df-a800-aed384ce75d5"
+storage_version_token = "1793898229955282"
+content_type = "image/jpeg"
+
+[[outputs]]
+id = "6UUieOLYQioNvgy55KN5-"
+uri = "file://data/research-range-bars/evidence/gc-month-desktop.jpg"
+type = "image"
+title = "GC レンジバー・PC月間表示"
+description = "GC20ticks、22,591足。headless Chromium 1440×1100。実機ではありません。"
+logical_id = "adcd540f-c7ee-4aaa-a306-c6b241b4f758"
+content_hash = "sha256:36793f6a2441b1549f871449fdcc29027b642a78f7e5fa4f5405a684c3798dc5"
+size = 191940
+mtime_ms = 1793897758855
+storage_uri = "gcs://replit-rams-assets-pike/rams/assets/repl:c326af06-2355-4bfb-a52e-f433587c4cd9/adcd540f-c7ee-4aaa-a306-c6b241b4f758/731f8d26-ad58-4988-8e50-7e37cdea5870"
+storage_version_token = "1793898231371572"
+content_type = "image/jpeg"
+
+[[outputs]]
+id = "kbMOBATwst92FnoL2qjNp"
+uri = "file://data/research-range-bars/evidence/nq-mobile-chart.jpg"
+type = "image"
+title = "NQ レンジバー・スマホ幅"
+description = "402px幅・DPR2のChromium合成環境。チャートまでスクロールした月全体。Safari実機ではありません。"
+logical_id = "baebb36d-e05a-48b4-b670-a7b258fdfabd"
+content_hash = "sha256:f74c602ab03f63cdd0a4017a96f5987a81a34e9745c4131bed57c6d9ccfbdf4e"
+size = 186068
+mtime_ms = 1793897897268
+storage_uri = "gcs://replit-rams-assets-pike/rams/assets/repl:c326af06-2355-4bfb-a52e-f433587c4cd9/baebb36d-e05a-48b4-b670-a7b258fdfabd/36210ae5-5c2f-4a85-a90f-4cde90affe06"
+storage_version_token = "1793898232630221"
+content_type = "image/jpeg"
+
+[[outputs]]
+id = "hZx2V8XboVDO0bNybNQtC"
+uri = "file://data/research-range-bars/evidence/gc-mobile-chart.jpg"
+type = "image"
+title = "GC レンジバー・スマホ幅"
+description = "402px幅・DPR2のChromium合成環境。チャートまでスクロールした月全体。Safari実機ではありません。"
+logical_id = "c8559098-0c76-441e-ad14-1c902b072068"
+content_hash = "sha256:3634045616b8887e7b7e2bc3e192aa561aeb673c61c83c2781f5ef0e5bda4afc"
+size = 188710
+mtime_ms = 1793897905016
+storage_uri = "gcs://replit-rams-assets-pike/rams/assets/repl:c326af06-2355-4bfb-a52e-f433587c4cd9/c8559098-0c76-441e-ad14-1c902b072068/1cea62e8-ed6b-4cb6-907e-8fd42e9d2058"
+storage_version_token = "1793898233911651"
+content_type = "image/jpeg"

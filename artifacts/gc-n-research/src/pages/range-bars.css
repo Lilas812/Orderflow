@@ -1,0 +1,28 @@
+.range-page{background:#101820;color:#d3dfe8;min-height:100dvh;padding:12px;font:13px/1.6 system-ui,sans-serif}
+.range-page header{display:flex;justify-content:space-between;gap:16px;border-bottom:1px solid #354654;padding:8px 4px 14px}
+.range-page h1{font-size:20px;font-weight:650}.range-page h1 small{font-size:11px;color:#a1b5c5;margin-left:12px}
+.range-page h2{font-size:14px;font-weight:650;margin-bottom:8px}.range-page h3{font-weight:650}
+.range-page p{margin:4px 0}.range-page nav,.range-toolbar,.range-controls{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.range-toolbar{padding:9px 0;border-bottom:1px solid #2b3c49}
+.range-page label{display:inline-flex;align-items:center;gap:6px}.range-page button,.range-page select,.range-page input:not([type=checkbox]):not([type=range]){border:1px solid #455c6b;background:#182733;border-radius:3px;padding:5px 9px;color:inherit;min-height:34px}
+.range-page button{cursor:pointer}.range-page button:hover,.range-page button[aria-pressed=true]{background:#304f61;border-color:#91bacd}
+.range-page button:disabled{opacity:.45;cursor:default}.range-page input[type=number]{width:88px}
+.range-page a{color:#a7d8ec;text-decoration:underline;text-underline-offset:3px}
+.range-page textarea{width:100%;min-height:100px;background:#111d26;border:1px solid #536c7d;border-radius:3px;color:#dfebf4;padding:8px;resize:vertical}
+.range-alert{padding:12px;background:#4c2c25;border:1px solid #c58d6c;margin-top:10px}
+.range-loading{padding:60px 20px;border:1px solid #344d5d;margin:12px 0}
+.range-summary{padding:8px 10px;background:#1b2b36;border-left:3px solid #7faabc;margin:10px 0;font-variant-numeric:tabular-nums}
+.range-chart-panel{border:1px solid #354d5c;border-radius:3px;overflow:hidden}
+.range-controls{padding:7px 9px;background:#18242e}.range-canvas-host{position:relative;width:100%;height:470px;min-height:320px}
+.range-canvas-host canvas{position:absolute;inset:0;width:100%;height:100%}
+.range-navigator{width:100%;height:68px;display:block;cursor:crosshair}
+.range-controls input[type=range]{width:130px;accent-color:#91b7cc}
+.range-help{padding:6px 10px;font-size:11px;color:#a6b8c5}.range-ruler{color:#e3d985;padding:7px}
+.range-details,.range-editor{padding:12px;background:#1b2b36;border:1px solid #536675;margin:10px 0}
+.range-editor label{display:block;margin-bottom:8px}.range-editor button,.range-details button{margin:4px}
+.range-bottom{display:grid;grid-template-columns:1.2fr 1fr;gap:16px;margin:16px 0}
+.range-bottom>section{padding:12px;border:1px solid #354d5c;min-width:0}
+.range-mark-list,.range-history{max-height:420px;overflow:auto}.range-mark-list article{padding:9px 2px;border-bottom:1px solid #344a59}
+.range-mark-list article button{margin-right:6px}.range-history pre{font-size:10px;white-space:pre-wrap;overflow-wrap:anywhere}
+.range-page footer{color:#94aab9;padding:14px 4px;border-top:1px solid #354d5c}
+@media(max-width:640px){.range-page{padding:8px;font-size:12px}.range-page header{display:block}.range-page h1 small{display:block;margin-left:0}.range-page nav{margin-top:8px}.range-canvas-host{height:380px}.range-bottom{grid-template-columns:1fr}.range-page button{min-height:40px}.range-controls{gap:6px}.range-details{overflow-wrap:anywhere}}

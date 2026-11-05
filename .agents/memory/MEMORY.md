@@ -34,3 +34,4 @@
 - [研究の目的と承認境界](research-comparison-scope.md) — 主観・反転・売買を分離し、再出力・学習・test利用・依存操作の承認範囲を区別する。
 - [Library登録上限](library-asset-limit.md) — 100MiB超は登録拒否。出力の生成・検証成功と、Libraryへの登録成功を区別する。
 - [MBO再構築の注意](mbo-reconstruction-cautions.md) — snapshotの元時刻、抽出後のsequence飛び、明示板とimplied・保存秒の違いを区別する。
+- [公開Gitと秘密情報](repository-secret-boundary.md) — リポジトリは公開。APIキーはSecretsのみとし、設定・通常環境変数・送信コミットに含めない。

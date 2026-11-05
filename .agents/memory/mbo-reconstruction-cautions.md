@@ -26,3 +26,19 @@ Databentoの日次MBOスナップショットのts_eventは元注文の更新時
 **Why:** 約定の完全一致や密な秒列だけでは、板の構成・限月・サンプリング・実到着の同一性は証明できない。
 
 **How to apply:** 研究入力へ統合するときは由来・時刻基準・品質マスクを分離し、比較元の限月不明を推測で確定しない。根拠と実例はdocs/MBO_RECONSTRUCTION_REPORT.mdを参照。
+
+## impliedのschemaを区別する
+
+2026-11-05に確認したDatabentoのGLBX.MDP3公式資料は、realとimpliedの結合最良気配をCMBP-1/CBBOとして説明している。通常のMBO/MBPとconsolidated schemaを混同しない。side=Nのimplied約定だけではresting bookへの包含を証明できない。
+
+**Why:** 配信元やschemaの区別を省いて「MBPならimpliedあり」と一般化すると、別ベンダーの板との不一致原因を誤って確定してしまう。
+
+**How to apply:** 比較するschemaごとの公式定義を再確認する。TICK STREAMのL2/Symbols公開文書はfull snapshot・約7Hz上限のcoalesceを説明するが、今回implied包含は確認できなかった。詳しい未確定条件と照合方法は `docs/GC_BOARD_ALIGNMENT_DIAGNOSIS.md` にある。
+
+## 学習側とライブ側の板を同一分布と仮定しない
+
+別配信元・別収録方法の板に、原数量や上位段形状の特徴をそのまま移せると仮定しない。
+
+**Why:** MBO再構築がMBP-10の価格・数量に一致していても、アプリ保存板とは大きく異なる事例があった。約定や限月の整合だけで板特徴の互換性を保証できない。
+
+**How to apply:** ライブと同じ入力で検証するか、配信元間で頑健な特徴かを別途確認する。MBP-10への一致を、implied統合板やCME原配信全体への独立検証と言い換えない。
