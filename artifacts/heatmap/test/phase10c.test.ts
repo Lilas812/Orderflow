@@ -51,6 +51,9 @@ class Context {
   events: any[][] = [];
   measureText(text: string) { return { width: text.length * 6 }; }
   setTransform() {}
+  // 2026-11-05: the current-book mountains close and fill paths (recorded edges use stroke below).
+  lineJoin = "";
+  closePath() {} fill() {}
   clearRect(...args: number[]) { this.events.push(["clear", ...args]); }
   fillRect(...args: number[]) { this.events.push(["fill", this.fillStyle, this.globalAlpha, ...args]); }
   fillText(...args: unknown[]) { this.events.push(["text", this.fillStyle, this.font, ...args]); }
@@ -78,7 +81,8 @@ test("ダミー：現在板の帯（block）は同じLo/gamma、横棒は描か�
     assert.ok(rows[y] > 5);
     assert.equal(e[1], `rgb(${expected[i]},${expected[i + 1]},${expected[i + 2]})`);
   }
-  assert.ok(c.ctx.events.every(e => e[1] !== "#8a3cff" && e[1] !== "#d9d9d9"), "no bars");
+  // Bars are rects; the 2026-11-05 mountains are paths in the same colours (tested in book-mountain.test.ts).
+  assert.ok(c.ctx.events.filter(e => e[0] === "fill").every(e => e[1] !== "#8a3cff" && e[1] !== "#d9d9d9"), "no bars");
 });
 
 test("ダミー：VAの帯と線は拡大・縮小時の同じ価格行、画面端をclip", () => {

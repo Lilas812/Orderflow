@@ -53,6 +53,9 @@ class Context {
   font = ""; textAlign = ""; textBaseline = "";
   measureText(text: string) { return { width: text.length * 6 }; }
   setTransform() {}
+  // 2026-11-05: the current-book mountains use paths; recorded rect/text events stay unchanged.
+  strokeStyle = ""; lineWidth = 1; lineJoin = "";
+  beginPath() {} moveTo() {} lineTo() {} closePath() {} fill() {} stroke() {}
   fillText(text: string, x: number, y: number) { this.events.push(["text", text, x, y, this.fillStyle, this.font]); }
 }
 class Canvas {

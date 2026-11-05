@@ -55,7 +55,9 @@ test("ダミー：色の帯は最新列の右だけ・過去なし・同一最�
   const events: { color: string; alpha: number; x: number; y: number; w: number }[] = [];
   const ctx = { fillStyle: "", globalAlpha: 1, font: "", textAlign: "", textBaseline: "", clearRect() { events.length = 0; },
     fillRect(x: number, y: number, w: number) { events.push({ color: this.fillStyle, alpha: this.globalAlpha, x, y, w }); },
-    measureText: () => ({ width: 0 }), setTransform() {}, fillText() {} };
+    measureText: () => ({ width: 0 }), setTransform() {}, fillText() {},
+    // 2026-11-05: the current-book mountains use paths; rect events above stay bars/band only.
+    beginPath() {}, moveTo() {}, lineTo() {}, closePath() {}, fill() {}, stroke() {}, strokeStyle: "", lineWidth: 1, lineJoin: "" };
   const canvas = { width: 0, height: 0, getContext: () => ctx, getBoundingClientRect: () => ({ width: 100, height: 40 }) };
   const renderer = new CurrentBookRenderer(canvas as unknown as HTMLCanvasElement);
   for (const height of [1, 3, 40]) assert.deepEqual(currentBookRows(book, view, height),

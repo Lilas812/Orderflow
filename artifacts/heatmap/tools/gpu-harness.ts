@@ -32,6 +32,17 @@ function compare(a: Uint8Array | Uint8ClampedArray, b: Uint8Array | Uint8Clamped
   }
   return { pixels, max, first };
 }
+/** Background + current-book overlay canvas; columns from `end` on keep the background (numbers are excluded). */
+function withOverlay(bg: { rgba: Uint8Array; width: number; height: number }, overlay: HTMLCanvasElement, end: number) {
+  const c = document.createElement("canvas"); c.width = bg.width; c.height = bg.height;
+  const ctx = c.getContext("2d")!;
+  ctx.putImageData(new ImageData(new Uint8ClampedArray(bg.rgba), bg.width, bg.height), 0, 0);
+  ctx.imageSmoothingEnabled = false; ctx.drawImage(overlay, 0, 0, bg.width, bg.height);
+  const out = ctx.getImageData(0, 0, bg.width, bg.height).data;
+  for (let y = 0; y < bg.height; y++) for (let x = end; x < bg.width; x++)
+    out.set(bg.rgba.subarray((y * bg.width + x) * 4, (y * bg.width + x + 1) * 4), (y * bg.width + x) * 4);
+  return out;
+}
 async function run() {
   const results: unknown[] = [];
   const pictures:{name:string;png:string}[]=[];
@@ -136,12 +147,15 @@ async function run() {
         const source=glowBookColumn(latest,view,ref.height,{upper:200,lower:0,gamma:1});
         sourceDiff=compare(raw,source.rgba,1);
       }
-      const original=compare(pa.rgba,actual,ref.width);
+      // 2026-11-05: the mountains live in the overlay canvas in both modes, so compose bookA onto the GPU background too.
+      const gpuComposed=withOverlay(pa,bookA,end);
+      const original=compare(gpuComposed,actual,ref.width);
       const allowed=devicePixelRatio===1 ? [cpuBook.metrics.bandStart!,end] as [number,number] : undefined;
-      results.push({center,step:`book-${style}`,style,...compare(pa.rgba,actual,ref.width,allowed),
+      results.push({center,step:`book-${style}`,style,...compare(gpuComposed,actual,ref.width,allowed),
         originalThreeUnitFailure:original, bandTolerance:allowed?4:3,
         sourceDiff,gpu:r.gpuMetrics,mode:r.rendererMode,band:cpuBook.metrics});
-      capture(`${center}-book-${style}`,pa,{rgba:new Uint8Array(actual),width:ref.width,height:ref.height});
+      capture(`${center}-book-${style}`,{rgba:new Uint8Array(gpuComposed),width:pa.width,height:pa.height},
+        {rgba:new Uint8Array(actual),width:ref.width,height:ref.height});
     }
     for(const style of ["block","glow"] as const){
       gpuBook.draw(column(head,center,73),view,253,head*1e6,{style,lower:2,gamma:.7});
@@ -194,7 +208,7 @@ async function run() {
       for (let y = 0; y < ref.height; y++) for (let x = end; x < ref.width; x++)
         actual.set(ref.rgba.subarray((y * ref.width + x) * 4, (y * ref.width + x + 1) * 4), (y * ref.width + x) * 4);
       const allowed = devicePixelRatio === 1 ? [cpuBook.metrics.bandStart!, end] as [number, number] : undefined;
-      results.push({ center, step: "book-line", style: "glow", ...compare(pa.rgba, actual, ref.width, allowed),
+      results.push({ center, step: "book-line", style: "glow", ...compare(withOverlay(pa, bookA, end), actual, ref.width, allowed),
         mode: r.rendererMode, gpu: r.gpuMetrics, band: cpuBook.metrics, line: (r as any).gpu?.band?.line !== undefined });
       capture(`${center}-book-line`, pa, { rgba: new Uint8Array(actual), width: ref.width, height: ref.height });
       r.bandSink(null);

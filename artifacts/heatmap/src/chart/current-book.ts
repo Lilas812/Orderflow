@@ -4,6 +4,7 @@ import { colorize } from "./renderer.ts";
 import { glowBookColumn, glowK, glowRadius, wideLines, type BookGlowBuffers } from "./glow.ts";
 import type { GpuBandRequest } from "./gpu-heatmap.ts";
 import { BOOK_NUMBER_RIGHT_INSET, bookBandEnd, bookNumberFont, bookNumberRows, type BookNumberRow } from "./book-numbers.ts";
+import { MOUNTAIN_MAX_WIDTH_PCT, bookMountains, drawBookMountains } from "./book-mountain.ts";
 
 /** Confirmed column's right edge, not the timestamp of the provisional book. */
 export function bookBandStart(rightEdgeUs: number | null, view: Viewport, width: number): number | null {
@@ -39,7 +40,10 @@ export function currentBookRows(book: HeatColumn | null, view: Viewport, height:
 
 export interface CurrentBookOptions { lower?: number; gamma?: number; style?: "glow" | "block"; }
 
-/** Phase 14: colour band + numeric quantities (no bars; bookBarPct / bookBarOpacity are unused). */
+/**
+ * Phase 14: colour band + numeric quantities. 2026-11-05: plus filled mountains left of the numbers
+ * (book-mountain.ts). bookBarPct / bookBarOpacity stay unused.
+ */
 export class CurrentBookRenderer {
   private readonly canvas: HTMLCanvasElement;
   private readonly context: CanvasRenderingContext2D;
@@ -52,7 +56,7 @@ export class CurrentBookRenderer {
   private samples: number[] = [];
   metrics = { drawMs: 0, meanMs: 0, maxMs: 0, drawCount: 0, paintedRows: 0, timeUs: null as number | null, p99: 1,
     bandStart: null as number | null, bandEnd: null as number | null, numbers: 0, groupTicks: 1,
-    style: "glow" as "glow" | "block", backgroundDpr: 1 };
+    style: "glow" as "glow" | "block", backgroundDpr: 1, mountainPoints: 0, mountainMaxSize: 0 };
   lastNumbers: BookNumberRow[] = [];
   /** WebGL band sink (HeatmapRenderer.bandSink). Returns true when the GPU layer painted the band. */
   bandSink: ((band: GpuBandRequest | null) => boolean) | null = null;
@@ -148,6 +152,11 @@ export class CurrentBookRenderer {
       ctx.drawImage(this.band!, 0, 0, bandWidth, bandHeight, 0, 0, width, height);
     }
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    // Mountains over the band (and over the heatmap when browsing the past), under the numbers.
+    const mountains = bookMountains(book, view, rect.height);
+    const mountainBase = bookBandEnd(rect.width, widest);
+    const mountainPoints = drawBookMountains(ctx, mountains, mountainBase,
+      Math.min(mountainBase, rect.width * MOUNTAIN_MAX_WIDTH_PCT / 100));
     ctx.textAlign = "right"; ctx.textBaseline = "middle";
     numbers.forEach(row => {
       ctx.font = bookNumberFont(row.bold);
@@ -162,7 +171,8 @@ export class CurrentBookRenderer {
     this.metrics = { drawMs, meanMs: this.samples.reduce((a, b) => a + b, 0) / this.samples.length,
       maxMs: Math.max(...this.samples), drawCount: this.metrics.drawCount + 1, paintedRows,
       timeUs: book?.timeUs ?? null, p99, bandStart, bandEnd: bandStart === null ? null : bandEnd,
-      numbers: numbers.length, groupTicks: numbers[0]?.ticks ?? 1, style, backgroundDpr: bandDpr };
+      numbers: numbers.length, groupTicks: numbers[0]?.ticks ?? 1, style, backgroundDpr: bandDpr,
+      mountainPoints, mountainMaxSize: mountains.maxSize };
   }
 
   /** Latest book only: rows = one size per physical row (block), sizes = max size per price (glow). */
