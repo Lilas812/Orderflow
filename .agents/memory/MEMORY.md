@@ -33,3 +33,4 @@
 - [転換点マークの承認](turning-point-labels-decisions.md) — ツールバーの旧制約よりマーク追加指示を優先。仕様書本文は変更しない。
 - [研究の目的と承認境界](research-comparison-scope.md) — 主観・反転・売買を分離し、再出力・学習・test利用・依存操作の承認範囲を区別する。
 - [Library登録上限](library-asset-limit.md) — 100MiB超は登録拒否。出力の生成・検証成功と、Libraryへの登録成功を区別する。
+- [MBO再構築の注意](mbo-reconstruction-cautions.md) — snapshotの元時刻、抽出後のsequence飛び、明示板とimplied・保存秒の違いを区別する。

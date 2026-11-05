@@ -65,11 +65,11 @@ for (const input of inputs) {
   const report = { day, contract: "GCZ26", rawContract: "GCZ6", input: input.filename,
     inputSha256: input.sha256, status: "running", actions: {}, allOutrightTradeVolume: {},
     selectedRecords: 0, excludedRecords: 0, snapshotRecords: 0, completedSnapshots: 0,
-    eventSeconds: 0, carriedStateSeconds: 0, unknownSeconds: 0, crossedSeconds: 0,
+    unknownSeconds: 0, crossedSeconds: 0,
     sequenceForwardJumps: 0, sequenceBackward: 0, sequenceRepeated: 0, sequenceMissingNumbers: 0,
     timestampBackward: 0, spanningGroups: 0, hourly: {}, examples: [] };
   let id = null, meta, symbolById, frontier = null, inGroup = false, groupSec = null;
-  let snapshotGroup = false, initializedFromSnapshot = false, lastSequence = null, latestEventSecond = null;
+  let snapshotGroup = false, initializedFromSnapshot = false, lastSequence = null;
   const dayStart = Date.parse(day) / 1000, dayEnd = dayStart + 86400;
   const tradeFile = path.join(base, "mbo-trades.jsonl.partial");
   const tradeFd = fs.openSync(tradeFile, "wx");
@@ -88,7 +88,6 @@ for (const input of inputs) {
         if (report.examples.length < 12) report.examples.push({ second: frontier, ...column });
         continue;
       }
-      if (frontier === latestEventSecond) report.eventSeconds++; else report.carriedStateSeconds++;
       writer.write(frontier, encodeColumns([column]));
       const hour = String(Math.floor((frontier - dayStart) / 3600)).padStart(2, "0");
       report.hourly[hour] = (report.hourly[hour] ?? 0) + 1;
@@ -125,7 +124,6 @@ for (const input of inputs) {
         if (frontier !== null && second < frontier) {
           report.timestampBackward++; markBad(second, frontier);
         }
-        latestEventSecond = Math.max(latestEventSecond ?? second, second);
         if (event.sequence && lastSequence !== null) {
           if (event.sequence === lastSequence) report.sequenceRepeated++;
           else if (event.sequence < lastSequence) report.sequenceBackward++;

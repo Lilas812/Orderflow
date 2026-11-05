@@ -46,6 +46,14 @@ for (const day of fs.readdirSync(base).filter(x => /^\d{4}-\d\d-\d\d$/.test(x)).
     rows.push({ day, file: `${day}/${filename}`, seconds: count, firstSecond, lastSecond,
       invalid: errors, bytes: fs.statSync(file).size, sha256: hash.digest("hex") });
   }
+  // Remove unverified optional diagnostics from early research output.
+  // Binary columns, trades and immutable originals are never changed here.
+  const summaryFile = path.join(base, day, "summary.json");
+  const summary = JSON.parse(fs.readFileSync(summaryFile, "utf8"));
+  delete summary.eventSeconds;
+  delete summary.carriedStateSeconds;
+  delete summary.eventCounterEvidence;
+  fs.writeFileSync(summaryFile, JSON.stringify(summary, null, 2) + "\n");
 }
 const version = createHash("sha256");
 for (const row of rows) version.update(row.file + ":" + row.sha256 + "\n");
