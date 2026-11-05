@@ -7,8 +7,18 @@ async function response<T>(r: Response): Promise<T> {
   if (!r.ok) throw new Error(data.error ?? `HTTP ${r.status}`);
   return data as T;
 }
-export function getRange(symbol: SymbolName, width: number, reversalTicks: number, signal?: AbortSignal) {
-  return fetch(`${base}bars?symbol=${symbol}&width=${width}&reversalTicks=${reversalTicks}`, { signal, cache: 'no-store' }).then(response<RangeData>);
+export async function getRange(symbol: SymbolName, width: number, reversalTicks: number, signal?: AbortSignal): Promise<RangeData> {
+  for (;;) {
+    signal?.throwIfAborted();
+    const r = await fetch(`${base}bars?symbol=${symbol}&width=${width}&reversalTicks=${reversalTicks}`, { signal, cache: 'no-store' });
+    if (r.status !== 202) return response<RangeData>(r);
+    await r.json();
+    await new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => { signal?.removeEventListener('abort', abort); resolve(); }, 1500);
+      function abort() { clearTimeout(timer); reject(new DOMException('Aborted', 'AbortError')); }
+      signal?.addEventListener('abort', abort, { once: true });
+    });
+  }
 }
 export function getMarks(signal?: AbortSignal) {
   return fetch(`${base}marks`, { signal, cache: 'no-store' }).then(response<MarkStore>);

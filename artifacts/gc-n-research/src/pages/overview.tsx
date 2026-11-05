@@ -122,6 +122,8 @@ export default function OverviewPage() {
         <Link href="/" data-testid="link-daily" className="inline-flex h-7 items-center gap-1 rounded-sm border border-input bg-card px-2 text-[11px] hover:bg-accent">
           <ArrowLeft className="h-3.5 w-3.5" />日次リサーチ
         </Link>
+        {import.meta.env.DEV && import.meta.env.VITE_RANGE_RESEARCH_ENABLED === '1'
+          && <Link href="/range-bars" className="text-xs underline">レンジバー研究</Link>}
         <Seg id="tz" label="時刻表示" value={tz} options={[{ v: 'CT', l: 'CT' }, { v: 'JST', l: 'JST' }]} onChange={setTz} />
       </header>
 
