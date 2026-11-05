@@ -11,8 +11,6 @@ import { gaussianKernel, rowStrengths } from "./glow.ts";
  *  - eaten:    R8     W x H ring with the same slot mapping as data; only 1 x H columns whose mask signature
  *              changed for their slot are uploaded (full upload only on allocation / context init).
  *  - strength: R32F   H x 1 row strength (glow K sub-row), uploaded on price geometry change.
- *  - lstr:     R32F   W x H ring, same slots as data: per-pixel strength of glow zoom-out lines (frame.line only,
- *              allocated on first use and uploaded together with data).
  *  - lut:      RGBA8  256 x 1 COLOR_LUT.
  *  - core/blur:R32F   W x H render targets (pass 1: scale+fade+strength, pass 2: vertical Gaussian).
  *  - band:     R32F   1 x N latest book only (block: per physical row size; glow: per price max size),
@@ -28,8 +26,6 @@ export interface GpuBandRequest {
   rows: ArrayLike<number>;
   /** Glow input: max size per price (glowBookColumn geometry) plus its stretch geometry. */
   sizes: ArrayLike<number>; k: number; yTop: number; destHeight: number;
-  /** Glow zoom-out lines: CPU-built RGBA column, one row per physical pixel (glowBookColumn line mode), shown 1:1. */
-  line?: Uint8ClampedArray;
 }
 export interface GpuInfo {
   gpuName: string; cpuMs: number; gpuMs: number | null; timer: boolean;
@@ -56,7 +52,6 @@ float posOf(float n) {
 `;
 const CORE_FS = HEAD + `
 uniform sampler2D u_eaten; uniform sampler2D u_strength; uniform int u_step; uniform int u_glow;
-uniform int u_line; uniform sampler2D u_lstr;
 int stateAt(int x, int y) {
   if (x < 0 || x >= u_W) return 2;
   vec2 d = dataAt(x, y);
@@ -69,7 +64,7 @@ void main() {
   vec2 d = dataAt(x, y);
   float fade = 1.0, st = 1.0;
   if (u_glow == 1) {
-    st = u_line == 1 ? texelFetch(u_lstr, ivec2((x + u_base) % u_W, y), 0).r : texelFetch(u_strength, ivec2(y, 0), 0).r;
+    st = texelFetch(u_strength, ivec2(y, 0), 0).r;
     if (stateAt(x, y) != 1) fade = 0.0;
     else {
       float appear = 1.0;
@@ -118,7 +113,6 @@ void main() {
 }`;
 const COMPOSITE_FS = HEAD + `
 uniform sampler2D u_core; uniform sampler2D u_blur; uniform sampler2D u_lut; uniform sampler2D u_strength;
-uniform int u_line; uniform sampler2D u_lstr;
 uniform int u_glow; uniform int u_hasBg; uniform float u_shift; uniform int u_canvasH;
 uniform int u_band; uniform int u_bandStart; uniform int u_bandEnd; uniform sampler2D u_bandTex; uniform sampler2D u_bandCol;
 uniform float u_bUpper; uniform float u_bLower; uniform float u_bGamma; uniform int u_bNan;
@@ -135,8 +129,7 @@ vec3 background(int x, int y) {
     float bl = x > 0 ? texelFetch(u_blur, ivec2(x - 1, y), 0).r : 0.0;
     float br = x < u_W - 1 ? texelFetch(u_blur, ivec2(x + 1, y), 0).r : 0.0;
     float h = (bl + 2.0 * b0 + br) / 4.0;
-    float st = u_line == 1 ? texelFetch(u_lstr, ivec2((x + u_base) % u_W, y), 0).r : texelFetch(u_strength, ivec2(y, 0), 0).r;
-    float a = c > 0.0 ? min(1.0, st * 1.4) : 0.0;
+    float a = c > 0.0 ? min(1.0, texelFetch(u_strength, ivec2(y, 0), 0).r * 1.4) : 0.0;
     col = lut(min(1.0, h * 1.8)) * 0.9 * (1.0 - a) + lut(c) * a;
   }
   return d.g * col;
@@ -187,11 +180,9 @@ export class GpuHeatmap {
   private strengthBuf = new Float32Array(10);
   private strengthKey = "";
   private scratch = new Float32Array(0);
-  private bg: { hasBg: boolean; glow: boolean; line: boolean; base: number; scale: GpuScale; shift: number } | null = null;
-  private lineScratch = new Float32Array(0);
+  private bg: { hasBg: boolean; glow: boolean; base: number; scale: GpuScale; shift: number } | null = null;
   private band: GpuBandRequest | null = null;
   private bandRows = 0;
-  private bandLineRows = 0;
   /** Per band texture: retained staging + last uploaded values (numeric compare; sources are reused/mutated). */
   private bandCache: Record<"bandRowsTex" | "bandSizesTex", { n: number; stage: Float32Array; last: Float32Array }> = {
     bandRowsTex: { n: 0, stage: new Float32Array(0), last: new Float32Array(0) },
@@ -257,7 +248,7 @@ export class GpuHeatmap {
         lut[i * 4] = COLOR_LUT[i * 3]!; lut[i * 4 + 1] = COLOR_LUT[i * 3 + 1]!; lut[i * 4 + 2] = COLOR_LUT[i * 3 + 2]!; lut[i * 4 + 3] = 255;
       }
       this.alloc("lut", gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE, COLOR_LUT_STEPS, 1, lut, 4);
-      this.W = this.H = 0; this.bandRows = 0; this.bandLineRows = 0; this.resetBandCache();
+      this.W = this.H = 0; this.bandRows = 0; this.resetBandCache();
       this.failure = "";
       return true;
     } catch (error) {
@@ -271,7 +262,7 @@ export class GpuHeatmap {
   private dropResources(): void {
     this.progs = null; this.vao = null; this.tex = {}; this.fbCore = this.fbBlur = this.fbBand = null;
     this.W = this.H = 0; this.slotIds = new Int32Array(0); this.slotEaten = []; this.strengthKey = "";
-    this.bandRows = 0; this.bandLineRows = 0; this.resetBandCache(); this.pendingQuery = null; this.dims = {}; this.bg = null;
+    this.bandRows = 0; this.resetBandCache(); this.pendingQuery = null; this.dims = {}; this.bg = null;
   }
 
   private alloc(name: string, internal: number, format: number, type: number, w: number, h: number,
@@ -313,7 +304,7 @@ export class GpuHeatmap {
     this.fbBlur = this.target("blur", W, H, gl.R32F, gl.RED, gl.FLOAT, 4);
     this.W = W; this.H = H;
     this.slotIds = new Int32Array(W).fill(-1); this.slotEaten = new Array<string>(W).fill(""); this.strengthKey = "";
-    this.scratch = new Float32Array(H * 2); this.eatenColumn = new Uint8Array(H); this.lineScratch = new Float32Array(H);
+    this.scratch = new Float32Array(H * 2); this.eatenColumn = new Uint8Array(H);
   }
 
   private use(name: "core" | "blur" | "band" | "comp"): Program {
@@ -344,41 +335,23 @@ export class GpuHeatmap {
     this.pollTimer();
     this.ensureSize(W, H);
     const base = frame.aligned ? ((frame.firstPixel % W) + W) % W : 0;
-    const line = style === "glow" && frame.line;
-    if (line && (!this.tex.lstr || this.dims.lstr?.[0] !== W || this.dims.lstr?.[1] !== H)) {
-      // First zoom-out line frame at this size: allocate and re-upload every slot (data and line strength together).
-      this.alloc("lstr", gl.R32F, gl.RED, gl.FLOAT, W, H, null, 4);
-      this.slotIds.fill(-1);
-    }
     // 1. ring upload of changed columns only.
     const changed = planSlotUploads(W, base, x => frame.list[x]?.id ?? -1, this.slotIds);
     gl.bindTexture(gl.TEXTURE_2D, this.tex.data!);
     gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
     if (changed.length > W / 4) {
-      const all = new Float32Array(W * H * 2), strengths = line ? new Float32Array(W * H) : null;
+      const all = new Float32Array(W * H * 2);
       for (let x = 0; x < W; x++) {
         const e = frame.list[x]!, slot = (x + base) % W;
         for (let y = 0; y < H; y++) { const i = (y * W + slot) * 2; all[i] = e.values[y]!; all[i + 1] = e.coverage[y]!; }
-        if (strengths && e.strength) for (let y = 0; y < H; y++) strengths[y * W + slot] = e.strength[y]!;
         this.slotIds[slot] = e.id;
       }
       gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, W, H, gl.RG, gl.FLOAT, all);
-      if (strengths) {
-        gl.bindTexture(gl.TEXTURE_2D, this.tex.lstr!);
-        gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, W, H, gl.RED, gl.FLOAT, strengths);
-      }
       this.info.batchedUploads++;
     } else for (const x of changed) {
       const e = frame.list[x]!, slot = (x + base) % W, s = this.scratch;
       for (let y = 0; y < H; y++) { s[y * 2] = e.values[y]!; s[y * 2 + 1] = e.coverage[y]!; }
-      gl.bindTexture(gl.TEXTURE_2D, this.tex.data!);
       gl.texSubImage2D(gl.TEXTURE_2D, 0, slot, 0, 1, H, gl.RG, gl.FLOAT, s);
-      if (line) {
-        const ls = this.lineScratch;
-        if (e.strength) ls.set(e.strength); else ls.fill(0);
-        gl.bindTexture(gl.TEXTURE_2D, this.tex.lstr!);
-        gl.texSubImage2D(gl.TEXTURE_2D, 0, slot, 0, 1, H, gl.RED, gl.FLOAT, ls);
-      }
       this.slotIds[slot] = e.id;
     }
     this.info.uploadedColumns = changed.length; this.info.uploadedColumnsTotal += changed.length;
@@ -410,8 +383,6 @@ export class GpuHeatmap {
     let p = this.use("core");
     this.common(p, scale, base);
     this.bindTex(p, "u_eaten", 1, "eaten"); this.bindTex(p, "u_strength", 2, "strength");
-    this.bindTex(p, "u_lstr", 3, line ? "lstr" : "strength");
-    gl.uniform1i(this.loc(p, "u_line"), line ? 1 : 0);
     gl.uniform1i(this.loc(p, "u_step"), frame.step); gl.uniform1i(this.loc(p, "u_glow"), style === "glow" ? 1 : 0);
     gl.bindFramebuffer(gl.FRAMEBUFFER, this.fbCore); gl.drawArrays(gl.TRIANGLES, 0, 3);
     // 4. vertical Gaussian
@@ -423,7 +394,7 @@ export class GpuHeatmap {
       gl.bindFramebuffer(gl.FRAMEBUFFER, this.fbBlur); gl.drawArrays(gl.TRIANGLES, 0, 3);
     }
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-    this.bg = { hasBg: true, glow: style === "glow", line, base, scale: { ...scale }, shift: 0 };
+    this.bg = { hasBg: true, glow: style === "glow", base, scale: { ...scale }, shift: 0 };
     this.composite();
     if (timer) { gl.endQuery(this.timerExt!.TIME_ELAPSED_EXT); this.pendingQuery = timer; }
     this.info.cpuMs = performance.now() - started;
@@ -434,7 +405,7 @@ export class GpuHeatmap {
   renderEmpty(W: number, H: number): boolean {
     if (!this.ready) return false;
     this.ensureSize(W, H);
-    this.bg = { hasBg: false, glow: false, line: false, base: 0, scale: { upper: 1, lower: 0, gamma: 1 }, shift: 0 };
+    this.bg = { hasBg: false, glow: false, base: 0, scale: { upper: 1, lower: 0, gamma: 1 }, shift: 0 };
     this.composite();
     return true;
   }
@@ -457,18 +428,7 @@ export class GpuHeatmap {
       if (sizesBytes) this.info.bandSizesUploads++;
       bandColumns = (rowsBytes ? 1 : 0) + (sizesBytes ? 1 : 0);
       bandBytes = rowsBytes + sizesBytes;
-      if (band.style === "glow" && band.line) {
-        // Zoom-out line column: upload the CPU column as is (same pixels as the Canvas band).
-        const rows = band.line.length / 4;
-        const pixels = new Uint8Array(band.line.buffer, band.line.byteOffset, band.line.length);
-        if (rows !== this.bandLineRows || !this.tex.bandLine) {
-          this.alloc("bandLine", gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE, 1, rows, pixels, 4);
-          this.bandLineRows = rows;
-        } else {
-          gl.bindTexture(gl.TEXTURE_2D, this.tex.bandLine!); gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
-          gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, 1, rows, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
-        }
-      } else if (band.style === "glow") {
+      if (band.style === "glow") {
         const rows = this.bandCache.bandSizesTex.n * band.k;
         if (rows !== this.bandRows) {
           if (this.fbBand) gl.deleteFramebuffer(this.fbBand);
@@ -531,10 +491,8 @@ export class GpuHeatmap {
     this.common(p, bg.scale, bg.base);
     this.bindTex(p, "u_core", 1, "core"); this.bindTex(p, "u_blur", 2, "blur"); this.bindTex(p, "u_lut", 3, "lut");
     this.bindTex(p, "u_strength", 4, "strength");
-    this.bindTex(p, "u_lstr", 7, bg.line ? "lstr" : "strength");
-    gl.uniform1i(this.loc(p, "u_line"), bg.line ? 1 : 0);
     this.bindTex(p, "u_bandTex", 5, band?.style === "block" ? "bandRowsTex" : "lut");
-    this.bindTex(p, "u_bandCol", 6, band?.style === "glow" ? band.line ? "bandLine" : "bandCol" : "lut");
+    this.bindTex(p, "u_bandCol", 6, band?.style === "glow" ? "bandCol" : "lut");
     gl.uniform1i(this.loc(p, "u_glow"), bg.glow ? 1 : 0); gl.uniform1i(this.loc(p, "u_hasBg"), bg.hasBg ? 1 : 0);
     gl.uniform1f(this.loc(p, "u_shift"), bg.shift); gl.uniform1i(this.loc(p, "u_canvasH"), this.canvas.height);
     gl.uniform1i(this.loc(p, "u_band"), band ? band.style === "block" ? 1 : 2 : 0);
@@ -544,7 +502,7 @@ export class GpuHeatmap {
       gl.uniform1f(this.loc(p, "u_bLower"), band.scale.lower); gl.uniform1f(this.loc(p, "u_bGamma"), band.scale.gamma);
       gl.uniform1i(this.loc(p, "u_bNan"), Number.isNaN(band.scale.upper) ? 1 : 0);
       if (band.style === "glow") {
-        gl.uniform1i(this.loc(p, "u_bRows"), band.line ? this.bandLineRows : this.bandRows);
+        gl.uniform1i(this.loc(p, "u_bRows"), this.bandRows);
         gl.uniform1f(this.loc(p, "u_bYTop"), band.yTop); gl.uniform1f(this.loc(p, "u_bDestH"), band.destHeight);
       }
     }

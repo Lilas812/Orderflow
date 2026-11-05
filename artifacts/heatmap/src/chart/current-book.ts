@@ -1,7 +1,7 @@
 import type { HeatColumn, Viewport } from "../domain.ts";
 import { backgroundDpr, priceTicksToY, timeUsToX } from "./coordinates.ts";
 import { colorize } from "./renderer.ts";
-import { glowBookColumn, glowK, glowRadius, wideLines, type BookGlowBuffers } from "./glow.ts";
+import { glowBookColumn, glowK, glowRadius, type BookGlowBuffers } from "./glow.ts";
 import type { GpuBandRequest } from "./gpu-heatmap.ts";
 import { BOOK_NUMBER_RIGHT_INSET, bookBandEnd, bookNumberFont, bookNumberRows, type BookNumberRow } from "./book-numbers.ts";
 
@@ -57,7 +57,6 @@ export class CurrentBookRenderer {
   /** WebGL band sink (HeatmapRenderer.bandSink). Returns true when the GPU layer painted the band. */
   bandSink: ((band: GpuBandRequest | null) => boolean) | null = null;
   private gpuSizes = new Float32Array(0);
-  private gpuLineBuffers: BookGlowBuffers = {};
   gpuBand = false;
 
   constructor(canvas: HTMLCanvasElement) {
@@ -136,10 +135,10 @@ export class CurrentBookRenderer {
           this.columnImage = new ImageData(1, column.rgba.length / 4);
         this.columnImage.data.set(column.rgba);
         sctx.putImageData(this.columnImage, 0, 0);
-        // Zoomed in: K sub-rows per price stretched over the price rows; zoom-out lines: one row per pixel (1:1).
+        const yTop = priceTicksToY(column.topPrice + 0.5, view, bandHeight);
         bandContext.imageSmoothingEnabled = true;
-        bandContext.drawImage(this.scratch, 0, 0, 1, column.rgba.length / 4, paintStart, column.yTop, paintEnd - paintStart,
-          column.destHeight);
+        bandContext.drawImage(this.scratch, 0, 0, 1, column.rgba.length / 4, paintStart, yTop, paintEnd - paintStart,
+          column.priceCount * bandHeight / view.priceSpanTicks);
         paintedRows = bandHeight;
       }
     }
@@ -181,12 +180,6 @@ export class CurrentBookRenderer {
     if (book) for (const side of [book.bids, book.asks]) for (let i = 0; i < side.prices.length; i++) {
       const row = topPrice - side.prices[i]!;
       if (row >= 0 && row < priceCount) sizes[row] = Math.max(sizes[row]!, side.sizes[i]!);
-    }
-    if (style === "glow" && wideLines(height / view.priceSpanTicks)) {
-      // Zoom-out lines: the band column is built on the CPU (same as Canvas) and shown 1:1 by the GPU composite.
-      const column = glowBookColumn(book, view, height, scale, this.gpuLineBuffers);
-      return { style, width, height, paintStart, paintEnd, scale, rows: this.rows, sizes, k: column.k,
-        yTop: column.yTop, destHeight: column.destHeight, line: column.rgba };
     }
     return { style, width, height, paintStart, paintEnd, scale, rows: this.rows, sizes, k,
       yTop: priceTicksToY(topPrice + 0.5, view, height), destHeight: priceCount * height / view.priceSpanTicks };
