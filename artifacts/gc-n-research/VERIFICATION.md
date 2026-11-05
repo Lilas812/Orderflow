@@ -67,3 +67,115 @@
 - iOS Safari実機・タッチジェスチャーは未検証。小画面では横スクロールとボタンが利用可能。
 - 元データの完全性を取引所公式総量で再証明したものではない。
 - 派生データだけのローカル研究ページ。製品のライブ接続や保存復旧を変更していない。
+
+## 追加：レンジバー俯瞰（2026-11-05 UTC）
+
+対象・定義・保存契約は [RANGE_BARS.md](RANGE_BARS.md)。
+以下は既存の日別・期間俯瞰の検証とは独立した追加確認。
+
+### 自動検査
+
+- Python既存4＋新規生成8、Node既存23＋保存/API5＋原約定の表示位置2＝42件合格。
+- 幅ちょうど、飛び値、次の約定から次足、セッション/coverage境界、取得済み無約定時間、
+  同時刻/sequence/同一キーの安定順序、N、部分足、初出極値、原約定順の候補を確認。
+- 保存はCRUD/繰り返しundo/再読込/独立読取、CAS同時更新・stale revision、
+  破損・保存失敗・ロック・契約/パス/由来不正・cross-origin拒否・CSV/JSONを確認。
+- `pnpm --filter @workspace/gc-n-research run typecheck` 合格。
+- `PORT=20373 BASE_PATH=/gc-n-research/ pnpm --filter @workspace/gc-n-research run build` 合格。
+  既存tooltipのsource map警告は非致命的で、今回修正しない。
+
+### 本番成果物と保全
+
+通常ビルドの `dist/public` はHTML 1、JS 1、CSS 1のみ。
+新画面/API文字列、限月名、購入JSON、マークの混入なし。
+本番previewの `range-bars` / `range-api/marks` / `research-data/index.json` は
+いずれもHTTP200のSPA用HTMLで、JSON/API/新画面ではない（404とは報告しない）。
+検査用preview PID3072は終了し、所有プロセス0・20474ポート閉鎖を確認。
+起動時PORT指定がなかった最初のpreview試行は起動できず、PID2971系列も残存0。
+
+原本・購入世代・既存ローカル研究JSON・製品コード・v1保存・仕様正本・artifact定義は変更しない。
+`.replit` と開始時のMBOツールは開始時のローカルcheckpointとbyte一致。
+`.replit` の既存差分は `[userenv.shared]` の `DATABENTO_API_KEY` 値の差替え1行だけ
+（旧値/新値とも非表示）。研究実装より前の、環境設定とMBOツール追加をまとめたcheckpoint由来。
+記録だけでは設定UIの操作や担当者までは断定できない。
+設定65ファイルの読取パターン検査では、既知の同項目以外の平文秘密は検出しなかった。
+これはパターンで認識できない秘密の不存在証明ではない。キー設定は変更していない。
+
+### 一度だけの研究再起動
+
+- 研究pnpm148→Vite307と、製品pnpm142→shell476→receiver477が別系列であることを直前照合。
+- 16:45:34 UTC、Vite設定の変更による自動再起動1回。手動再起動は実施しない。
+  Vite内部のserver再起動のためPID307は不変。receiver477・共通監督も不変。
+- 公開側の別VMはPID55・上流connectionSerial40。再起動前の板件数は
+  16:41:29→16:44:29 UTCでNQ184617→185120、GC163713→164183。
+- 再起動後は16:47:29→16:48:29 UTCでNQ185653→185827、GC164676→164848。
+  disconnect/reconnectはいずれも39のまま。板の記録を約定件数と取り違えない。
+- App Storageはread-onlyで既存prodオブジェクトだけを確認。
+  対象の次時間は11/05 17:00〜18:00 UTCで、16:46時点は未開始、時間ファイル未存在・coverage未確定。
+  ユーザー承認により確定後に追記する。取得済みや受信停止と断定しない。
+  再確認コマンド：
+  `node --experimental-strip-types artifacts/gc-n-research/scripts/range-storage-evidence.mjs 1793897128907000`
+  元オブジェクトを書き換えず、結果はGit除外の `data/research-range-bars/storage-evidence/report.json`。
+
+### 画像
+
+`data/research-range-bars/evidence/preview-desktop.jpg` でNQ40ticks・47,293足の月全体を確認。
+画像取得ツールが残した所有Chromium PID3186系列を終了し、子を含め残存0を照合。
+ブラウザの撮影応答だけを終了証拠とせず、closure JSONも同ディレクトリへ保存した。
+操作検査・PC/スマホ別画像・フレーム測定の結果は同ディレクトリの `browser-results.json` に追記する。
+
+### ブラウザ操作と性能の結果
+
+所有Chromiumの独立した2つのBrowserContextで、次を確認した。
+実機端末ではなく、Linuxのheadless ChromiumによるPC/スマホ幅・DPR・合成タッチである。
+
+- 作成・編集・削除・取り消し・再読込・別contextの同じマーク/基準メモ・5秒同期。
+- 古い編集revisionへのHTTP409と競合表示。別端末の変更を無言で上書きしない。
+- 最初の操作スクリプトは再読込完了前に次の編集へ進み、正しく保存を拒否された。
+  UIの再読込完了待機を補い、未確認だった編集以降だけを再開して成功。
+- CSVの整数us、JSONの全履歴・由来・キー一致。テストマークは削除し基準メモを空の初期状態へ復元。
+  テスト履歴は保全されており、現在マーク0件・revision12。ユーザーのマークを削除していない。
+- NQ40→80ticksに変更しても同一ref/ID/表示位置を保全。
+  使用した最初の40tick足の高値は80tick足の高安どちらでもないことも派生出力で照合。
+- CT/JST、初期OFF補助線、出来高切替、前後セッション、全期間フィット、2点定規。
+- スマホ相当ではCDPの異なるIDを持つ実際の2本の合成指入力で拡大を確認。
+  実iPad/Safari、物理端末間の通信は確認していない。
+- 既存開発 `research-data/index.json` はHTTP200のJSONでsessionsが残っている。
+
+生成数量照合：NQ10,104,515件・買6,985,852/売6,981,940/N1,476枚、
+GC2,009,413件・買1,437,096/売1,444,980/N26,698枚。
+各506個の原約定ファイルとcoverage/rebuildを最終再ハッシュし、固定manifestとの不一致0。
+初期足はNQ47,293本、GC22,591本、どちらも23セッション。
+
+各条件につき120回、月全体フィット・出来高ON・補助線OFFで強制描画。
+スクロール操作の応答時間や実機のフレームレート保証ではなく、
+requestAnimationFrame間隔とCanvas描画命令処理の別測定である。
+各銘柄の初期幅、足数、表示区間、画面/DPRを固定した。別contextの基準ポーリングは継続している。
+
+| 条件 | 画面 / Canvas CSS / DPR | 足数・幅 | rAF中央値 / p95 / 最大 ms | 描画中央値 / p95 / 最大 ms |
+|---|---|---|---|---|
+| NQ PC | 1440×1100 / 1399×470 / 1 | 47,293・40ticks | 16.7 / 16.8 / 16.8 | 4.5 / 7.6 / 10.8 |
+| NQスマホ相当 | 402×874 / 384×380 / 2 | 47,293・40ticks | 16.7 / 16.7 / 50.1 | 3.6 / 5.2 / 45.4 |
+| GC PC | 1440×1100 / 1399×470 / 1 | 22,591・20ticks | 16.7 / 16.8 / 16.8 | 2.8 / 4.1 / 14.0 |
+| GCスマホ相当 | 402×874 / 384×380 / 2 | 22,591・20ticks | 16.7 / 16.7 / 16.8 | 2.4 / 4.2 / 10.7 |
+
+NQスマホ相当には50.1msのrAF外れ値があり、最大値を隠して「常時60fps」とはしない。
+NQ40のPC標本は最初のpass、残りは未確認部分の再開passで取得。標本は混ぜて再集計していない。
+
+画像（Git対象外、研究データとともにprivateなdata以下）：
+- `evidence/nq-month-desktop.jpg` / `gc-month-desktop.jpg`
+- `evidence/nq-zoom-desktop.jpg`
+- `evidence/nq-mobile-chart.jpg` / `gc-mobile-chart.jpg`：チャートへスクロールした402px幅の全期間。
+  スマホ全ページツール画像は生成待ちを撮ったため、合格画像としては採用しない。
+
+終了証拠：操作用PID3397・3761、画像専用PID4317はいずれもexit0、
+各所有プロセス残存0・CDP19488閉鎖。画像ツールPID3186・4092系列も終了し残存0。
+最終のps照合でもChromium残存0。元からある製品画面の接続は切断していない。
+操作スクリプトの最初の失敗と再開成功を、それぞれbrowser-results-first-pass.json/browser-results.jsonで区別する。
+`chart-image-results.json` は再テストではなく静止画取得だけの終了証拠。
+
+### 公開状態の限界
+
+既存公開アプリはReserved VM、ビルド成功・招待者限定。研究変更をPublishしていない。
+既知の公開研究URL/旧JSONは未認証GETで認証へ307転送。認証後の配信有無は未確認。
+新ビルドの保護を、既に稼働する旧公開ビルドからデータが消えたという意味には使わない。

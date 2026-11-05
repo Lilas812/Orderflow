@@ -1,4 +1,4 @@
-import { type ReactNode } from 'react';
+import { lazy, Suspense, type ReactNode } from 'react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ErrorBoundary } from '@/components/error-boundary';
 import { Toaster } from '@/components/ui/toaster';
@@ -14,6 +14,8 @@ import {
 } from 'wouter';
 
 const queryClient = new QueryClient();
+const RangePage = import.meta.env.DEV && import.meta.env.VITE_RANGE_RESEARCH_ENABLED === '1'
+  ? lazy(() => import('@/pages/range-bars')) : null;
 
 function Router() {
   return (
@@ -23,6 +25,7 @@ function Router() {
       <Switch>
         <Route path="/" component={ResearchPage} />
         <Route path="/overview" component={OverviewPage} />
+        {RangePage && <Route path="/range-bars"><Suspense fallback={<p>研究画面読込中…</p>}><RangePage /></Suspense></Route>}
         <Route component={NotFound} />
       </Switch>
     </RoutedErrorBoundary>

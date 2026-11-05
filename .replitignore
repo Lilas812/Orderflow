@@ -4,3 +4,4 @@
 # No need to store the pnpm store twice.
 .local
 /data/
+/artifacts/gc-n-research/public/research-data/
