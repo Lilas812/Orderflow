@@ -5,10 +5,12 @@ export function clampView(start: number, end: number, length: number): [number, 
   return [a, a + span];
 }
 export function refPosition(bars: RangeBar[], ref: TradeRef) {
+  const beforeEnd = (b: RangeBar) => b.endUs < ref.tsUs || (b.endUs === ref.tsUs
+    && (b.endSeq < ref.seq || (b.endSeq === ref.seq && b.endLine < ref.line)));
   let l = 0, r = bars.length;
   while (l < r) {
     const m = (l + r) >>> 1;
-    if (bars[m].endUs < ref.tsUs) l = m + 1; else r = m;
+    if (beforeEnd(bars[m])) l = m + 1; else r = m;
   }
   for (let i = l; i < bars.length && bars[i].startUs <= ref.tsUs; i++) {
     const b = bars[i];

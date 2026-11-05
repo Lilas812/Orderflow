@@ -58,6 +58,7 @@ export function RangeChart({ data, marks, guides, volume, tz, mode, onMark, onSe
       maxVolume = Math.max(maxVolume, b.buy + b.sell + b.unknown);
     }
     for (const m of marks) {
+      if (m.context.inputHash !== data.inputHash) continue;
       const pos = refPosition(data.bars, m.ref);
       if (pos >= a && pos <= z) { lo = Math.min(lo, m.ref.priceTicks); hi = Math.max(hi, m.ref.priceTicks); }
     }
@@ -79,6 +80,14 @@ export function RangeChart({ data, marks, guides, volume, tz, mode, onMark, onSe
     }
     // Pixel columns retain actual extrema; no fabricated bars for dense monthly views.
     const stride = Math.max(1, Math.ceil(span / width));
+    if (volume) {
+      maxVolume = 1;
+      for (let i = first; i < end; i += stride) {
+        let qty = 0;
+        for (let j = i; j < Math.min(end, i + stride); j++) qty += data.bars[j].buy + data.bars[j].sell + data.bars[j].unknown;
+        maxVolume = Math.max(maxVolume, qty);
+      }
+    }
     for (let i = first; i < end; i += stride) {
       const b = data.bars[i]; let high = b.high, low = b.low, partial = b.partial;
       const stop = Math.min(end, i + stride);
@@ -103,6 +112,7 @@ export function RangeChart({ data, marks, guides, volume, tz, mode, onMark, onSe
       }
     }
     for (const m of marks) {
+      if (m.context.inputHash !== data.inputHash) continue;
       const xx = x(refPosition(data.bars, m.ref)); if (xx < 0 || xx > width) continue;
       const yy = y(m.ref.priceTicks), sign = m.kind === 'top' ? -1 : 1;
       ctx.fillStyle = m.kind === 'top' ? '#f2ad87' : '#87cbe7'; ctx.beginPath();
@@ -171,6 +181,8 @@ export function RangeChart({ data, marks, guides, volume, tz, mode, onMark, onSe
     const debug = {
       view, barCount: data.bars.length, size, inputHash: data.inputHash, width: data.width,
       fit: () => change(0, data.bars.length), zoom, pan,
+      select: onSelect,
+      markPositions: marks.map(m => ({ id: m.id, position: m.context.inputHash === data.inputHash ? refPosition(data.bars, m.ref) : null, ref: m.ref })),
       async measureFrames(count = 120) {
         const intervals: number[] = [], drawMs: number[] = []; let previous = performance.now();
         for (let i = 0; i < count; i++) await new Promise<void>(resolve => requestAnimationFrame(now => {
@@ -181,7 +193,7 @@ export function RangeChart({ data, marks, guides, volume, tz, mode, onMark, onSe
       },
     };
     (window as unknown as { __rangeChart: typeof debug }).__rangeChart = debug;
-  }, [view, data, size, change, zoom, pan, draw]);
+  }, [view, data, size, change, zoom, pan, draw, onSelect, marks]);
   const coords = (e: React.PointerEvent<HTMLCanvasElement>) => { const r = e.currentTarget.getBoundingClientRect(); return { x: e.clientX - r.left, y: e.clientY - r.top }; };
   const pick = (x: number, y: number) => {
     const { lo, hi, bottom, width } = shape.current, [a, z] = currentView.current;

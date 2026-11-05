@@ -12,7 +12,7 @@ from zoneinfo import ZoneInfo
 
 ROOT = Path(__file__).resolve().parents[3]
 PRIVATE = ROOT / "data/research-range-bars"
-VERSION = "range-raw-v1"
+VERSION = "range-raw-v2"
 CT = ZoneInfo("America/Chicago")
 FROM_US = int(datetime(2026, 9, 29, 17, tzinfo=CT).timestamp() * 1_000_000)
 TO_US = int(datetime(2026, 10, 30, 17, tzinfo=CT).timestamp() * 1_000_000)
@@ -143,10 +143,12 @@ class Builder:
         self.totals[side] += size
         if self.bar is None:
             self.bar = dict(startUs=ts, endUs=ts, open=price, high=price, low=price, close=price,
+                            startSeq=seq, endSeq=seq, startLine=ref["line"], endLine=ref["line"],
                             buy=0, sell=0, unknown=0, count=0, highRef=ref, lowRef=ref,
                             session=label, partial=False, reason="", segment=self.segment)
         b = self.bar
         b["endUs"], b["close"] = ts, price
+        b["endSeq"], b["endLine"] = seq, ref["line"]
         b[side] += size
         b["count"] += 1
         if price > b["high"]:

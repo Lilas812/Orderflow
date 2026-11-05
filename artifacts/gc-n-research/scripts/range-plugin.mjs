@@ -2,6 +2,8 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
+import { createHash } from 'node:crypto';
+import { gzip } from 'node:zlib';
 import { readStore, mutateStore, exportCsv, StoreError } from './range-store.mjs';
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 const privateDir = path.join(root, 'data/research-range-bars');
@@ -36,7 +38,9 @@ function enqueue(symbol, width, reversalTicks) {
 async function readOutput(file) {
   const s = await fs.readFile(file, 'utf8');
   const data = JSON.parse(s);
-  // Python-generated outputHash is validated by generator; original file read is after that check.
+  const hash = s.match(/,"outputHash":"([a-f0-9]{64})"}$/);
+  if (!hash || createHash('sha256').update(s.slice(0, hash.index) + '}').digest('hex') !== hash[1])
+    throw new StoreError('派生キャッシュの内容ハッシュが一致しません。元ファイルは保全します。', 500);
   if (!data.outputHash || !data.bars || !data.inputHash) throw new StoreError('不完全な派生キャッシュ', 500);
   return data;
 }
@@ -52,7 +56,16 @@ async function proveMark(m) {
 }
 function json(res, status, body) {
   res.statusCode = status; res.setHeader('Content-Type', 'application/json; charset=utf-8');
-  res.setHeader('Cache-Control', 'no-store'); res.end(JSON.stringify(body));
+  res.setHeader('Cache-Control', 'no-store');
+  const payload = JSON.stringify(body);
+  if (payload.length > 1_000_000 && /\bgzip\b/.test(res.req?.headers['accept-encoding'] ?? '')) {
+    res.setHeader('Vary', 'Accept-Encoding');
+    gzip(payload, { level: 1 }, (error, output) => {
+      if (res.destroyed) return;
+      if (error) { res.statusCode = 500; res.end(JSON.stringify({ error: '研究データの圧縮配信に失敗しました' })); return; }
+      res.setHeader('Content-Encoding', 'gzip'); res.end(output);
+    });
+  } else res.end(payload);
 }
 export function sameOrigin(req) {
   try {

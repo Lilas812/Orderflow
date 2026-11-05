@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'wouter';
 import { RangeChart } from '@/components/range-chart';
 import { exportUrl, getMarks, getRange, RevisionConflict, saveMark } from '@/lib/range-api';
@@ -16,11 +16,13 @@ export default function RangePage() {
   const [jump, setJump] = useState<{ session: string; serial: number } | null>(null);
   const [pending, setPending] = useState<{ ref: TradeRef; highRef: TradeRef; lowRef: TradeRef; kind?: ExtremeKind } | null>(null);
   const [note, setNote] = useState(''), [edit, setEdit] = useState<RangeMark | null>(null);
+  const [editRevision, setEditRevision] = useState(0);
   const [criteria, setCriteria] = useState(''), [dirty, setDirty] = useState(false), [reload, setReload] = useState(0);
   const busy = useRef(false), dirtyRef = useRef(dirty); dirtyRef.current = dirty;
   const storeRef = useRef(store); storeRef.current = store;
   const refresh = useCallback(async (force = false) => {
     const next = await getMarks();
+    if (storeRef.current && next.revision < storeRef.current.revision) return;
     if (force || !dirtyRef.current) { setCriteria(next.criteria); setDirty(false); }
     else if (storeRef.current && next.revision !== storeRef.current.revision) {
       setConflict(true); setStatus('別端末で更新されました。未保存の基準メモを保全して再読込してください。');
@@ -40,11 +42,11 @@ export default function RangePage() {
     void load(); const interval = setInterval(load, 5000);
     return () => { active = false; clearInterval(interval); };
   }, [refresh]);
-  const mutate = useCallback(async (command: MarkCommand) => {
+  const mutate = useCallback(async (command: MarkCommand, expectedRevision?: number) => {
     if (!storeRef.current || busy.current || conflict) return false;
     busy.current = true; setStatus('保存中…');
     try {
-      const next = await saveMark(storeRef.current.revision, command);
+      const next = await saveMark(expectedRevision ?? storeRef.current.revision, command);
       setStore(next); storeRef.current = next; setStatus(`保存済み revision ${next.revision}`);
       if (command.action === 'criteria') setDirty(false);
       if (command.action === 'undo' && !dirtyRef.current) setCriteria(next.criteria);
@@ -73,7 +75,8 @@ export default function RangePage() {
     };
     window.addEventListener('keydown', key); return () => window.removeEventListener('keydown', key);
   }, [mutate, go]);
-  const bar = data?.bars[selected], marks = store?.marks.filter(m => m.symbol === symbol) ?? [];
+  const bar = data?.bars[selected];
+  const marks = useMemo(() => store?.marks.filter(m => m.symbol === symbol) ?? [], [store, symbol]);
   const requestMark = (highRef: TradeRef, kind?: ExtremeKind, lowRef = highRef) => {
     setPending({ ref: kind === 'bottom' ? lowRef : highRef, highRef, lowRef, kind }); setNote(''); setEdit(null);
   };
@@ -103,9 +106,9 @@ export default function RangePage() {
       <label>幅 ticks<input data-testid="range-width" type="number" min="1" step="1" value={rawWidth} onChange={e => setRawWidth(e.target.value)} /></label>
       <label>反転ポイント<input data-testid="range-reversal" type="number" min={symbol === 'NQ' ? .25 : .1} step={symbol === 'NQ' ? .25 : .1} value={rawReversal} onChange={e => setRawReversal(e.target.value)} /></label>
       <button onClick={apply}>幅を適用</button>
-      <label><input type="checkbox" checked={guides} onChange={e => setGuides(e.target.checked)} />反転補助線（初期OFF）</label>
-      <label><input type="checkbox" checked={volume} onChange={e => setVolume(e.target.checked)} />出来高下段</label>
-      <label>日時<select value={tz} onChange={e => setTz(e.target.value as 'CT' | 'JST')}><option>CT</option><option>JST</option></select></label>
+      <label><input data-testid="range-guides" type="checkbox" checked={guides} onChange={e => setGuides(e.target.checked)} />反転補助線（初期OFF）</label>
+      <label><input data-testid="range-volume" type="checkbox" checked={volume} onChange={e => setVolume(e.target.checked)} />出来高下段</label>
+      <label>日時<select data-testid="range-tz" value={tz} onChange={e => setTz(e.target.value as 'CT' | 'JST')}><option>CT</option><option>JST</option></select></label>
       <button onClick={() => go(-1)}>前セッション</button><button onClick={() => go(1)}>次セッション</button>
       <label>CT終了日ジャンプ<input data-testid="range-date" type="date" value={jump?.session ?? bar?.session ?? ''} onChange={e => {
         const s = data?.sessions.find(s => s.date === e.target.value);
@@ -123,7 +126,7 @@ export default function RangePage() {
       <a href={exportUrl('json')} download>JSON（履歴・基準含む）</a><a href={exportUrl('csv')} download>CSV（マーク）</a>
     </div>
     {(error || conflict) && <div className="range-alert" role="alert">{error || status}{conflict && <strong> 競合中は保存できません。未保存入力を控えて「保存を再読込」を押してください。</strong>} <button onClick={() => { setError(''); setReload(x => x + 1); }}>データ再取得</button></div>}
-    <p role="status" data-testid="range-save-status">{status || '保存データ読込中…'}</p>
+    <p role="status" data-testid="range-save-status">{status || (store ? `保存データ読込済み（revision ${store.revision}）` : '保存データ読込中…')}</p>
     {loading && <div className="range-loading">原約定のハッシュ照合／生成中。初回・幅変更時は数分かかる場合があります。既存受信へ接続しません。</div>}
     {data && <><div className="range-summary">{data.contract} ／ {data.width}ticks＝{(data.width * data.tickSize).toFixed(2)}ポイント ／ {data.bars.length.toLocaleString()}足 ／ 原約定 {data.totals.count.toLocaleString()}件 ／ 買 {data.totals.buy.toLocaleString()}・売 {data.totals.sell.toLocaleString()}・N {data.totals.unknown.toLocaleString()}枚<br />
       CT開始日 2026-09-29〜10-29（終了日ラベル 09-30〜10-30）。購入外の冒頭・末尾は欠け。取得済み無約定時間に足を補完しません。</div>
@@ -154,13 +157,14 @@ export default function RangePage() {
         <div className="range-mark-list">{marks.map(m => <article key={m.id} data-testid="range-mark-row">
           <strong>{m.kind === 'top' ? 'T 天井' : 'B 底'} {m.ref.priceTicks}ticks</strong> {formatUs(m.ref.tsUs, tz)}
           <p>{m.note || 'メモなし'} ／ 作成幅 {m.context.width}ticks・補助線 {m.context.guides ? 'ON' : 'OFF'}・hindsight</p>
-          <button onClick={() => { setEdit(m); setNote(m.note); setPending(null); }}>編集</button>
+          {data && m.context.inputHash !== data.inputHash && <strong>入力manifestが異なるためチャート位置は未照合です。元マークは保持しています。</strong>}
+          <button onClick={() => { setEdit(m); setEditRevision(store?.revision ?? 0); setNote(m.note); setPending(null); }}>編集</button>
           <button onClick={() => { if (confirm('このマークを削除します。履歴は残り、取り消し可能です。')) void mutate({ action: 'delete', id: m.id }); }}>削除</button>
         </article>)}</div>
         {edit && <div className="range-editor"><h3>編集（原約定は固定）</h3>
           <select value={edit.kind} onChange={e => setEdit({ ...edit, kind: e.target.value as ExtremeKind })}><option value="top">天井</option><option value="bottom">底</option></select>
           <textarea value={note} onChange={e => setNote(e.target.value)} />
-          <button onClick={async () => { if (await mutate({ action: 'edit', id: edit.id, kind: edit.kind, note })) setEdit(null); }}>編集を保存</button><button onClick={() => setEdit(null)}>閉じる</button>
+          <button onClick={async () => { if (await mutate({ action: 'edit', id: edit.id, kind: edit.kind, note }, editRevision)) setEdit(null); }}>編集を保存</button><button onClick={() => setEdit(null)}>閉じる</button>
         </div>}
       </section>
       <section><h2>本人の基準メモ（端末間で共有）</h2><textarea data-testid="range-criteria" value={criteria} onChange={e => { setCriteria(e.target.value); setDirty(true); }} placeholder="自分が天底と判断する基準…" />

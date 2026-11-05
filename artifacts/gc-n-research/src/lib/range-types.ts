@@ -6,6 +6,7 @@ export interface TradeRef {
 }
 export interface RangeBar {
   startUs: number; endUs: number; open: number; high: number; low: number; close: number;
+  startSeq: number; endSeq: number; startLine: number; endLine: number;
   buy: number; sell: number; unknown: number; count: number;
   highRef: TradeRef; lowRef: TradeRef;
   session: string; partial: boolean; reason: string; segment: number;

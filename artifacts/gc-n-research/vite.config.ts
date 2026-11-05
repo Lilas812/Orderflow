@@ -4,6 +4,7 @@ import tailwindcss from '@tailwindcss/vite';
 import { defineConfig } from 'vite';
 
 import runtimeErrorOverlay from '@replit/vite-plugin-runtime-error-modal';
+import rangePlugin from './scripts/range-plugin.mjs';
 
 const rawPort = process.env.PORT;
 
@@ -27,9 +28,12 @@ if (!basePath) {
   );
 }
 
-export default defineConfig({
+export default defineConfig(async ({ command }) => ({
   base: basePath,
+  publicDir: command === 'build' ? false : 'public',
+  define: { 'import.meta.env.VITE_RANGE_RESEARCH_ENABLED': JSON.stringify(command === 'serve' ? '1' : '0') },
   plugins: [
+    rangePlugin(),
     react(),
     tailwindcss(),
     runtimeErrorOverlay(),
@@ -78,4 +82,4 @@ export default defineConfig({
     host: '0.0.0.0',
     allowedHosts: true,
   },
-});
+}));
