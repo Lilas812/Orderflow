@@ -18,6 +18,25 @@ export function rowStrength(i: number, k: number): number {
   return Math.max(0, 1 - (d - 0.35) / 0.65) ** 1.5;
 }
 
+/**
+ * Zoom-out glow lines (SPEC 7, 2026-11-05): when one tick is shorter than this many physical pixels, a price is
+ * drawn as a line of this thickness centred on its tick, so the core still reaches strength 1 (K >= 3).
+ * At or above it, a price fills exactly its own tick (the pre-existing K sub-row geometry).
+ */
+export const MIN_LINE_PX = 5;
+export function wideLines(pixelsPerTick: number): boolean { return pixelsPerTick < MIN_LINE_PX; }
+
+/**
+ * Strength of a physical row whose centre lies `offsetPx` from a line centre. The line is `thickness` px tall and
+ * split into K sub-rows exactly like a tick row: sub-row floor((offset/thickness + 0.5) * K) -> rowStrength.
+ * With thickness = pixels per tick this equals the tick geometry. 0 outside the line.
+ */
+export function lineStrength(offsetPx: number, thickness: number, k: number): number {
+  const u = offsetPx / thickness + 0.5;
+  if (!(u >= 0 && u < 1)) return 0;
+  return rowStrength(Math.min(k - 1, Math.floor(u * k)), k);
+}
+
 export function coreAlpha(strength: number): number { return Math.min(1, strength * 1.4); }
 export function glowSigma(k: number): number { return Math.max(1.2, 0.75 * k); }
 export function glowRadius(k: number): number { return Math.ceil(2.5 * glowSigma(k)); }
@@ -107,7 +126,7 @@ export function coreColumn(positions: Float32Array, k: number, out = new Float32
  * Rows with core value 0 draw no core (the glow below stays visible).
  */
 export function composeColumn(core: Float32Array, k: number, left: Float32Array | null, self: Float32Array,
-  right: Float32Array | null, out = new Uint8ClampedArray(core.length * 4)): Uint8ClampedArray {
+  right: Float32Array | null, out = new Uint8ClampedArray(core.length * 4), strengths?: Float32Array): Uint8ClampedArray {
   const s = rowStrengths(k);
   for (let y = 0; y < core.length; y++) {
     const h = ((left ? left[y]! : 0) + 2 * self[y]! + (right ? right[y]! : 0)) / 4;
@@ -115,7 +134,7 @@ export function composeColumn(core: Float32Array, k: number, left: Float32Array 
     let r = COLOR_LUT[gi]! * GLOW_OPACITY, g = COLOR_LUT[gi + 1]! * GLOW_OPACITY, b = COLOR_LUT[gi + 2]! * GLOW_OPACITY;
     const c = core[y]!;
     if (c > 0) {
-      const a = coreAlpha(s[y % k]!), ci = lutIndex(c) * 3;
+      const a = coreAlpha(strengths ? strengths[y]! : s[y % k]!), ci = lutIndex(c) * 3;
       r = r * (1 - a) + COLOR_LUT[ci]! * a; g = g * (1 - a) + COLOR_LUT[ci + 1]! * a; b = b * (1 - a) + COLOR_LUT[ci + 2]! * a;
     }
     const o = y * 4;
@@ -340,10 +359,17 @@ function buildSizes(refs: (HeatColumn | null)[], topPrice: number, priceCount: n
 /** One glow column for a single book (current-book band): no fade, horizontal neighbours equal to itself. */
 export interface BookGlowBuffers {
   positions?: Float32Array; core?: Float32Array; blur?: Float32Array; rgba?: Uint8ClampedArray;
-  k?: number; kernel?: Float32Array;
+  k?: number; kernel?: Float32Array; strengths?: Float32Array;
 }
+/**
+ * Latest-book glow column. `rgba` has one RGBA row per drawn row; draw it into (yTop, destHeight) of a band
+ * `heightPx` tall. Zoomed in: K sub-rows per price, stretched. Zoom-out line mode (wideLines): one row per physical
+ * pixel (yTop 0, destHeight heightPx), each price a MIN_LINE_PX line with the heatmap's overlap rule (projectLines).
+ */
 export function glowBookColumn(book: HeatColumn | null, view: Viewport, heightPx: number, scale: GlowScale,
-  reuse?: BookGlowBuffers) {
+  reuse?: BookGlowBuffers): { rgba: Uint8ClampedArray; k: number; topPrice: number; priceCount: number;
+    yTop: number; destHeight: number; line: boolean } {
+  if (wideLines(heightPx / view.priceSpanTicks)) return glowBookLines(book, view, heightPx, scale, reuse);
   const k = glowK(heightPx / view.priceSpanTicks);
   const margin = Math.ceil(glowRadius(k) / k) + 1;
   const top = view.centerPriceTicks + view.priceSpanTicks / 2, bottom = top - view.priceSpanTicks;
@@ -365,5 +391,36 @@ export function glowBookColumn(book: HeatColumn | null, view: Viewport, heightPx
   verticalBlur(core, kernel, blur as Float32Array<ArrayBuffer>);
   composeColumn(core, k, blur, blur, blur, rgba as Uint8ClampedArray<ArrayBuffer>);
   if (reuse) Object.assign(reuse, { positions, core, blur, rgba, k, kernel });
-  return { rgba, k, topPrice, priceCount };
+  return { rgba, k, topPrice, priceCount, yTop: (top - (topPrice + 0.5)) / view.priceSpanTicks * heightPx,
+    destHeight: priceCount * heightPx / view.priceSpanTicks, line: false };
+}
+
+/** Zoom-out line mode of glowBookColumn: rows are physical pixels; core = max over prices of t' x line strength. */
+function glowBookLines(book: HeatColumn | null, view: Viewport, heightPx: number, scale: GlowScale,
+  reuse?: BookGlowBuffers) {
+  const thickness = MIN_LINE_PX, k = glowK(thickness), half = thickness / 2;
+  const height = Math.max(1, Math.round(heightPx));
+  const top = view.centerPriceTicks + view.priceSpanTicks / 2;
+  const core = reuse?.core?.length === height ? reuse.core : new Float32Array(height);
+  const strengths = reuse?.strengths?.length === height ? reuse.strengths : new Float32Array(height);
+  const blur = reuse?.blur?.length === height ? reuse.blur : new Float32Array(height);
+  const rgba = reuse?.rgba?.length === height * 4 ? reuse.rgba : new Uint8ClampedArray(height * 4);
+  const kernel = reuse?.k === k && reuse.kernel ? reuse.kernel : gaussianKernel(k);
+  // Same row rule as the heatmap's projectLines: the larger size x line strength wins, ties keep the stronger line.
+  const winner = reuse?.positions?.length === height ? reuse.positions : new Float32Array(height);
+  const score = new Float64Array(height).fill(-1);
+  winner.fill(0); strengths.fill(0);
+  if (book) for (const side of [book.bids, book.asks]) for (let i = 0; i < side.prices.length; i++) {
+    const size = side.sizes[i]!, center = (top - side.prices[i]!) / view.priceSpanTicks * heightPx;
+    for (let y = Math.max(0, Math.floor(center - half)); y < Math.min(height, Math.ceil(center + half)); y++) {
+      const s = lineStrength(y + .5 - center, thickness, k), v = size * s;
+      if (s > 0 && (v > score[y]! || (v === score[y]! && s > strengths[y]!))) { score[y] = v; winner[y] = size; strengths[y] = s; }
+    }
+  }
+  for (let y = 0; y < height; y++) core[y] = colorPosition(winner[y]!, scale.upper, scale.lower, scale.gamma) * strengths[y]!;
+  verticalBlur(core, kernel, blur as Float32Array<ArrayBuffer>);
+  composeColumn(core, k, blur, blur, blur, rgba as Uint8ClampedArray<ArrayBuffer>, strengths);
+  if (reuse) Object.assign(reuse, { positions: winner, core, blur, rgba, k, kernel, strengths });
+  return { rgba, k, topPrice: Math.ceil(top + 0.5) - 1, priceCount: Math.ceil(view.priceSpanTicks), yTop: 0,
+    destHeight: height, line: true };
 }
