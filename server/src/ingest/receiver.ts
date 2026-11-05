@@ -3,7 +3,7 @@ import { RecentTrades } from "../trades/recent.ts";
 import { Metrics } from "./metrics.ts";
 import type { BookSnapshot, Trade } from "../types.ts";
 import type { Log } from "../logger.ts";
-import { normalizeBook, normalizePrice, normalizeTime } from "./normalize.ts";
+import { normalizeBook, normalizePrice, normalizeTime, normalizeTradeSide } from "./normalize.ts";
 import { validContract, type MarketSymbol } from "../../../lib/market/instruments.ts";
 
 function record(value: unknown): value is Record<string, unknown> {
@@ -110,6 +110,7 @@ export class Receiver {
   private trade(message: Record<string, unknown>, recvUs: number) {
     const tsUs = this.time(message.ts);
     const price = this.price(message.price);
+    const side = normalizeTradeSide(message.side);
     let invalid = false;
     if (price === null) {
       this.metrics.issue("offTick", { type: "tick", price: message.price, recvUs });
@@ -117,7 +118,7 @@ export class Receiver {
     }
     if (tsUs === null || message.symbol !== this.symbol
       || typeof message.size !== "number" || !Number.isFinite(message.size) || message.size <= 0
-      || (message.side !== "buy" && message.side !== "sell")) {
+      || side === null) {
       this.metrics.issue("invalidMessage", { type: "tick", reason: "invalid_fields", recvUs });
       invalid = true;
     }
@@ -125,7 +126,7 @@ export class Receiver {
     if (invalid) { this.metrics.count("rejectedTrade"); return; }
     const trade: Trade = {
       tsUs: tsUs!, recvUs, seq: this.nextSequence(), price: price!,
-      size: message.size as number, side: message.side as Trade["side"],
+      size: message.size as number, side: side!,
     };
     if (this.symbol === "GC") {
       const contract = validContract(message.contract, "GC") ? message.contract : this.currentContract;

@@ -36,7 +36,9 @@ test("15分のnetwork_or_timeoutは同窓再試行なしで分割、1分の3回�
   assert.equal(requests.filter(([a, b]) => a === start + 120 && b === start + 180).length, 3);
   assert.ok(requests.every(([a, b]) => b - a >= 60));
   assert.deepEqual(waits, [60000, 60000]);
-  assert.deepEqual(result.gaps, [{ startSec: start + 120, endSec: start + 180, reason: "network_or_timeout" }]);
+  assert.deepEqual(result.gaps.filter(g => g.reason === "network_or_timeout"),
+    [{ startSec: start + 120, endSec: start + 180, reason: "network_or_timeout" }]);
+  assert.equal(result.gaps.filter(g => g.reason === "unobserved_history_seconds").length, 14);
   assert.equal(prints, 14);
   assert.ok(!store.covered("tick", start + 120));
   assert.ok(store.covered("tick", start + 180));

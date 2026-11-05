@@ -93,7 +93,9 @@ test("ダミー：通信/5xxを合計3回失敗した窓は欠け、次の窓へ
     assert.equal(backfill.status.state, "complete");
     assert.deepEqual(waits, [60000, 60000]);
     assert.deepEqual(calls, [L - 60, L - 60, L - 60, L - 120]);
-    assert.deepEqual(backfill.status.gaps, [{ kind: "book", startSec: L - 60, endSec: L, reason: "http_503" }]);
+    assert.deepEqual(backfill.status.gaps, [
+      { kind: "book", startSec: L - 60, endSec: L, reason: "http_503" },
+      { kind: "book", startSec: L - 119, endSec: L - 60, reason: "unobserved_history_seconds" }]);
     assert.equal(store.covered("book", L - 60), false);
     assert.equal(store.covered("book", L - 120), true);
     assert.equal(client.stats.errors, 3); assert.equal(client.stats.retries, 2);
@@ -130,7 +132,7 @@ for (const fillOnRetry of [1, 3, null]) {
       assert.equal(backfill.status.pendingEmpty.length, 0);
       assert.equal(backfill.status.noData.length, fillOnRetry === null ? 1 : 0);
       if (fillOnRetry === null) assert.equal(backfill.status.noData[0].attempts, 4);
-      assert.equal(store.covered("book", L - 60), true);
+      assert.equal(store.covered("book", L - 60), fillOnRetry !== null);
     });
   });
 }

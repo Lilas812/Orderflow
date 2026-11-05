@@ -6,6 +6,7 @@ import type { LocalStore } from "../store/local.ts";
 import type { Metrics } from "../ingest/metrics.ts";
 import type { Trade } from "../types.ts";
 import { decodedTrades, inputRows } from "../history/prepared.ts";
+import { observedRanges } from "../history/evidence.ts";
 
 export function coverageSegments(ranges: readonly [number, number][], start: number, end: number) {
   const result: { start: number; end: number; covered: boolean }[] = [];
@@ -91,6 +92,7 @@ export async function readTradeRange(options: {
         return take(start, end, retry + 1);
       }
       state.noData.push({ startSec: start, endSec: end, attempts: retry + 1 });
+      return;
     }
     const trades = decodedTrades(response, start, end, metrics, nextSeq, source.symbol);
     if (trades.length !== inputRows(response, start, end)) {
@@ -99,8 +101,11 @@ export async function readTradeRange(options: {
     signal.throwIfAborted();
     // Live writes may have completed during the request. Split/recheck rather than overwrite.
     await store.insertUncoveredTradeRange(start, end, trades);
-    acceptedRanges.push([start, end]);
-    state.apiSeconds += end - start;
+    const observed = observedRanges(trades.map(t => Math.floor(t.tsUs / 1e6)));
+    acceptedRanges.push(...observed);
+    state.apiSeconds += observed.reduce((n, [a, b]) => n + b - a, 0);
+    for (const gap of coverageSegments(observed, start, end))
+      if (!gap.covered) state.gaps.push({ startSec: gap.start, endSec: gap.end, reason: "unobserved_history_seconds" });
   }
   try {
     for (let a = options.start; a < options.end; a += 900) {

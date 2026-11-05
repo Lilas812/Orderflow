@@ -1,6 +1,12 @@
-import type { BookLevel, BookSnapshot } from "../types.ts";
+import type { BookLevel, BookSnapshot, Trade } from "../types.ts";
 import type { Metrics } from "./metrics.ts";
 import { INSTRUMENTS, type MarketSymbol } from "../../../lib/market/instruments.ts";
+
+/** Preserve undirected prints without guessing an aggressor; reject malformed sides. */
+export function normalizeTradeSide(side: unknown): Trade["side"] | null {
+  if (side === "buy" || side === "sell") return side;
+  return side === "N" || side === "unknown" ? "unknown" : null;
+}
 
 /** External units are explicit, never inferred from digit count. */
 export function normalizeTime(ts: unknown, source: "live" | "history"): number | null {

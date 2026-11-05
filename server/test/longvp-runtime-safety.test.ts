@@ -137,7 +137,9 @@ test("network failure splits 15-minute windows once, retries a one-minute leaf t
   assert.equal(calls.filter(([a, b]) => a === 3000 && b === 3900).length, 1);
   assert.equal(calls.filter(([a, b]) => a === 3000 && b === 3060).length, 3);
   assert.ok(calls.every(([a, b]) => b - a >= 60));
-  assert.deepEqual(state.gaps, [{ startSec: 3000, endSec: 3060, reason: "network_or_timeout" }]);
+  assert.deepEqual(state.gaps.filter(g => g.reason === "network_or_timeout"),
+    [{ startSec: 3000, endSec: 3060, reason: "network_or_timeout" }]);
+  assert.equal(state.gaps.filter(g => g.reason === "unobserved_history_seconds").length, 14);
   assert.equal(received.length, 14); assert.equal(received.reduce((n, t) => n + t.size, 0), 28);
   assert.equal(store.covered("tick", 3000), false); assert.equal(store.covered("tick", 3060), true);
   assert.ok(logs.filter(l => l.event === "history_request_failed").every(l =>

@@ -146,7 +146,7 @@ test("ダミー：HTTPはlimit=500000、429 Retry-After後に再開、認証値�
   assert.deepEqual(waits, [2000]); assert.equal(client.stats.errors, 1);
   assert.equal(JSON.stringify(logs).includes("dummy-key"), false);
 });
-test("ダミー：保存済み秒を再取得せず、0行を記録、切詰めを新しい半窓から逐次再取得", async () => {
+test("ダミー：保存済み秒は再取得せず、0行は未取得のまま次回再取得、切詰めは逐次分割", async () => {
   const L = Math.floor(Date.now() / 1000), start = L - 10800, calls: [string, number, number][] = [];
   await temporary(async store => {
     for (const kind of ["book", "tick"] as const) store.markCovered(kind, start, L - 2);
@@ -161,9 +161,10 @@ test("ダミー：保存済み秒を再取得せず、0行を記録、切詰め�
     backfill.start(L); await backfill.settled();
     assert.equal(backfill.status.state, "complete"); assert.equal(backfill.status.completedWindows, 180);
     assert.deepEqual(calls.slice(0, 3), [["book", L - 2, L], ["book", L - 1, L], ["book", L - 2, L - 1]]);
-    assert.ok(calls.every(([, a]) => a >= L - 2)); assert.ok(store.covered("tick", L - 1));
-    const again = new Backfill(source, store, newMetrics(), () => 1, () => {});
-    const count = calls.length; again.start(L); await again.settled(); assert.equal(calls.length, count);
+    assert.ok(calls.every(([, a]) => a >= L - 2)); assert.equal(store.covered("tick", L - 1), false);
+    const again = new Backfill(source, store, newMetrics(), () => 1, () => {}, clock);
+    const count = calls.length; again.start(L); await again.settled(); assert.ok(calls.length > count);
+    assert.equal(store.covered("tick", L - 1), false);
   });
 });
 test("ダミー：1秒窓でもtruncatedなら失敗し、不完全な窓を取得済みにしない", async () => {

@@ -16,6 +16,7 @@ import type { Column } from "../aggregate/columns.ts";
 import type { Trade } from "../types.ts";
 import type { TradeReadSession } from "./trade-read.ts";
 import { containsSecond, overlapsRange, clipRanges, sliceBudget } from "./coverage.ts";
+import { observedRanges } from "../history/evidence.ts";
 
 const gzip = promisify(gzipCallback);
 const gunzip = promisify(gunzipCallback);
@@ -538,9 +539,7 @@ export class LocalStore implements Store {
       if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start >= end
         || trades.some(t => t.tsUs < start * 1e6 || t.tsUs >= end * 1e6)) throw Error("invalid_vp_insert_range");
        if (overlapsRange(this.recordedTicks, start, end)) throw Error("vp_insert_overlaps_coverage");
-       if (!trades.length) {
-         this.markCovered("tick", start, end); await this.saveCoverage(); return;
-       }
+       if (!trades.length) return; // Neither create an empty hour nor certify quiet seconds.
       const staged: { file: string; temporary: string }[] = [];
       // Stage every affected hour before replacing any original. Never remove or
       // reorder old rows, including when exchange timestamps arrive backwards.
@@ -550,6 +549,7 @@ export class LocalStore implements Store {
           const exists = await this.exists(file);
           const incoming = trades.filter(t => t.tsUs >= h * 1e6 && t.tsUs < (h + 3600) * 1e6)
             .sort((a, b) => a.tsUs - b.tsUs);
+          if (!incoming.length) continue;
           await fs.mkdir(path.dirname(file), { recursive: true, mode: 0o700 });
           staged.push({ file, temporary });
           async function* lines() {
@@ -570,7 +570,9 @@ export class LocalStore implements Store {
           this.filesChanged(file);
         }
         // Index replacement is strictly after all data-file replacements.
-        this.markCovered("tick", start, end); await this.saveCoverage();
+        for (const [a, b] of observedRanges(trades.map(t => Math.floor(t.tsUs / 1e6))))
+          this.markCovered("tick", a, b);
+        await this.saveCoverage();
       } finally { for (const { temporary } of staged) await fs.rm(temporary, { force: true }); }
   }
   /** Atomic delivery view: persisted data plus confirmed writes held for backfill.

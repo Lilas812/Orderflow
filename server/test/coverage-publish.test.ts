@@ -123,7 +123,7 @@ test("ダミー：backup失敗なら印も圧縮も入れず起動継続、原cl
     assert.equal(store.coverageIntervals.tickGapCompactionVersion, null);
   } finally { await fs.rm(dir, { recursive: true, force: true }); }
 });
-test("ダミー：空の補完ではhydrate/市場ファイル再読込/置換なし、区間だけ更新", async () => {
+test("ダミー：空の補完ではhydrate/市場ファイル再読込/置換もcoverage更新もしない", async () => {
   const dir = await root(), objects = new DummyObjects();
   objects.files.set("dev/coverage.json", Buffer.from(JSON.stringify({
     book: [], tick: [[hour, hour + 1]], tickGapCompactionVersion: 1 })));
@@ -132,7 +132,7 @@ test("ダミー：空の補完ではhydrate/市場ファイル再読込/置換�
     await store.initialize(); objects.downloads = [];
     await store.insertUncoveredTradeRange(hour + 1, hour + 20, []);
     assert.deepEqual(objects.downloads, []);
-    assert.deepEqual(await store.recordedTickCoverage(), [[hour, hour + 20]]);
+    assert.deepEqual(await store.recordedTickCoverage(), [[hour, hour + 1]]);
     await assert.rejects(fs.access(path.join(dir, "trades/NQ/2026-11-02/00.jsonl.gz")));
   } finally { await fs.rm(dir, { recursive: true, force: true }); }
 });

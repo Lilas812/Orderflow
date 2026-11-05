@@ -8,6 +8,7 @@ import type { Kind, Store } from "../store/local.ts";
 import type { Metrics } from "../ingest/metrics.ts";
 import type { Log } from "../logger.ts";
 import { decodedColumns, decodedTrades, inputRows } from "./prepared.ts";
+import { observedRanges } from "./evidence.ts";
 
 export function missingRuns(store: Store, kind: Kind, start: number, end: number): [number, number][] {
   const result: [number, number][] = [];
@@ -115,16 +116,25 @@ export class Backfill {
       const noData = { kind, startSec: start, endSec: end, reason: "empty_response", attempts: retries + 1 };
       this.status.noData.push(noData);
       this.log("history_no_data", noData);
+      return; // Empty is not evidence of a successfully acquired interval.
     }
+    let observed: [number, number][];
     if (kind === "book") {
       const columns = decodedColumns(response, start, end, this.metrics, this.source.symbol);
       await this.store.addColumns(columns);
+      observed = observedRanges(columns.map(c => c.tsSec));
     } else {
       const trades = decodedTrades(response, start, end, this.metrics, this.nextSeq, this.source.symbol);
       await this.store.addTrades(trades);
+      observed = observedRanges(trades.map(t => Math.floor(t.tsUs / 1e6)));
     }
-    this.log("history_range_saved", { kind, startSec: start, endSec: end, empty, attempts: retries + 1 });
-    this.store.markCovered(kind, start, end);
+    for (const [a, b] of observed) this.store.markCovered(kind, a, b);
+    for (const [a, b] of missingRuns(this.store, kind, start, end)) {
+      const gap = { kind, startSec: a, endSec: b, reason: "unobserved_history_seconds" };
+      this.status.gaps.push(gap);
+    }
+    this.log("history_range_saved", { kind, startSec: start, endSec: end, empty, attempts: retries + 1,
+      observedRangeCount: observed.length, observedSeconds: observed.reduce((n, [a, b]) => n + b - a, 0) });
   }
   private async retryReady() {
     for (;;) {

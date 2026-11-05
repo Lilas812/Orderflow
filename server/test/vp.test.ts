@@ -68,7 +68,8 @@ test("ダミー：取得済み行の文字列・内容・逆行を含む順番�
     assert.deepEqual([lines[0], lines[1], lines[5], lines[6]], oldLines);
     assert.deepEqual(lines.map(l => JSON.parse(l).seq), [1, 2, 6, 7, 5, 3, 4]);
     assert.deepEqual(lines.map(l => JSON.parse(l)).filter(t => t.seq <= 4), originals);
-    assert.deepEqual(await store.recordedTickCoverage(), [[start, start + 60]]);
+    assert.deepEqual(await store.recordedTickCoverage(),
+      [[start, start + 20], [start + 25, start + 26], [start + 35, start + 36], [start + 40, start + 60]]);
   } finally { await fs.rm(root, { recursive: true, force: true }); }
 });
 test("ダミー：置換直前の失敗でも元gzipとcoverageはバイト不変、作業用一時ファイルのみ除去", async () => {

@@ -1,5 +1,5 @@
 import { ColumnAggregator } from "../aggregate/columns.ts";
-import { normalizeBook, normalizePrice, normalizeTime } from "../ingest/normalize.ts";
+import { normalizeBook, normalizePrice, normalizeTime, normalizeTradeSide } from "../ingest/normalize.ts";
 import type { Metrics } from "../ingest/metrics.ts";
 import type { Trade } from "../types.ts";
 import type { Column } from "../aggregate/columns.ts";
@@ -87,10 +87,11 @@ export function historyTrades(
     if (!inWindow(row, start, end)) continue;
     const tsUs = normalizeTime(row.ts, "history");
     const price = normalizePrice(row.price, symbol);
+    const side = normalizeTradeSide(row.side);
     let invalid = false;
     if (price === null) { metrics.issue("offTick", { type: "history_tick", price: row.price }); invalid = true; }
     if (tsUs === null || typeof row.size !== "number" || !Number.isFinite(row.size) || row.size <= 0
-      || (row.side !== "buy" && row.side !== "sell")) {
+      || side === null) {
       metrics.issue("invalidMessage", { type: "history_tick", reason: "invalid_fields" }); invalid = true;
     }
     if (tsUs !== null && previous !== undefined && tsUs < previous) {
@@ -99,7 +100,7 @@ export function historyTrades(
     if (invalid) { metrics.count("rejectedTrade"); continue; }
     previous = tsUs!;
     trades.push({ tsUs: tsUs!, recvUs: tsUs!, seq: nextSequence(), price: price!,
-      size: row.size as number, side: row.side as Trade["side"],
+      size: row.size as number, side: side!,
       ...(symbol === "GC" && validContract(row.contract, symbol) ? { contract: row.contract } : {}) });
     metrics.count("acceptedTrade");
   }
